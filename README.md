@@ -30,7 +30,7 @@
 ### ワンライナー
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/example/agent-cli/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aquaxis/agent-cli/main/install.sh | sh
 ```
 
 ### `install.sh`の動作
@@ -52,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/example/agent-cli/main/install.sh |
 ### 手動ビルド
 
 ```bash
-git clone https://github.com/example/agent-cli.git
+git clone https://github.com/aquaxis/agent-cli.git
 cd agent-cli
 cargo install --path . --root "$HOME/.local"
 ```

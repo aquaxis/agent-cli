@@ -12,7 +12,7 @@
 
 ```bash
 # 1. クローンして
-git clone https://github.com/example/agent-cli.git
+git clone https://github.com/aquaxis/agent-cli.git
 cd agent-cli
 
 # 2. ビルド／テスト

@@ -30,7 +30,7 @@ The mandatory verification targets are `claude` and `ollama` (with model `glm-5.
 ### One-liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/example/agent-cli/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aquaxis/agent-cli/main/install.sh | sh
 ```
 
 ### What `install.sh` does
@@ -50,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/example/agent-cli/main/install.sh |
 ### Build from source
 
 ```bash
-git clone https://github.com/example/agent-cli.git
+git clone https://github.com/aquaxis/agent-cli.git
 cd agent-cli
 cargo install --path . --root "$HOME/.local"
 ```

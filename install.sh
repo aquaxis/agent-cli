@@ -3,7 +3,7 @@
 #
 # Usage:
 #   sh install.sh
-#   curl -fsSL https://raw.githubusercontent.com/<owner>/agent-cli/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/aquaxis/agent-cli/main/install.sh | sh
 #
 # Environment variables:
 #   AGENT_CLI_REPO          source repository URL (default: GitHub source)
@@ -13,7 +13,7 @@
 
 set -eu
 
-AGENT_CLI_REPO=${AGENT_CLI_REPO:-https://github.com/example/agent-cli.git}
+AGENT_CLI_REPO=${AGENT_CLI_REPO:-https://github.com/aquaxis/agent-cli.git}
 AGENT_CLI_REF=${AGENT_CLI_REF:-main}
 AGENT_CLI_PREFIX=${AGENT_CLI_PREFIX:-"$HOME/.local"}
 AGENT_CLI_INSTALL_FORCE=${AGENT_CLI_INSTALL_FORCE:-0}

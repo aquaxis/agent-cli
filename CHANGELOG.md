@@ -43,4 +43,4 @@
 - `cargo test` 全 41 テスト成功（Provider パーサ、Agent ループ E2E、IPC、ペルソナ、ドキュメント整合性、CLI 整合性）
 - `cargo doc --no-deps` 警告ゼロ
 
-[Unreleased]: https://github.com/example/agent-cli/compare/HEAD...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/HEAD...HEAD
