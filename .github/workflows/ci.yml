@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    name: build / test / lint / docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo build
+        run: cargo build --locked || cargo build
+
+      - name: cargo test
+        run: cargo test --all
+
+      - name: cargo doc
+        run: cargo doc --no-deps
+
+  selftest:
+    name: agent-cli selftest (offline stages)
+    runs-on: ubuntu-latest
+    needs: check
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-selftest-${{ hashFiles('**/Cargo.toml', 'rust-toolchain.toml') }}
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Stage 2 + 3 (offline) via bogus provider
+        # Stage 1 requires a real backend; we only assert that stages 2 and 3 succeed.
+        run: |
+          set -e
+          TMP=$(mktemp -d)
+          cat > "$TMP/c.toml" <<EOF
+          [provider]
+          kind = "ollama"
+          [provider.ollama]
+          model = "selftest"
+          base_url = "http://127.0.0.1:65535"
+          [runtime]
+          auto_approve_tools = true
+          log_dir = "$TMP/log"
+          registry_dir = "$TMP/reg"
+          agents_dir = "$TMP/agents"
+          [tools]
+          enabled = ["shell", "fs_read", "fs_write", "send_to"]
+          EOF
+          OUT=$(./target/release/agent-cli --config "$TMP/c.toml" selftest 2>&1 || true)
+          echo "$OUT"
+          # Stage 2 / 3 / 4 の成功行を必ず含むこと（Stage 1 は外部 API 不通で FAIL してよい）
+          echo "$OUT" | grep -q "stage 2 ok" || (echo "stage 2 missing" && exit 1)
+          echo "$OUT" | grep -q "stage 3 ok" || (echo "stage 3 missing" && exit 1)
+          echo "$OUT" | grep -q "stage 4 ok" || (echo "stage 4 missing" && exit 1)
+          rm -rf "$TMP"

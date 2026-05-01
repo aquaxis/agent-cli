@@ -1,2 +1,18 @@
 .aiprj/AI_LOG
 .aiprj/instructions.md
+
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Local config
+.env
+.envrc
