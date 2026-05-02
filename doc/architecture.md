@@ -31,10 +31,10 @@
 
 ```text
 src/
-├── main.rs              ... CLI エントリ／サブコマンド分岐
+├── main.rs              ... CLI エントリ／サブコマンド分岐／std::process::exit による確定終了
 ├── cli.rs               ... clap 引数定義
-├── app.rs               ... `run` の REPL 本体
-├── agent.rs             ... 単一エージェントの会話ループ
+├── app.rs               ... `run` の REPL 本体／run_input_loop／PromptState／handle_auto_command／wait_for_termination_signal
+├── agent.rs             ... 単一エージェントの会話ループ／ApprovalRequest／request_approval
 ├── commands.rs          ... list/send/providers/doctor/selftest/config
 ├── config.rs            ... 設定ファイル読込・解決順序
 ├── id.rs                ... AgentId
@@ -57,27 +57,36 @@ src/
 │   └── send_to.rs
 └── ipc/
     ├── mod.rs           ... IpcMessage
-    ├── server.rs        ... UnixListener（0600）
+    ├── server.rs        ... UnixListener（0600）／Drop で accept abort + ソケット削除
     ├── client.rs        ... UnixStream
-    └── registry.rs      ... <agent-id>.{sock,json} 走査
+    └── registry.rs      ... <agent-id>.{sock,json} 走査／Drop で自動クリーンアップ
 ```
+
+主要型：
+
+- `Agent.auto_approve: Arc<AtomicBool>` — `/auto on|off` で実行時切替
+- `Agent.approval_tx: Option<mpsc::Sender<ApprovalRequest>>` — 入力ループへの承認要求経路
+- `enum PromptState { Ready, Pending, AwaitingApproval(oneshot::Sender<bool>) }` — REPL 入力ループの状態
 
 ## 3. 主要データフロー
 
 ### 3.1 ユーザープロンプト処理
 
 ```text
-stdin -> stdin task -> mpsc -> Agent loop -> Provider -> ProviderEvent stream
-                                                  |
-                                                  +-- text_delta -> mpsc -> display
-                                                  +-- thinking -> mpsc -> display
-                                                  +-- tool_use -> ToolRegistry -> ToolOutput
-                                                                                 |
-                                                                                 v
-                                                                  Agent loop へ次反復
+stdin -> run_input_loop -> mpsc -> Agent loop -> Provider -> ProviderEvent stream
+            ^                          |
+            |                          +-- text_delta -> mpsc -> display task -> stdout
+            |                          +-- thinking   -> mpsc -> display task -> stdout
+            |                          +-- tool_use   -> 承認 (3.3) -> ToolRegistry -> ToolOutput
+            |                          +-- Done       -> mpsc -> display task -> agent_idle 通知 -> 入力ループ
+            |
+            +-- agent_idle 受領で Pending -> Ready に復帰し、次のプロンプト `> ` を再描画
 ```
 
-ツール実行は最大 8 反復。誤発火を防ぐため `auto_approve_tools=false` の場合は y/N 承認を経由します。
+- `run_input_loop` は `enum PromptState { Ready, Pending, AwaitingApproval(oneshot::Sender<bool>) }` を保持し、`tokio::select!` で 4 経路（shutdown／idle／approval／stdin）を多重化。
+- ユーザー入力送信直後は `Pending` に遷移し、`Done` 受領（`display_task` から `mpsc::<()>` 経由）まで stdin 読取を抑止。これによりストリーミング出力と入力エコーの混在を防ぐ。
+- ツール実行は最大 8 反復。`auto_approve_tools=false`（既定）の場合は 3.3 の承認チャネル経由で y/N を取得する。
+- `Done` は通常応答完了だけでなく、`provider.complete_stream` の失敗時にも必ず発行され、入力ループが Pending のまま固まらない。
 
 ### 3.2 ピア間メッセージング
 
@@ -104,6 +113,30 @@ ipc::client::send (UnixStream)
                                               ▼
                                       Provider 応答 -> 画面表示
 ```
+
+### 3.3 ツール実行承認の入出力統合
+
+承認は agent タスクと入力ループ間の 2 本立てチャネルで行います（`std::io::stdin` 直読みは禁止）。
+
+```text
+Agent::process_turn (auto_approve=false)
+   │
+   ├── ApprovalRequest { tool_name, args, response: oneshot::Sender<bool> }
+   │       │
+   │       ▼ mpsc::Sender<ApprovalRequest>
+   │   run_input_loop  (PromptState::AwaitingApproval(resp_tx) に遷移)
+   │       │
+   │       │ "[tool approval] ... approve? [y/N]:" を描画
+   │       │
+   │       ▼ stdin から次の 1 行を取得
+   │   y/yes -> resp_tx.send(true)、それ以外 -> false
+   │       │
+   │       ▼ oneshot::Receiver<bool>
+   └── 承認結果に応じて tool 実行 or "user denied tool execution"
+```
+
+- `auto_approve` は `Arc<AtomicBool>` で agent と REPL 間で共有され、REPL コマンド `/auto on|off|status` で実行時切替可能。
+- 承認待機中（`AwaitingApproval`）に shutdown シグナルが入ると、`resp_tx.send(false)` で安全側倒し → agent の `oneshot::Receiver::await` が即解消し、ぶら下がりを防止。
 
 ## 4. レジストリ仕様
 
@@ -164,6 +197,40 @@ enum ProviderEvent {
 
 ペルソナの `role`／`skills`／本文はシステムプロンプトに合成。`allowed_tools`／`denied_tools` は `ToolRegistry::build` で反映され、結果は `/tools` で確認できます。再読込は REPL の `/reload-persona`（履歴保持）。
 
-## 7. 対象 OS
+## 7. 終了処理（shutdown coordination）
 
-Linux のみ。Unix ドメインソケット、`XDG_RUNTIME_DIR`、`/proc/<pid>` を前提に実装しています。
+`/quit`／`/exit`／`Ctrl+D`（EOF）／`Ctrl+C`（SIGINT）／`SIGTERM` のいずれを契機としても、同じ終了シーケンスへ合流します。
+
+```text
+[/quit /exit ハンドラ]   [stdin EOF 検出]   [SIGINT/SIGTERM ハンドラ]
+              \              |              /
+               \             v             /
+                +-- shutdown_tx.send(true) (tokio::sync::watch) --+
+                                    │
+                                    ▼
+        ┌─────────────────────────────────────┐
+        │ stdin_task.abort()                  │
+        │ ipc_task.abort()                    │
+        │ signal_task.abort()                 │
+        │ drop(input_tx)                      │
+        │ agent_handle (500ms タイムアウト)    │
+        │ display_task.await                  │
+        │ drop(ipc_server)  → IpcServer::Drop │
+        │   - accept ループ abort             │
+        │   - <id>.sock 削除                  │
+        │ registry_handle (RegistryHandle::Drop)│
+        │   - <id>.sock / <id>.json 削除      │
+        └─────────────────────────────────────┘
+                                    │
+                                    ▼
+                          std::process::exit(0)
+```
+
+- `IpcServer` と `RegistryHandle` は `Drop` 実装で abort + ファイル削除を行うため、panic 時にも残骸が残らない。
+- `main` は `std::process::exit(0/1)` を明示的に呼び、tokio runtime drop が `tokio::io::stdin()` のブロッキングスレッドを待つ事象を回避。
+- 開発機では 5 経路すべて 1 秒以内に正常終了し、レジストリ残留物なしを確認済（`/quit` 110ms / `/exit` 110ms / `Ctrl+D` 110ms / `SIGINT` 19ms / `SIGTERM` 3ms）。
+- 承認待機中（`AwaitingApproval`）の場合は、入力ループ break 時に `oneshot::Sender::send(false)` で安全側倒し（3.3 参照）。
+
+## 8. 対象 OS
+
+Linux のみ。Unix ドメインソケット、`XDG_RUNTIME_DIR`、`/proc/<pid>`、`tokio::signal::unix` を前提に実装しています。

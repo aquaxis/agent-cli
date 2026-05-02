@@ -85,7 +85,7 @@ agent-cli --config ./project-a.toml config path
 
 | キー | 型 | 既定 | 説明 |
 |------|----|------|------|
-| `auto_approve_tools` | bool | `false` | `true` ならツール実行時の y/N 承認をスキップ |
+| `auto_approve_tools` | bool | `false` | `true` ならツール実行時の y/N 承認をスキップ。実行時は REPL コマンド `/auto on`／`/auto off`／`/auto status` で同じスイッチを切替可能 |
 | `log_dir` | string | `~/.local/share/agent-cli/logs` | 会話ログの保存先 |
 | `registry_dir` | string | 空 | エージェントレジストリの場所。空時は `$XDG_RUNTIME_DIR/agent-cli` または `/tmp/agent-cli` を使用 |
 | `agents_dir` | string | `~/.config/agent-cli/agents` | ペルソナファイルの探索先 |
@@ -333,5 +333,7 @@ max_output_kb = 4096  # 4 MB
 ## 10. 設定変更の反映と再起動
 
 - ほとんどの設定は **プロセス起動時に読み込まれる** ため、変更後は `agent-cli` を再起動してください。
-- ペルソナファイルは REPL 内 `/reload-persona` で再読込できます（システムプロンプトのみ更新、会話履歴は保持）。
+- 例外として、以下は実行中の REPL から動的に変更できます：
+  - **ペルソナファイル**：REPL 内 `/reload-persona` で再読込（システムプロンプトのみ更新、会話履歴は保持）
+  - **ツール承認スキップ**：REPL 内 `/auto on`／`/auto off`／`/auto status`（`auto_approve_tools` をその場で上書き）
 - `--provider`／`--model`／`--persona`／`--auto-approve-tools` は CLI オプションで上書き可能です（プロセス単位）。

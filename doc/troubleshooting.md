@@ -47,8 +47,9 @@
 
 ### 古いソケット／JSON が残る
 
-- 通常はプロセス終了時に自動削除されますが、`SIGKILL` などで強制終了した場合に残ることがあります。
-- `agent-cli list` を実行すると stale エントリを自動掃除します。
+- 通常はプロセス終了時に自動削除されます。`/quit`／`/exit`／`Ctrl+D`／`Ctrl+C`（SIGINT）／`SIGTERM` のいずれの経路でも `IpcServer`／`RegistryHandle` の `Drop` 実装が socket と meta JSON を削除するため、残骸はほぼ発生しません。
+- 例外：`SIGKILL`（`kill -9`）や プロセスのパニック途中で OS 強制終了された場合は残ることがあります。
+- `agent-cli list` を実行すると stale エントリ（PID 不在 or socket 不在）を自動掃除します。
 - 手動掃除する場合：
   ```bash
   rm /tmp/agent-cli/*.sock /tmp/agent-cli/*.json
@@ -58,6 +59,32 @@
 
 - `registry_dir` の権限不足。`mkdir -p` で作成した上で `chmod 0700` を確認してください。
 - root で動かしたソケットが残っている場合、所有権の問題が起きます。掃除して再作成してください。
+
+## REPL 関連
+
+### `/quit` または `/exit` で終わらない
+
+- 旧バージョンの不具合で、現行版（T-504 修正後）では `/quit`／`/exit` のいずれも 1 秒以内に確実に終了します。
+- もし古いバイナリで終わらない場合は、`Ctrl+C`（SIGINT）または `Ctrl+\`（SIGQUIT）で強制終了したのち、最新版へアップデートしてください。
+
+### `Ctrl+D` で終わらない
+
+- 同じく旧バージョンの不具合（T-504）。現行版では EOF 検出 → shutdown チャネル → 各タスク abort → ファイル削除 → `std::process::exit(0)` まで自動で進みます。
+
+### 応答後に次のプロンプトが表示されない／応答が前のプロンプトと混じる
+
+- T-505 で実装したプロンプト同期（`PromptState::Pending → Ready`）により、応答完了（`AgentEvent::Done`）まで次のプロンプトは描画されません。
+- もし症状が出る場合は、`provider.complete_stream` の失敗時にも `Done` を必ず emit する仕組み（agent.rs）が動いているか確認。エラー時もエラーメッセージ → `Done` → 新プロンプトの順で描画されます。
+
+### 承認 `y` が次のユーザー入力として消費される（旧不具合）
+
+- T-506 で承認チャネル経由（`mpsc::Sender<ApprovalRequest>` + `oneshot::Sender<bool>`）に置き換え、`std::io::stdin` 直読みを排除済。旧バイナリでは発生しましたが、現行版では発生しません。
+- 承認画面では `[tool approval] <tool> <args>` と `approve? [y/N]: ` が表示されます。`y`／`yes` のみ承認、それ以外（空入力／別単語）は拒否扱いです。
+
+### 毎回承認するのが面倒
+
+- セッション中は `/auto on` で承認スキップに切替（`/auto off` で復帰、`/auto status` で現在値表示）。
+- 永続化したい場合は設定ファイルに `[runtime] auto_approve_tools = true`、または起動時に `--auto-approve-tools`。
 
 ## シェルツール関連
 

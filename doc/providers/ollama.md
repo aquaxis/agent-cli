@@ -44,11 +44,13 @@ ollama pull llama3.1:8b        # ローカル版例
 
 ```bash
 ollama serve &
-agent-cli --provider ollama doctor
-agent-cli --provider ollama selftest --provider ollama
+# doctor は config の provider.kind を使う
+agent-cli --config ./ollama.toml doctor
+# selftest は --provider で上書き可能
+agent-cli selftest --provider ollama
 ```
 
-`doctor` の `provider conn` ステップで `OK (stream initiated)` になれば疎通は良好です。
+`doctor` の `provider conn` ステップで `OK (stream initiated)` になれば疎通は良好です。クラウドルーティングモデル（`*:cloud` タグ）はコールドスタート遅延に備え、疎通タイムアウトは 60 秒に設定されています。
 
 ## プロキシ・別ホスト
 

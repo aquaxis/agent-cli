@@ -6,8 +6,29 @@
 
 - ツールは AI から JSON 形式の入力で呼び出されます。
 - 戻り値は `{"ok": bool, "content": string}` の `ToolOutput` で表現され、`content` が AI に渡されます。`shell` のように構造化結果を返すツールは `content` に JSON 文字列を入れます。
-- 承認フロー：`auto_approve_tools=false`（既定）では各実行の前に標準入力で `y/N` を尋ねます。拒否された場合 `user denied tool execution` が AI に返ります。
+- 承認フロー：`auto_approve_tools=false`（既定）では実行前に REPL の入力ループ経由で y/N を取得します。詳細は下記「ツール実行承認」を参照。拒否時は `user denied tool execution` が AI に返ります。
 - ペルソナの `allowed_tools`／`denied_tools` で利用可能ツールを制御できます（`doc/config.md` 参照）。
+
+## ツール実行承認
+
+承認 y/N の入出力は **REPL のメイン入力ループと統合** されています（`std::io::stdin().read_line()` の直読みは行いません）。これにより承認入力がユーザーの通常プロンプトと取り違えられる事象を防ぎます。
+
+仕組み：
+
+1. agent タスクが `ApprovalRequest { tool_name, args, response: oneshot::Sender<bool> }` を入力ループへ送信。
+2. 入力ループは状態を `AwaitingApproval` に遷移し、`[tool approval] <tool> <args>` バナーと `approve? [y/N]: ` を描画。
+3. 入力ループが次の stdin 行を読み、`y`／`yes` のみ承認、それ以外（空入力／別単語）は拒否として `oneshot` に送信。
+4. agent タスクは応答に従ってツールを実行、または `user denied tool execution` を返却。
+
+承認スキップ（自動許可）の経路：
+
+| 経路 | 例 | 反映 |
+|------|-----|------|
+| 設定ファイル | `[runtime] auto_approve_tools = true` | 起動時 |
+| CLI フラグ | `agent-cli run --auto-approve-tools` | 起動時のみ上書き |
+| REPL コマンド | `/auto on` | 即時。`/auto off` で承認モードへ復帰、`/auto status` で現在値表示 |
+
+実装上、`auto_approve` は `Arc<AtomicBool>` として agent と REPL 間で共有されており、`/auto on`／`/auto off` でセッション中いつでも切り替えできます。
 
 ## `shell`
 
@@ -37,7 +58,7 @@
 
 - `bash -lc` 経由のため、`bash` がインストールされている必要があります。
 - タイムアウト超過時は `ok=false` で `timed out after <N> seconds: <cmd>` を返します。
-- 承認モードが `false` の場合、対話 y/N が必要です。
+- `auto_approve_tools=false`（既定）の場合、対話 y/N が必要です（上記「ツール実行承認」参照）。`/auto on` でセッション中は無効化できます。
 
 ### 例
 

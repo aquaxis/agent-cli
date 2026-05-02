@@ -42,11 +42,16 @@ thinking    = true                           # thinking ブロックを有効化
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-agent-cli --provider claude doctor
-agent-cli --provider claude selftest
+# doctor は config の provider.kind を使うため、claude を確認したい場合は
+# 設定ファイル側で kind = "claude" にしておくか、専用 config を渡す
+agent-cli doctor                 # 設定ファイルが claude のとき
+agent-cli --config ./claude.toml doctor
+
+# selftest は --provider で上書き可能
+agent-cli selftest --provider claude
 ```
 
-両方とも終了コード 0 になればバックエンドは健全です。
+`doctor` は OK／FAIL 一括判定、`selftest` は 5 ステージ構成（Provider／shell ツール／IPC／子プロセス起動／子プロセス AI 応答）です。両方とも終了コード 0 ならバックエンドは健全です。
 
 ## プロキシ／互換サーバー
 

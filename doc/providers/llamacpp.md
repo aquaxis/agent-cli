@@ -36,8 +36,10 @@ api_key_env = "LLAMACPP_API_KEY"   # 任意。Bearer 認証付きビルド時の
 
 ```bash
 ./llama-server --port 8080 -m model.gguf &
-agent-cli --provider llama.cpp doctor
-agent-cli --provider llama.cpp selftest --provider llama.cpp
+# doctor は config の provider.kind を使う
+agent-cli --config ./llamacpp.toml doctor
+# selftest は --provider で上書き可能
+agent-cli selftest --provider llama.cpp
 ```
 
 ## 推奨モデル
