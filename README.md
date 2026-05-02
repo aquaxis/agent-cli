@@ -6,13 +6,15 @@
 
 ## 特徴
 
-- 単独起動：tmux不要。`agent-cli`をシェルから直接実行
+- 単独起動：tmux不要。`agent-cli`をシェルから直接実行（`agent-cli run`の省略形）
 - Claude Code相当のREPL＋tools／thinkingを内蔵（自前実装）
 - 4バックエンド対応：`claude` / `codex` / `ollama` / `llama.cpp`
 - マルチエージェント協調：別プロセス間で`/send <peer> <text>`相互通信
 - ペルソナファイル（YAMLフロントマター＋Markdown）で役割・スキル・ツール権限を定義
-- シェル／ファイルR/W／ピア送信ツール内蔵
-- 自己診断`agent-cli doctor`／スモークテスト`agent-cli selftest`
+- シェル／ファイルR/W／ピア送信ツール内蔵。承認モードは`/auto on`で実行時切替可能
+- ストリーミング応答とREPLプロンプトを同期し、応答完了後に必ず次プロンプトを再描画
+- `/quit`／`/exit`／`Ctrl+D`／`Ctrl+C`／`SIGTERM`のいずれでも1秒以内に確実終了し、IPCソケット・レジストリメタを自動クリーンアップ
+- 自己診断`agent-cli doctor`／スモークテスト`agent-cli selftest`（5ステージ：Provider／shellツール／IPC／子プロセス起動／子プロセスAI応答）
 
 ## 対応バックエンド
 
@@ -67,8 +69,10 @@ agent-cli config path
 # 2. APIキーを環境変数に設定（claudeを使う場合）
 export ANTHROPIC_API_KEY=sk-...
 
-# 3. REPLを起動
-agent-cli run --provider claude
+# 3. REPLを起動（引数なし `agent-cli` も `agent-cli run` と等価）
+agent-cli                       # 設定ファイルの provider.kind を使う
+# あるいは
+agent-cli run --provider claude # 上書き指定
 
 # 4. 別ターミナルでollamaバックエンドの2人目を起動
 agent-cli run --provider ollama --model glm-5.1:cloud --name bob
@@ -76,6 +80,9 @@ agent-cli run --provider ollama --model glm-5.1:cloud --name bob
 # 5. 1つ目のターミナルから2つ目へプロンプト送信
 > /list
 > /send bob "hello from claude side"
+
+# 6. REPLを抜ける
+> /quit       # または /exit、Ctrl+D、Ctrl+C のいずれでも可
 ```
 
 ## 設定方法
@@ -121,7 +128,23 @@ model    = "glm-5.1:cloud"
 | `agent-cli config edit` | エディターで設定を開く |
 | `agent-cli config path` | 設定ファイルのパス表示 |
 
-REPL内では`/list` `/send <peer> <text>` `/tools` `/cancel` `/auto [on|off|status]` `/help` `/quit`（エイリアス：`/exit`）などが使えます。
+REPL内では以下の`/`コマンドが使えます。
+
+| コマンド | 用途 |
+|---------|------|
+| `/list` | 稼働中のピア一覧 |
+| `/send <peer> <text>` | 指定ピアへプロンプト送信 |
+| `/tools` | 有効なツール名一覧 |
+| `/persona` | 自身のペルソナ表示 |
+| `/reload-persona` | ペルソナ再読込（履歴は維持） |
+| `/peer <id_or_name>` | 指定ピアのペルソナ概要 |
+| `/history [n]` | 最近の入力履歴 |
+| `/cancel` | 進行中処理の中断要求 |
+| `/auto [on\|off\|status]` | ツール承認スキップの実行時切替 |
+| `/help` | 一覧表示 |
+| `/quit`、`/exit` | 終了（互いに完全エイリアス） |
+
+詳細は[`doc/usage.md`](doc/usage.md)を参照。
 
 ### ツール承認をスキップする
 
@@ -133,18 +156,37 @@ REPL内では`/list` `/send <peer> <text>` `/tools` `/cancel` `/auto [on|off|sta
 | CLIフラグ | `agent-cli run --auto-approve-tools` |
 | REPLコマンド | `/auto on`（`/auto off`で承認モードへ復帰、`/auto status`で現在値表示） |
 
+承認モードのまま実行されたツール要求は`[tool approval] <tool> <args>` バナーと`approve? [y/N]: `を表示します。`y`／`yes`のみ承認、それ以外（空入力や別単語）は拒否扱いです。
+
+### 終了方法
+
+以下のいずれでも確実に終了し、IPCソケット（`<registry_dir>/<agent-id>.sock`）とレジストリメタ（`<registry_dir>/<agent-id>.json`）を自動削除します。応答ストリーミング中／ツール実行中であっても1秒以内に終了します。
+
+| 経路 | 操作 |
+|------|------|
+| REPLコマンド | `/quit` または `/exit` |
+| EOF | `Ctrl+D`（標準入力の終端） |
+| シグナル | `Ctrl+C`（SIGINT）または `kill <pid>`（SIGTERM） |
+
 ## 検証
 
 ```bash
-# 自動テスト
+# 自動テスト（53件）
 cargo test
+
+# フォーマット／リント
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
 
 # 自己診断
 agent-cli doctor
 
-# スモークテスト
+# スモークテスト（5ステージ：Provider／shellツール／IPC／子プロセス起動／子プロセスAI応答）
 agent-cli selftest --provider claude
 agent-cli selftest --provider ollama
+
+# 半自動受け入れシナリオ（環境変数の有無で SKIP/PASS/FAIL を集計）
+scripts/manual_acceptance.sh
 ```
 
 ## ペルソナ
