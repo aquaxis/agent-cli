@@ -121,7 +121,17 @@ model    = "glm-5.1:cloud"
 | `agent-cli config edit` | エディターで設定を開く |
 | `agent-cli config path` | 設定ファイルのパス表示 |
 
-REPL内では`/list` `/send <peer> <text>` `/tools` `/cancel` `/help` `/quit`などが使えます。
+REPL内では`/list` `/send <peer> <text>` `/tools` `/cancel` `/auto [on|off|status]` `/help` `/quit`（エイリアス：`/exit`）などが使えます。
+
+### ツール承認をスキップする
+
+シェル等のツール呼び出しは既定でy/N承認を求めます。承認スキップ（自動許可）に切り替える経路は3つあります。
+
+| 経路 | 例 |
+|------|-----|
+| 設定ファイル | `[runtime] auto_approve_tools = true` |
+| CLIフラグ | `agent-cli run --auto-approve-tools` |
+| REPLコマンド | `/auto on`（`/auto off`で承認モードへ復帰、`/auto status`で現在値表示） |
 
 ## 検証
 
