@@ -9,10 +9,9 @@ use crate::error::{AppError, Result};
 use crate::ipc::IpcMessage;
 
 pub struct IpcServer {
-    #[allow(dead_code)]
     pub socket_path: PathBuf,
-    pub rx: mpsc::Receiver<IpcMessage>,
-    _task: tokio::task::JoinHandle<()>,
+    pub rx: Option<mpsc::Receiver<IpcMessage>>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 impl IpcServer {
@@ -53,13 +52,28 @@ impl IpcServer {
 
         Ok(Self {
             socket_path,
-            rx,
-            _task: task,
+            rx: Some(rx),
+            task,
         })
     }
 
+    /// 受信チャネルを所有権ごと取り出す。`bind` 直後に一度だけ呼べる。
+    pub fn take_rx(&mut self) -> Option<mpsc::Receiver<IpcMessage>> {
+        self.rx.take()
+    }
+
+    /// ソケットファイルを削除する。`Drop` でも自動的に行われるが、明示削除したい場合用。
     pub fn cleanup(path: &Path) {
         let _ = std::fs::remove_file(path);
+    }
+}
+
+impl Drop for IpcServer {
+    /// accept ループを停止し、Unix ソケットファイルを削除する。
+    /// FR-13「アプリ終了」の保証として、`run` 完了経路（正常終了／パニック）いずれでも socket が残らないことを担保する。
+    fn drop(&mut self) {
+        self.task.abort();
+        let _ = std::fs::remove_file(&self.socket_path);
     }
 }
 
@@ -113,6 +127,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.sock");
         let mut server = IpcServer::bind(path.clone()).await.unwrap();
+        let mut rx = server.take_rx().expect("rx not taken yet");
         let from = AgentId::new();
         let msg = IpcMessage::Prompt {
             from: from.clone(),
@@ -121,7 +136,7 @@ mod tests {
         };
         let resp = client::send(&path, &msg).await.unwrap();
         assert!(matches!(resp, IpcMessage::Ack { .. }));
-        let received = tokio::time::timeout(std::time::Duration::from_secs(2), server.rx.recv())
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
             .await
             .expect("recv timeout")
             .expect("channel closed");
@@ -129,5 +144,22 @@ mod tests {
             IpcMessage::Prompt { text, .. } => assert_eq!(text, "hello"),
             other => panic!("unexpected message: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn drop_removes_socket_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("drop.sock");
+        {
+            let _server = IpcServer::bind(path.clone()).await.unwrap();
+            assert!(path.exists(), "socket should exist while server is alive");
+        }
+        // 短い待ち：Drop は同期的だが、念のため
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !path.exists(),
+            "socket file should be removed by Drop, but {} still exists",
+            path.display()
+        );
     }
 }

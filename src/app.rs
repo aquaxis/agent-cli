@@ -1,10 +1,11 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::{mpsc, RwLock};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::sync::{mpsc, watch, RwLock};
 
 use crate::agent::{Agent, AgentEvent, AgentInput};
 use crate::ai;
@@ -20,7 +21,7 @@ use crate::persona::{self, Persona, PersonaResolution};
 use crate::tools::ToolRegistry;
 
 /// REPL コマンドハンドラから参照する共有状態。
-struct ReplState {
+pub(crate) struct ReplState {
     registry_dir: PathBuf,
     agents_dir: PathBuf,
     persona_file_setting: String,
@@ -95,7 +96,10 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
     let registry_dir = config.registry_dir()?;
     let socket_path = registry_dir.join(format!("{}.sock", id.as_str()));
 
-    let ipc_server = IpcServer::bind(socket_path.clone()).await?;
+    let mut ipc_server = IpcServer::bind(socket_path.clone()).await?;
+    let mut ipc_rx = ipc_server
+        .take_rx()
+        .expect("IpcServer rx should be available immediately after bind");
 
     let entry = RegistryEntry {
         id: id.clone(),
@@ -153,6 +157,10 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
 
+    // shutdown 連携チャネル（FR-13／設計書 4.9）。`/quit`／EOF／SIGINT／SIGTERM の
+    // いずれを契機としても、`shutdown_tx.send(true)` が全タスクに伝播する。
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
     print_header(
         &id,
         name.as_deref(),
@@ -165,73 +173,66 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
     // Agent タスク
     let agent_handle = tokio::spawn(async move { agent.run(input_rx, event_tx).await });
 
-    // IPC 受信を AgentInput に流す
-    let input_tx_for_ipc = input_tx.clone();
-    let mut ipc_rx = ipc_server.rx;
-    tokio::spawn(async move {
-        while let Some(msg) = ipc_rx.recv().await {
-            if let IpcMessage::Prompt {
-                from,
-                from_name,
-                text,
-            } = msg
-            {
-                let _ = input_tx_for_ipc
-                    .send(AgentInput::PeerPrompt {
-                        from,
-                        from_name,
-                        text,
-                    })
-                    .await;
-            }
-        }
-    });
+    // SIGINT / SIGTERM ハンドラ
+    let signal_task = {
+        let shutdown_tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            wait_for_termination_signal().await;
+            tracing::debug!("termination signal received, broadcasting shutdown");
+            let _ = shutdown_tx.send(true);
+        })
+    };
 
-    // 標準入力の読み取り
-    let input_tx_for_stdin = input_tx.clone();
-    let state_for_stdin = state.clone();
-    let stdin_task = tokio::spawn(async move {
-        let stdin = tokio::io::stdin();
-        let reader = BufReader::new(stdin);
-        let mut lines = reader.lines();
-        loop {
-            print_prompt();
-            let next = lines.next_line().await;
-            match next {
-                Ok(Some(line)) => {
-                    let trimmed = line.trim_end_matches('\r').trim().to_string();
-                    if let Some(rest) = trimmed.strip_prefix('/') {
-                        if !handle_repl_command(rest, &input_tx_for_stdin, &state_for_stdin).await {
+    // IPC 受信を AgentInput に流す（shutdown 監視つき）
+    let input_tx_for_ipc = input_tx.clone();
+    let ipc_task = {
+        let mut shutdown_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    res = ipc_rx.recv() => {
+                        match res {
+                            Some(IpcMessage::Prompt { from, from_name, text }) => {
+                                if input_tx_for_ipc
+                                    .send(AgentInput::PeerPrompt { from, from_name, text })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Some(_) => {}
+                            None => break,
+                        }
+                    }
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
                             break;
                         }
-                        continue;
-                    }
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    // 履歴へ保存（永続＋メモリ）
-                    append_history(&state_for_stdin.history_path, &trimmed);
-                    {
-                        let mut h = state_for_stdin.history.write().await;
-                        h.push(trimmed.clone());
-                        let len = h.len();
-                        if len > HISTORY_LIMIT {
-                            h.drain(..len - HISTORY_LIMIT);
-                        }
-                    }
-                    if input_tx_for_stdin
-                        .send(AgentInput::UserPrompt(trimmed))
-                        .await
-                        .is_err()
-                    {
-                        break;
                     }
                 }
-                Ok(None) => break,
-                Err(_) => break,
             }
-        }
-    });
+        })
+    };
+
+    // 標準入力の読み取り（refactor 済み：run_input_loop で testable）
+    let input_tx_for_stdin = input_tx.clone();
+    let state_for_stdin = state.clone();
+    let stdin_task = {
+        let shutdown_tx = shutdown_tx.clone();
+        let shutdown_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            run_input_loop(
+                tokio::io::stdin(),
+                input_tx_for_stdin,
+                state_for_stdin,
+                shutdown_tx,
+                shutdown_rx,
+                true,
+            )
+            .await;
+        })
+    };
 
     // イベント表示
     let display_task = tokio::spawn(async move {
@@ -240,14 +241,150 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
         }
     });
 
+    // shutdown 通知を受けるまでブロック（複数経路の合流点）
+    {
+        let mut shutdown_rx = shutdown_rx.clone();
+        loop {
+            if *shutdown_rx.borrow() {
+                break;
+            }
+            if shutdown_rx.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+    // 入力経路を停止
+    stdin_task.abort();
     let _ = stdin_task.await;
+    ipc_task.abort();
+    let _ = ipc_task.await;
+    signal_task.abort();
+    let _ = signal_task.await;
+
+    // 残った input senders を解放 → input_rx が None を返し、agent ループが終了する
     drop(input_tx);
+
+    // agent タスクの終了を待つ。in-flight の Provider ストリームがある場合に備えて
+    // 短いタイムアウトを設け、超過時は abort する（FR-13: 1 秒以内目標）。
+    let agent_abort = agent_handle.abort_handle();
+    let abort_timer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        agent_abort.abort();
+    });
     let _ = agent_handle.await;
+    abort_timer.abort();
+    let _ = abort_timer.await;
+    // event_tx は agent のクロージャ終了で drop され、display_task が抜ける
     let _ = display_task.await;
 
+    // IPC サーバーと registry handle は Drop で自動クリーンアップされるが、
+    // 二重実行は無害なので明示的にも実行しておく。
+    drop(ipc_server);
     registry_handle.cleanup();
     IpcServer::cleanup(&socket_path);
     Ok(())
+}
+
+/// 標準入力（または任意の `AsyncRead`）からの行入力を `AgentInput` に変換するメインループ。
+///
+/// FR-13「アプリ終了」の入力側エンドポイント：
+/// - `/quit` を受領した場合は `shutdown_tx` に `true` を送信して終了。
+/// - `lines.next_line()` が `Ok(None)` を返した（EOF=`Ctrl+D`）場合も同様。
+/// - `shutdown_rx` の通知を受けた場合（SIGINT などの外部経路）も即座に終了。
+///
+/// `interactive` が `true` のときのみプロンプト（`> `）を描画する。
+/// 単体テストでは `interactive = false` で標準出力を汚さない。
+pub(crate) async fn run_input_loop<R>(
+    reader: R,
+    input_tx: mpsc::Sender<AgentInput>,
+    state: Arc<ReplState>,
+    shutdown_tx: watch::Sender<bool>,
+    mut shutdown_rx: watch::Receiver<bool>,
+    interactive: bool,
+) where
+    R: AsyncRead + Unpin,
+{
+    let buffered = BufReader::new(reader);
+    let mut lines = buffered.lines();
+    loop {
+        if interactive {
+            print_prompt();
+        }
+        tokio::select! {
+            biased;
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+            next = lines.next_line() => {
+                match next {
+                    Ok(Some(line)) => {
+                        let trimmed = line.trim_end_matches('\r').trim().to_string();
+                        if let Some(rest) = trimmed.strip_prefix('/') {
+                            if !handle_repl_command(rest, &input_tx, &state).await {
+                                break;
+                            }
+                            continue;
+                        }
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        // 履歴へ保存（永続＋メモリ）
+                        append_history(&state.history_path, &trimmed);
+                        {
+                            let mut h = state.history.write().await;
+                            h.push(trimmed.clone());
+                            let len = h.len();
+                            if len > HISTORY_LIMIT {
+                                h.drain(..len - HISTORY_LIMIT);
+                            }
+                        }
+                        if input_tx.send(AgentInput::UserPrompt(trimmed)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break, // EOF (Ctrl+D)
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+    let _ = shutdown_tx.send(true);
+}
+
+/// SIGINT（`Ctrl+C`）または SIGTERM を待つ。Linux 以外の環境では `ctrl_c` のみ。
+async fn wait_for_termination_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to install SIGTERM handler");
+                None
+            }
+        };
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::select! {
+            res = ctrl_c => {
+                if let Err(e) = res {
+                    tracing::warn!(error = %e, "ctrl_c handler error");
+                }
+            }
+            _ = async {
+                if let Some(s) = term.as_mut() {
+                    s.recv().await;
+                } else {
+                    futures::future::pending::<()>().await;
+                }
+            } => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 fn print_header(
@@ -499,5 +636,106 @@ fn peer_summary(arg: &str, registry_dir: &Path) {
             }
         }
         Err(e) => eprintln!("[error] {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! FR-13「アプリ終了」の入力ループ部分（`/quit` と Ctrl+D=EOF）を回帰テストする。
+    use super::*;
+    use crate::persona::Persona;
+    use std::time::Duration;
+    use tempfile::TempDir;
+    use tokio::io::AsyncWriteExt;
+
+    fn build_state(dir: &Path) -> Arc<ReplState> {
+        Arc::new(ReplState {
+            registry_dir: dir.to_path_buf(),
+            agents_dir: dir.to_path_buf(),
+            persona_file_setting: String::new(),
+            cli_persona_path: None,
+            name: Some("test".into()),
+            persona: RwLock::new(Persona::builtin_default()),
+            tool_names: Vec::new(),
+            history_path: dir.join("history.txt"),
+            history: RwLock::new(Vec::new()),
+        })
+    }
+
+    #[tokio::test]
+    async fn input_loop_terminates_on_eof() {
+        // 空 stdin（即 EOF）→ run_input_loop は break して shutdown_tx.send(true) を発行する。
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(tmp.path());
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let shutdown_observer = shutdown_rx.clone();
+
+        // EOF を即起こす reader
+        let reader = tokio::io::empty();
+
+        let handle = tokio::spawn(async move {
+            run_input_loop(reader, input_tx, state, shutdown_tx, shutdown_rx, false).await;
+        });
+
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "input loop should terminate on EOF");
+        // ループ終了後、shutdown_tx.send(true) が発行されている
+        assert!(
+            *shutdown_observer.borrow(),
+            "EOF should propagate as shutdown=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn input_loop_terminates_on_quit_command() {
+        // /quit を投入 → break して shutdown_tx.send(true) を発行する。
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(tmp.path());
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let shutdown_observer = shutdown_rx.clone();
+
+        let (mut writer, reader) = tokio::io::duplex(64);
+        writer.write_all(b"/quit\n").await.unwrap();
+        // writer は drop しない（テストでは /quit 経由の終了を確認する）
+
+        let handle = tokio::spawn(async move {
+            run_input_loop(reader, input_tx, state, shutdown_tx, shutdown_rx, false).await;
+        });
+
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "input loop should terminate on /quit");
+        assert!(
+            *shutdown_observer.borrow(),
+            "/quit should propagate as shutdown=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn input_loop_responds_to_external_shutdown() {
+        // 外部（SIGINT 想定）から shutdown を受領 → ループは break する。
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(tmp.path());
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        // EOF を起こさず、入力もない reader（duplex の writer 側を保持）
+        let (_writer, reader) = tokio::io::duplex(64);
+
+        let shutdown_tx_clone = shutdown_tx.clone();
+        let handle = tokio::spawn(async move {
+            run_input_loop(reader, input_tx, state, shutdown_tx, shutdown_rx, false).await;
+        });
+
+        // 100ms 後に外部から shutdown 通知
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        shutdown_tx_clone.send(true).unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(
+            result.is_ok(),
+            "input loop should terminate on external shutdown signal"
+        );
     }
 }

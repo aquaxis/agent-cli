@@ -20,9 +20,16 @@ use crate::error::Result;
 #[tokio::main]
 async fn main() {
     init_tracing();
-    if let Err(e) = run().await {
-        eprintln!("error: {e}");
-        std::process::exit(1);
+    // FR-13「アプリ終了」：run() が Ok を返した時点で全 Drop は実行済みのため、
+    // tokio runtime の停止を待たずに即座にプロセス終了する。
+    // （`tokio::io::stdin()` の内部ブロッキングスレッドが残ると runtime drop で
+    // EOF まで待たされ、SIGINT/SIGTERM 経路で終了が遅延するため。）
+    match run().await {
+        Ok(()) => std::process::exit(0),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     }
 }
 

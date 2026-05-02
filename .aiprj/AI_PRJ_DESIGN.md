@@ -70,8 +70,10 @@
 | `/reload-persona` | ペルソナファイルを再読込してシステムプロンプトに反映（履歴は保持）。 |
 | `/peer <id>` | 指定ピアのペルソナ概要を表示。 |
 | `/help` | ヘルプ表示。 |
-| `/quit` | アプリ終了。 |
+| `/quit` | アプリ終了。進行中のAI応答／ツール実行をキャンセルし、IPCソケット・レジストリメタを削除して即時終了する。 |
 | （`/`なし入力） | 自エージェントへの通常プロンプト。 |
+
+REPL外の終了経路として、標準入力EOF（`Ctrl+D`）／`Ctrl+C`（SIGINT）／`SIGTERM`も `/quit` と同等の終了処理（4.9）に合流させる。
 
 ## 2. モジュール構成（Rust crate構造）
 
@@ -383,14 +385,17 @@ pub enum AgentEvent {
 
 ### 4.2 入力処理ループ
 
-REPL入力とIPC受信を`tokio::select!`で合流させる。
+REPL入力・IPC受信・終了シグナルを`tokio::select!`で合流させる。
 
 1. 入力ソース：
-   - 標準入力（`crossterm`によるライン入力）
-   - IPCサーバーから`mpsc`で流入するメッセージ
-2. 入力先頭が`:`ならREPLコマンドとしてDispatcherへ。
+   - 標準入力（`crossterm`／`tokio::io::BufReader::lines`によるライン入力）。`lines()`が`None`を返した時点（EOF＝`Ctrl+D`）は終了要求として扱う。
+   - IPCサーバーから`mpsc`で流入するメッセージ。
+   - シグナル（`tokio::signal`によるSIGINT／SIGTERM受信）。
+   - 共通の`tokio::sync::watch`型shutdownチャネル（`/quit`ハンドラやシグナルハンドラから発火）。
+2. 入力先頭が`/`ならREPLコマンドとしてDispatcherへ。`/quit`はshutdownチャネルへ`true`を送り、当該ループを抜ける。
 3. それ以外は`AgentInput::UserPrompt`として会話ループへ。
 4. IPC受信は`AgentInput::PeerPrompt`として会話ループへ。
+5. EOF／SIGINT／SIGTERMのいずれを検出した場合も、shutdownチャネルへ通知し、4.9の終了処理に合流する。
 
 ### 4.3 会話ループ（`agent.rs`）
 
@@ -436,6 +441,41 @@ REPL入力とIPC受信を`tokio::select!`で合流させる。
 - listenしたソケットからの接続を受け、JSON Lines形式でメッセージをデシリアライズ。
 - 受信メッセージは`mpsc`チャネルで会話ループへ流す。
 - 不正フォーマットは`Error`応答を返し、接続を閉じる。
+- shutdownチャネル（4.9）からの終了通知を`tokio::select!`で監視し、新規`accept`を停止して既存接続を閉じる。
+
+### 4.9 終了処理（shutdown coordination）
+
+ユーザー操作またはシグナルから終了要求を受領した際、以下の手順でプロセスを確実に終了する。本機構は FR-13（アプリ終了）の実装基盤である。
+
+#### 終了トリガー
+
+| トリガー | 検出方法 |
+|----------|----------|
+| `/quit` REPLコマンド | Dispatcherがshutdownチャネルへ通知。 |
+| 標準入力EOF（`Ctrl+D`） | `BufReader::lines().next_line().await`が`Ok(None)`を返した時点でshutdownチャネルへ通知。 |
+| SIGINT（`Ctrl+C`） | `tokio::signal::ctrl_c()`を別タスクで待ち受け、受信時にshutdownチャネルへ通知。 |
+| SIGTERM | `tokio::signal::unix::signal(SignalKind::terminate())`を別タスクで待ち受け、受信時にshutdownチャネルへ通知。 |
+
+#### 連携方法
+
+- 共通の`tokio::sync::watch::Sender<bool>`／`Receiver<bool>`を起動時に1組生成し、入力ループ・IPCサーバー・会話ループ・各バックグラウンドタスクに`Receiver`をクローンして配布する。
+- いずれかのトリガーが`Sender::send(true)`を実行すると、すべての`Receiver`が`true`を観測し、各タスクは自タスクのクリーンアップ後に終了する。
+- 受信プロンプト処理中であっても、shutdown通知は最優先で処理する（`tokio::select!`の各armでshutdown監視を併走）。
+
+#### クリーンアップ手順
+
+1. 進行中のAIストリーム／ツール実行をキャンセル（`AgentInput::Cancel`相当を発行）。
+2. IPCサーバーの`accept`ループを停止し、開いている接続をクローズ。
+3. `<registry_dir>/<agent-id>.sock` と `<registry_dir>/<agent-id>.json` を削除。
+4. ログハンドルを`flush`して閉じる。
+5. プロセスを終了コード`0`で終了（致命的な異常時のみ非0）。
+
+#### 実装上の注意
+
+- `crossterm`を生入力モード（raw mode）で使用している場合、終了前に必ずraw modeを解除する（`crossterm::terminal::disable_raw_mode()`）。これを怠ると端末が壊れた状態で戻り、ユーザーが`reset`を要する。
+- ステップ3はDropガード（`scopeguard`等）またはRAII的なオブジェクトに集約し、panic時にも確実に動くようにする。
+- `tokio::main`からの戻り後にプロセスが即終了するよう、無限ループ・detachタスクを残さない。すべてのタスクは`JoinHandle`を保持し、shutdown後に`join`または`abort`する。
+- 別ホストでのワンライナー導入検証（FR-09-2）で、`/quit`／`Ctrl+D`いずれでも終了しない事象が報告されているため、本節の手順を実装した上で単体テスト（擬似stdinのEOFで`App::run`が完了する／`/quit`コマンドで`App::run`が完了する／終了後にソケット・メタが残らない）を追加する。
 
 ## 5. エラーハンドリング方針
 
@@ -476,6 +516,7 @@ REPL入力とIPC受信を`tokio::select!`で合流させる。
   - モックProviderで会話ループ。
   - テンポラリ`registry_dir`でIPC往復（2プロセス相当のテストハーネス）。
   - シェルツール実行（`echo`／タイムアウト／出力サイズ超過）。
+  - REPL終了経路（4.9）：擬似stdinのEOFで`App::run`が完了し、`/quit`入力で`App::run`が完了し、いずれの場合も`<registry_dir>/<agent-id>.sock`／`.json`が削除されていること。
 - CI想定：`cargo fmt --check`／`cargo clippy -- -D warnings`／`cargo test`をすべて通過させる。
 
 ### 8.2 自己診断（`agent-cli doctor`）

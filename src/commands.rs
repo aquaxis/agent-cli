@@ -463,9 +463,12 @@ enabled = []
     )
     .await;
 
-    // 子の終了：stdin を閉じれば EOF で REPL が break する
+    // 子の終了：stdin を閉じれば EOF で REPL が break する。
+    // FR-13「アプリ終了」の回帰検証として、子が自発的に終了することを確認する。
     drop(child.stdin.take());
-    let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+    let exited_naturally = tokio::time::timeout(Duration::from_secs(3), child.wait())
+        .await
+        .is_ok();
     // 念のため kill（既に終了していても無害）
     let _ = child.kill().await;
 
@@ -484,8 +487,27 @@ enabled = []
             prompt_resp
         )));
     }
+    if !exited_naturally {
+        return Err(AppError::Other(
+            "child agent did not exit on stdin EOF within 3s (FR-13)".into(),
+        ));
+    }
+    // 終了後、ソケットとレジストリメタが残っていないことを確認
+    if entry.socket.exists() {
+        return Err(AppError::Other(format!(
+            "socket file remained after exit: {}",
+            entry.socket.display()
+        )));
+    }
+    let meta_path = registry_dir.join(format!("{}.json", entry.id.as_str()));
+    if meta_path.exists() {
+        return Err(AppError::Other(format!(
+            "registry meta file remained after exit: {}",
+            meta_path.display()
+        )));
+    }
     println!(
-        "[selftest]   stage 4 ok (subprocess {} registered, Ping/Pong + Prompt/Ack)",
+        "[selftest]   stage 4 ok (subprocess {} registered, Ping/Pong + Prompt/Ack, EOF clean exit)",
         entry.id
     );
     Ok(())

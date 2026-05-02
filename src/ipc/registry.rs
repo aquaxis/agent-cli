@@ -54,6 +54,15 @@ impl RegistryHandle {
     }
 }
 
+impl Drop for RegistryHandle {
+    /// FR-13「アプリ終了」の保証として、`run` 完了経路（正常終了／パニック）いずれでも
+    /// レジストリメタ／ソケットが残らないことを担保する。
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.meta_path);
+        let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
 pub fn list_entries(dir: &Path) -> Result<Vec<RegistryEntry>> {
     let mut out = Vec::new();
     if !dir.exists() {
