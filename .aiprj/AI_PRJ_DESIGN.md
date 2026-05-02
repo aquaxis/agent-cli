@@ -69,8 +69,10 @@
 | `/persona` | 現在のペルソナ（役割・スキル）を表示。 |
 | `/reload-persona` | ペルソナファイルを再読込してシステムプロンプトに反映（履歴は保持）。 |
 | `/peer <id>` | 指定ピアのペルソナ概要を表示。 |
-| `/help` | ヘルプ表示。 |
+| `/help` | ヘルプ表示。承認スキップ手段（`/auto`／`auto_approve_tools`／`--auto-approve-tools`）を必ず併記する（FR-04-2）。 |
+| `/auto [on\|off\|status]` | ツール承認スキップの実行時切替（FR-04-2）。引数なし／`status` で現在値表示。 |
 | `/quit` | アプリ終了。進行中のAI応答／ツール実行をキャンセルし、IPCソケット・レジストリメタを削除して即時終了する。 |
+| `/exit` | `/quit` の完全エイリアス。同一の終了シーケンスを起動する（FR-13）。 |
 | （`/`なし入力） | 自エージェントへの通常プロンプト。 |
 
 REPL外の終了経路として、標準入力EOF（`Ctrl+D`）／`Ctrl+C`（SIGINT）／`SIGTERM`も `/quit` と同等の終了処理（4.9）に合流させる。
@@ -385,17 +387,49 @@ pub enum AgentEvent {
 
 ### 4.2 入力処理ループ
 
-REPL入力・IPC受信・終了シグナルを`tokio::select!`で合流させる。
+REPL入力・IPC受信・終了シグナル・AI応答完了通知を`tokio::select!`で合流させる。
 
 1. 入力ソース：
    - 標準入力（`crossterm`／`tokio::io::BufReader::lines`によるライン入力）。`lines()`が`None`を返した時点（EOF＝`Ctrl+D`）は終了要求として扱う。
    - IPCサーバーから`mpsc`で流入するメッセージ。
    - シグナル（`tokio::signal`によるSIGINT／SIGTERM受信）。
    - 共通の`tokio::sync::watch`型shutdownチャネル（`/quit`ハンドラやシグナルハンドラから発火）。
+   - 会話ループから流入する「AI応答完了通知」（FR-03-2 のためのプロンプト再描画トリガー、4.2A 参照）。
 2. 入力先頭が`/`ならREPLコマンドとしてDispatcherへ。`/quit`はshutdownチャネルへ`true`を送り、当該ループを抜ける。
 3. それ以外は`AgentInput::UserPrompt`として会話ループへ。
 4. IPC受信は`AgentInput::PeerPrompt`として会話ループへ。
 5. EOF／SIGINT／SIGTERMのいずれを検出した場合も、shutdownチャネルへ通知し、4.9の終了処理に合流する。
+
+### 4.2A プロンプト同期（FR-03-2 対応）
+
+FR-03-2「REPL入出力サイクル」を実装するため、入力プロンプト（`> `）の描画は AI 応答の境界に合わせる。具体的には次のとおり。
+
+- 状態管理：`enum PromptState { Ready, Pending }` を入力ループが保持する。`Ready` のときのみ標準入力からの読取を行い、入力受領で `Pending` に遷移する。
+- 通知経路：会話ループ（`agent.rs`）が `AgentEvent::Done` を発行する直前または直後に、入力ループへ「AI 応答完了」通知を送る。これにより `Pending` → `Ready` に戻し、改行＋`> ` を再描画する。
+  - 実装手段は専用の `tokio::sync::Notify` または `mpsc::channel::<()>` を 1 本立て、display task または agent タスクから `notify_one()` する。
+- IPC 経由の `PeerPrompt` も同様に AI 応答を引き起こすため、同じ完了通知に乗せる。`PromptState` がすでに `Ready` の場合（ユーザー入力なしで peer プロンプトが処理された場合）は通知を捨ててもよい。
+- ストリーミング途中でユーザーが Enter を押しても、`Pending` 状態のため新しい行入力は受け付けず、内部バッファにエコー描画もしない（端末の表示は荒れない）。
+- `/cancel`／SIGINT などで応答を中断した場合も、入力ループを `Ready` に戻して次のプロンプトを表示する。
+- `auto_approve_tools=false` でツール承認プロンプトが出る間は、当該プロンプト独自の y/N 待機が優先される（プロンプト同期はそれより上位の境界で機能する）。
+
+#### 視覚レイアウトの保証
+
+`Pending → Ready` 遷移時に出力されるシーケンスは次の不変条件を満たすこと（FR-03-2）：
+
+1. AI 応答の最終 Text／Thinking／Tool 出力の末尾が改行で終わっていない場合でも、`AgentEvent::Done` 受領時に `display_event` が `println!()` を実行し、必ず改行を 1 つ加える。
+2. その後 `Pending → Ready` 遷移を契機に、入力ループ次イテレーションで `print_prompt()` が `> ` を出力する。
+3. 結果として端末上には次の構造が現れる：
+
+   ```
+   > <ユーザー入力>
+   <AI 応答>
+   >
+   ```
+
+4. ユーザー入力直後（Pending 進入時）は新しい `> ` を絶対に描画しない。応答前に二重プロンプトが見える事象は本設計で禁止される。
+5. もし応答が空で終わるケース（テキスト・思考・ツール呼び出しいずれも emit されない `Done` のみ）でも、`println!()` による改行は必ず実施し、次のプロンプトが現在行の末尾にくっつかないようにする。
+
+これにより、ストリーミング出力と REPL プロンプトが画面上で混在せず、応答完了後に必ず明示的に新しい入力プロンプトが描画される。
 
 ### 4.3 会話ループ（`agent.rs`）
 
@@ -408,7 +442,44 @@ REPL入力・IPC受信・終了シグナルを`tokio::select!`で合流させる
      - `auto_approve_tools=false`ならy/N承認。
      - 実行 → 結果を会話履歴へ追加し、AIへ続報送信。
    - text → 逐次stdoutへ描画。
-4. 応答完了で次入力待機に戻る。
+4. 応答完了（`AgentEvent::Done` 発行時）に、入力ループへ「次のプロンプト準備可」を通知（4.2A）。
+5. 次入力待機に戻る。
+
+### 4.3A ツール承認の入出力統合（FR-04-1）
+
+承認プロンプト（"approve? [y/N]:"）と応答は、REPL のメイン入力ループ（4.2／4.2A）と stdin 読取経路を共有する。`std::io::stdin().read_line()` を agent タスクから直接呼ぶ実装は禁止する（tokio 側の stdin reader と OS パイプを奪い合い、入力が取り違えられるため）。
+
+#### 構成要素
+
+- `ApprovalRequest` 構造体：`{ name: String, args: Value, response: tokio::sync::oneshot::Sender<bool> }`。
+- `Agent` 構造体に `approval_tx: Option<tokio::sync::mpsc::Sender<ApprovalRequest>>` を持たせる（無設定時は従来どおり自動拒否扱い、または auto_approve に従う）。
+- 入力ループの状態を 3 値に拡張：`enum PromptState { Ready, Pending, AwaitingApproval(tokio::sync::oneshot::Sender<bool>) }`。
+- `app::run` で `mpsc::channel::<ApprovalRequest>(8)` を生成し、`agent` と `run_input_loop` に分配する。
+
+#### シーケンス
+
+1. agent が tool_use を受領し、`auto_approve == false` のとき：
+   - `(resp_tx, resp_rx) = oneshot::channel()` を作る。
+   - `approval_tx.send(ApprovalRequest { name, args, response: resp_tx }).await`。
+   - `let approved = resp_rx.await.unwrap_or(false);`
+2. 入力ループ：
+   - `tokio::select!` の arm に `approval_rx.recv()` を追加（`!matches!(state, AwaitingApproval(_))` ガード）。
+   - 受領時：承認バナーを stdout へ描画し、状態を `AwaitingApproval(resp_tx)` に遷移。
+   - 次の stdin 行を読み、`y/Y/yes/Yes/YES` のいずれかで `true`、それ以外で `false` として `resp_tx.send()`。
+   - 状態を `Pending` に戻す（agent が tool 実行→続報→Done を出すまで stdin 読取は停止）。
+3. agent は `approved` を踏まえ、ツールを実行または拒否としてログし、続報へ進む。
+
+#### `/auto` の扱い
+
+- `auto_approve` を `Arc<std::sync::atomic::AtomicBool>` で共有する。
+- `Agent` が承認チェックする際、まず `auto_approve.load(Ordering::SeqCst)` を確認し、`true` なら approval channel を経由せず即承認。
+- REPL の `/auto` コマンドハンドラがこの AtomicBool をトグルする。表示は `[auto] tool approval: on/off`。
+- 起動時の値は CLI フラグ／設定ファイルから決定し、AtomicBool に格納。
+
+#### shutdown 時の挙動
+
+- 入力ループ shutdown 経路で `AwaitingApproval(resp_tx)` 状態のまま break する場合、`resp_tx.send(false)` で承認拒否を返してから `oneshot::Sender` を drop する（agent の `resp_rx.await` が `Err(_)` で即座に解消される）。
+- agent 側は `unwrap_or(false)` で安全側倒し、その turn は denied 扱いとして終了。
 
 ### 4.4 ツール実行：シェルコマンド（`tools/shell.rs`）
 
@@ -517,6 +588,8 @@ REPL入力・IPC受信・終了シグナルを`tokio::select!`で合流させる
   - テンポラリ`registry_dir`でIPC往復（2プロセス相当のテストハーネス）。
   - シェルツール実行（`echo`／タイムアウト／出力サイズ超過）。
   - REPL終了経路（4.9）：擬似stdinのEOFで`App::run`が完了し、`/quit`入力で`App::run`が完了し、いずれの場合も`<registry_dir>/<agent-id>.sock`／`.json`が削除されていること。
+  - REPL入出力サイクル（4.2A／FR-03-2）：擬似stdinから 2 行のユーザー入力を順に投入し、それぞれが `AgentInput::UserPrompt` として agent ループに到達し、各 `Done` の後に次のプロンプトが受理されることを単体テストで保証する。
+  - ツール承認入出力統合（4.3A／FR-04-1）：擬似 `ApprovalRequest` を入力ループへ送信し、続けて擬似 stdin に "y\n" を投入すると `oneshot` 応答が `true` で帰ること、`n\n` の場合は `false` で帰ること、また AwaitingApproval 中はユーザー入力が `AgentInput::UserPrompt` として agent ループへ流出しないことを単体テストで保証する。
 - CI想定：`cargo fmt --check`／`cargo clippy -- -D warnings`／`cargo test`をすべて通過させる。
 
 ### 8.2 自己診断（`agent-cli doctor`）

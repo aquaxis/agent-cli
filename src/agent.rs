@@ -151,6 +151,9 @@ impl Agent {
                             message: e.to_string(),
                         })
                         .await;
+                    // FR-03-2：エラー終了でも 1 ターン分の `Done` を必ず発行し、
+                    // REPL 入力ループが Pending のまま固まらないようにする。
+                    let _ = event_tx.send(AgentEvent::Done).await;
                     return Ok(());
                 }
             };

@@ -161,6 +161,10 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
     // いずれを契機としても、`shutdown_tx.send(true)` が全タスクに伝播する。
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // AI 応答完了通知チャネル（FR-03-2／設計書 4.2A）。display_task が `Done` を
+    // 観測した際に発火し、入力ループの `Pending` 状態を解除する。
+    let (agent_idle_tx, agent_idle_rx) = mpsc::channel::<()>(8);
+
     print_header(
         &id,
         name.as_deref(),
@@ -228,16 +232,23 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
                 state_for_stdin,
                 shutdown_tx,
                 shutdown_rx,
+                agent_idle_rx,
                 true,
             )
             .await;
         })
     };
 
-    // イベント表示
+    // イベント表示。`Done` または `Error` を観測したら入力ループへ idle 通知（FR-03-2）。
+    // `Error` も idle として扱うのは、Provider 構築直後の失敗で `Done` が来ないケースに
+    // 入力ループが永久に Pending で固まるのを防ぐ防衛策。
     let display_task = tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
+            let is_idle = matches!(ev, AgentEvent::Done | AgentEvent::Error { .. });
             display_event(ev);
+            if is_idle {
+                let _ = agent_idle_tx.send(()).await;
+            }
         }
     });
 
@@ -285,12 +296,27 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
     Ok(())
 }
 
+/// 入力ループの状態（FR-03-2／設計書 4.2A）。
+///
+/// - `Ready`：プロンプト描画と stdin 読取を行う。
+/// - `Pending`：直前のユーザー入力に対する AI 応答を待っており、stdin 読取は抑止。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptState {
+    Ready,
+    Pending,
+}
+
 /// 標準入力（または任意の `AsyncRead`）からの行入力を `AgentInput` に変換するメインループ。
 ///
-/// FR-13「アプリ終了」の入力側エンドポイント：
-/// - `/quit` を受領した場合は `shutdown_tx` に `true` を送信して終了。
-/// - `lines.next_line()` が `Ok(None)` を返した（EOF=`Ctrl+D`）場合も同様。
-/// - `shutdown_rx` の通知を受けた場合（SIGINT などの外部経路）も即座に終了。
+/// 役割：
+/// - FR-13「アプリ終了」の入力側エンドポイント：
+///   - `/quit` を受領した場合は `shutdown_tx` に `true` を送信して終了。
+///   - `lines.next_line()` が `Ok(None)` を返した（EOF=`Ctrl+D`）場合も同様。
+///   - `shutdown_rx` の通知を受けた場合（SIGINT などの外部経路）も即座に終了。
+/// - FR-03-2「REPL入出力サイクル」のプロンプト同期：
+///   - ユーザー入力送信後は `Pending` 状態となり、`agent_idle_rx` から AI 応答完了通知
+///     （`Done` イベント検出）を受けるまで stdin を読まない。これによりストリーミング
+///     出力と入力エコーの混在を防ぐ。
 ///
 /// `interactive` が `true` のときのみプロンプト（`> `）を描画する。
 /// 単体テストでは `interactive = false` で標準出力を汚さない。
@@ -300,14 +326,16 @@ pub(crate) async fn run_input_loop<R>(
     state: Arc<ReplState>,
     shutdown_tx: watch::Sender<bool>,
     mut shutdown_rx: watch::Receiver<bool>,
+    mut agent_idle_rx: mpsc::Receiver<()>,
     interactive: bool,
 ) where
     R: AsyncRead + Unpin,
 {
     let buffered = BufReader::new(reader);
     let mut lines = buffered.lines();
+    let mut prompt_state = PromptState::Ready;
     loop {
-        if interactive {
+        if interactive && prompt_state == PromptState::Ready {
             print_prompt();
         }
         tokio::select! {
@@ -317,7 +345,18 @@ pub(crate) async fn run_input_loop<R>(
                     break;
                 }
             }
-            next = lines.next_line() => {
+            // Pending 状態のときだけ AI 応答完了通知を待つ（stdin は休止）
+            res = agent_idle_rx.recv(), if prompt_state == PromptState::Pending => {
+                match res {
+                    Some(()) => {
+                        prompt_state = PromptState::Ready;
+                        // 次のループ先頭でプロンプトが再描画される
+                    }
+                    None => break, // display_task 終了 → これ以上待っても来ない
+                }
+            }
+            // Ready 状態のときだけ stdin から読み込む
+            next = lines.next_line(), if prompt_state == PromptState::Ready => {
                 match next {
                     Ok(Some(line)) => {
                         let trimmed = line.trim_end_matches('\r').trim().to_string();
@@ -343,6 +382,9 @@ pub(crate) async fn run_input_loop<R>(
                         if input_tx.send(AgentInput::UserPrompt(trimmed)).await.is_err() {
                             break;
                         }
+                        // 過去の peer prompt 等で残った idle 通知を捨ててから Pending へ
+                        while agent_idle_rx.try_recv().is_ok() {}
+                        prompt_state = PromptState::Pending;
                     }
                     Ok(None) => break, // EOF (Ctrl+D)
                     Err(_) => break,
@@ -669,13 +711,23 @@ mod tests {
         let state = build_state(tmp.path());
         let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
         let shutdown_observer = shutdown_rx.clone();
 
         // EOF を即起こす reader
         let reader = tokio::io::empty();
 
         let handle = tokio::spawn(async move {
-            run_input_loop(reader, input_tx, state, shutdown_tx, shutdown_rx, false).await;
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                false,
+            )
+            .await;
         });
 
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
@@ -694,6 +746,7 @@ mod tests {
         let state = build_state(tmp.path());
         let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
         let shutdown_observer = shutdown_rx.clone();
 
         let (mut writer, reader) = tokio::io::duplex(64);
@@ -701,7 +754,16 @@ mod tests {
         // writer は drop しない（テストでは /quit 経由の終了を確認する）
 
         let handle = tokio::spawn(async move {
-            run_input_loop(reader, input_tx, state, shutdown_tx, shutdown_rx, false).await;
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                false,
+            )
+            .await;
         });
 
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
@@ -719,13 +781,23 @@ mod tests {
         let state = build_state(tmp.path());
         let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
 
         // EOF を起こさず、入力もない reader（duplex の writer 側を保持）
         let (_writer, reader) = tokio::io::duplex(64);
 
         let shutdown_tx_clone = shutdown_tx.clone();
         let handle = tokio::spawn(async move {
-            run_input_loop(reader, input_tx, state, shutdown_tx, shutdown_rx, false).await;
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                false,
+            )
+            .await;
         });
 
         // 100ms 後に外部から shutdown 通知
@@ -737,5 +809,129 @@ mod tests {
             result.is_ok(),
             "input loop should terminate on external shutdown signal"
         );
+    }
+
+    #[tokio::test]
+    async fn input_loop_waits_for_agent_idle_between_user_prompts() {
+        // FR-03-2 / 設計書 4.2A：
+        // ユーザー入力 1 件目を送信 → Pending → idle 受領まで 2 件目は agent へ届かない。
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(tmp.path());
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (idle_tx, idle_rx) = mpsc::channel::<()>(8);
+
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        // 2 件まとめて投入
+        writer.write_all(b"first\nsecond\n").await.unwrap();
+
+        let handle = tokio::spawn(async move {
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                false,
+            )
+            .await;
+        });
+
+        // 1 件目は速やかに到達する
+        let msg1 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
+            .await
+            .expect("first prompt timeout")
+            .expect("input_rx closed");
+        match msg1 {
+            AgentInput::UserPrompt(s) => assert_eq!(s, "first"),
+            other => panic!("expected UserPrompt(\"first\"), got {:?}", other),
+        }
+
+        // 2 件目は idle 通知が来るまで届かない（Pending 状態が stdin を抑止）
+        let blocked = tokio::time::timeout(Duration::from_millis(300), input_rx.recv()).await;
+        assert!(
+            blocked.is_err(),
+            "second prompt should not arrive while input loop is Pending"
+        );
+
+        // idle を発行 → 入力ループは Ready に復帰し、2 件目を読み込む
+        idle_tx.send(()).await.unwrap();
+
+        let msg2 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
+            .await
+            .expect("second prompt timeout")
+            .expect("input_rx closed");
+        match msg2 {
+            AgentInput::UserPrompt(s) => assert_eq!(s, "second"),
+            other => panic!("expected UserPrompt(\"second\"), got {:?}", other),
+        }
+
+        // 後始末
+        drop(writer);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    #[tokio::test]
+    async fn stale_idle_signal_is_drained_before_pending() {
+        // peer prompt 等で agent が独立して Done を出した結果として idle が溜まっていても、
+        // 次のユーザー入力直後にそれを誤って消費して Pending を即解除しないこと。
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(tmp.path());
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (idle_tx, idle_rx) = mpsc::channel::<()>(8);
+
+        // 古い idle 通知を仕込んでおく
+        idle_tx.send(()).await.unwrap();
+        idle_tx.send(()).await.unwrap();
+
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        writer.write_all(b"only\n").await.unwrap();
+
+        let handle = tokio::spawn(async move {
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                false,
+            )
+            .await;
+        });
+
+        // 入力 1 件は届く
+        let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
+            .await
+            .expect("prompt timeout")
+            .expect("input_rx closed");
+        match msg {
+            AgentInput::UserPrompt(s) => assert_eq!(s, "only"),
+            other => panic!("unexpected: {:?}", other),
+        }
+
+        // 古い idle はドレインされたので、これ以上は来ない（Pending 中、stdin は未読）
+        writer.write_all(b"should-not-pass\n").await.unwrap();
+        let blocked = tokio::time::timeout(Duration::from_millis(300), input_rx.recv()).await;
+        assert!(
+            blocked.is_err(),
+            "stale idle signals should have been drained, leaving the loop Pending"
+        );
+
+        // 新しく idle を出せば 2 件目が解放される
+        idle_tx.send(()).await.unwrap();
+        let msg2 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
+            .await
+            .expect("second prompt timeout")
+            .expect("input_rx closed");
+        match msg2 {
+            AgentInput::UserPrompt(s) => assert_eq!(s, "should-not-pass"),
+            other => panic!("unexpected: {:?}", other),
+        }
+
+        drop(writer);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 }
