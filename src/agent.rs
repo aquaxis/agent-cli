@@ -31,6 +31,9 @@ pub enum AgentInput {
         text: String,
     },
     SetSystemPrompt(String),
+    /// 会話履歴を初期化する（システムプロンプトのみ残し、User/Assistant/ToolResult を全消去）。
+    /// REPL コマンド `/clear` から発行される。
+    ClearHistory,
     Cancel,
 }
 
@@ -135,6 +138,23 @@ impl Agent {
                     let _ = event_tx
                         .send(AgentEvent::Info {
                             message: "system prompt updated".into(),
+                        })
+                        .await;
+                }
+                AgentInput::ClearHistory => {
+                    // 現在のペルソナから初期履歴（System のみ）を再構築する。
+                    // ペルソナを差し替えたい場合は別途 SetSystemPrompt を組み合わせること。
+                    let removed = self
+                        .history
+                        .iter()
+                        .filter(|m| !matches!(m, Message::System { .. }))
+                        .count();
+                    self.history = Agent::build_initial_history(&self.persona);
+                    let _ = event_tx
+                        .send(AgentEvent::Info {
+                            message: format!(
+                                "conversation history cleared ({removed} message(s) removed; persona retained)"
+                            ),
                         })
                         .await;
                 }
@@ -498,6 +518,124 @@ mod tests {
             got_info = message.contains("system prompt");
         }
         assert!(got_info);
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// `/clear` から発行される `ClearHistory` で、履歴がペルソナ由来の System のみに戻る。
+    #[tokio::test]
+    async fn clear_history_resets_to_system_only() {
+        // 1 ターン目で text を返すスクリプトを 1 つ用意（次のターンは消費されない）
+        let scripts = vec![vec![
+            ProviderEvent::Text { delta: "hi".into() },
+            ProviderEvent::Done,
+        ]];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = build_test_agent(scripts, history);
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        // Agent への可視内部状態をスパイするため、process_turn 後の history を確認する
+        // 経路がないので、ここでは Info メッセージ内の "0 message(s) removed"／"2 message(s) removed"
+        // の差分で間接的に検証する。
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+
+        // 1 ターン目：UserPrompt → Assistant text → Done を消費
+        in_tx
+            .send(AgentInput::UserPrompt("first".into()))
+            .await
+            .unwrap();
+        // text と Done を消化
+        let mut saw_done = false;
+        while let Some(ev) = ev_rx.recv().await {
+            if matches!(ev, AgentEvent::Done) {
+                saw_done = true;
+                break;
+            }
+        }
+        assert!(saw_done);
+
+        // この時点で history = [System, User("first"), Assistant("hi")]（3 件のうち System 以外 2 件）。
+        in_tx.send(AgentInput::ClearHistory).await.unwrap();
+        let info = ev_rx.recv().await.expect("info expected");
+        match info {
+            AgentEvent::Info { message } => {
+                assert!(
+                    message.contains("history cleared"),
+                    "unexpected info: {message}"
+                );
+                assert!(
+                    message.contains("2 message(s) removed"),
+                    "expected 2 messages removed, got: {message}"
+                );
+            }
+            other => panic!("expected Info, got {:?}", other),
+        }
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// `ClearHistory` 直後の履歴は System 1 件のみで、ペルソナ系統が保持されている。
+    /// （続くターンが「最初のターンと同じ」状態から始まることを担保。）
+    #[tokio::test]
+    async fn clear_history_then_next_prompt_starts_fresh() {
+        let scripts = vec![
+            vec![
+                ProviderEvent::Text {
+                    delta: "first-reply".into(),
+                },
+                ProviderEvent::Done,
+            ],
+            vec![
+                ProviderEvent::Text {
+                    delta: "second-reply".into(),
+                },
+                ProviderEvent::Done,
+            ],
+        ];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = build_test_agent(scripts, history);
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+
+        // 1 ターン目 → Done
+        in_tx
+            .send(AgentInput::UserPrompt("first".into()))
+            .await
+            .unwrap();
+        while let Some(ev) = ev_rx.recv().await {
+            if matches!(ev, AgentEvent::Done) {
+                break;
+            }
+        }
+
+        // 履歴クリア → Info を読み流す
+        in_tx.send(AgentInput::ClearHistory).await.unwrap();
+        let _ = ev_rx.recv().await;
+
+        // 2 ターン目もスクリプトに用意した通り text → Done が再度発火する
+        in_tx
+            .send(AgentInput::UserPrompt("second".into()))
+            .await
+            .unwrap();
+        let mut text = String::new();
+        let mut saw_done = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::Text { delta } => text.push_str(&delta),
+                AgentEvent::Done => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(text, "second-reply");
+        assert!(saw_done);
 
         drop(in_tx);
         let _ = handle.await;

@@ -599,16 +599,34 @@ async fn handle_repl_command(
     match cmd {
         "quit" | "exit" => return false,
         "help" => {
+            println!("Commands:");
+            println!("  /list                       List currently running peers (id / name / provider / model / role).");
             println!(
-                "Commands: /list /send <peer> <text> /tools /persona /reload-persona /peer <id> \
-                /history [n] /cancel /auto [on|off|status] /help /quit (alias: /exit)"
+                "  /send <peer> <text>         Send a one-shot prompt to a peer (id or name)."
             );
-            println!(
-                "Tool approval can be skipped via: REPL `/auto on`, CLI `--auto-approve-tools`, \
-                or config `[runtime] auto_approve_tools = true`."
-            );
+            println!("  /tools                      List tools enabled for this agent.");
+            println!("  /persona                    Show this agent's persona (role / skills / source path).");
+            println!("  /reload-persona             Re-resolve and reload the persona; system prompt is replaced, history kept.");
+            println!("  /peer <id_or_name>          Show a peer's persona summary.");
+            println!("  /history [n]                Show last n (default 20) user inputs from this session.");
+            println!("  /clear, /reset              Clear conversation history (persona / system prompt are kept).");
+            println!("  /cancel                     Request cancel of the in-flight AI response or tool call.");
+            println!("  /auto [on|off|status]       Toggle tool-approval skip. No arg / 'status' shows current value.");
+            println!("  /help                       Show this help.");
+            println!("  /quit, /exit                Terminate (full aliases). Ctrl+D, Ctrl+C, SIGTERM also exit cleanly.");
+            println!();
+            println!("Tool approval can be skipped via:");
+            println!("  - REPL command  : /auto on  (toggleable at runtime)");
+            println!("  - CLI flag      : agent-cli run --auto-approve-tools");
+            println!("  - Config file   : [runtime] auto_approve_tools = true");
         }
         "auto" => handle_auto_command(arg, state),
+        "clear" | "reset" => {
+            // 会話履歴を初期化（システムプロンプトのみ残す）。
+            if input_tx.send(AgentInput::ClearHistory).await.is_err() {
+                eprintln!("[error] failed to send clear request");
+            }
+        }
         "history" => {
             let n: usize = arg.parse().unwrap_or(20);
             let h = state.persona.read().await;
