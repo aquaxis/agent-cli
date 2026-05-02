@@ -14,6 +14,10 @@ pub struct Cli {
     #[arg(long, global = true, env = "AGENT_CLI_CONFIG")]
     pub config: Option<PathBuf>,
 
+    /// REPL 起動オプション（サブコマンド省略時にも利用可能）。
+    #[command(flatten)]
+    pub run_args: RunArgs,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -21,7 +25,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// REPL を起動して 1 エージェントとして対話を開始
-    Run(RunArgs),
+    Run,
 
     /// 稼働中のピア一覧を表示
     List,
@@ -57,23 +61,23 @@ pub enum Command {
 #[derive(Parser, Debug, Default, Clone)]
 pub struct RunArgs {
     /// エージェントの表示名
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub name: Option<String>,
 
     /// AI バックエンド (claude / codex / ollama / llama.cpp)
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub provider: Option<String>,
 
     /// バックエンドのモデル名を上書き
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub model: Option<String>,
 
     /// エージェントペルソナファイルのパス
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub persona: Option<PathBuf>,
 
     /// ツール実行を確認なしで自動承認
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub auto_approve_tools: bool,
 }
 
@@ -117,6 +121,7 @@ mod tests {
 
     #[test]
     fn cli_parses_run_with_persona_and_provider() {
+        // 明示的 run サブコマンド
         let cli = Cli::try_parse_from([
             "agent-cli",
             "--config",
@@ -134,15 +139,32 @@ mod tests {
         ])
         .expect("parse run args");
         assert!(cli.config.is_some());
-        match cli.command {
-            Some(Command::Run(args)) => {
-                assert_eq!(args.name.as_deref(), Some("alice"));
-                assert_eq!(args.provider.as_deref(), Some("ollama"));
-                assert_eq!(args.model.as_deref(), Some("glm-5.1:cloud"));
-                assert!(args.auto_approve_tools);
-            }
-            other => panic!("expected Run, got {other:?}"),
-        }
+        assert!(matches!(cli.command, Some(Command::Run)));
+        assert_eq!(cli.run_args.name.as_deref(), Some("alice"));
+        assert_eq!(cli.run_args.provider.as_deref(), Some("ollama"));
+        assert_eq!(cli.run_args.model.as_deref(), Some("glm-5.1:cloud"));
+        assert!(cli.run_args.auto_approve_tools);
+
+        // サブコマンド省略時（FR-01 等価性）
+        let cli = Cli::try_parse_from([
+            "agent-cli",
+            "--name",
+            "alice",
+            "--provider",
+            "ollama",
+            "--model",
+            "glm-5.1:cloud",
+            "--persona",
+            "/tmp/p.md",
+            "--auto-approve-tools",
+        ])
+        .expect("parse run args without subcommand");
+        assert!(cli.command.is_none());
+        assert_eq!(cli.run_args.name.as_deref(), Some("alice"));
+        assert_eq!(cli.run_args.provider.as_deref(), Some("ollama"));
+        assert_eq!(cli.run_args.model.as_deref(), Some("glm-5.1:cloud"));
+        assert!(cli.run_args.persona.is_some());
+        assert!(cli.run_args.auto_approve_tools);
     }
 
     #[test]

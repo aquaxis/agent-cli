@@ -39,6 +39,8 @@
 |------------|------|
 | `--config <path>` | 使用する設定ファイルパスを指定。未指定時は`~/.config/agent-cli/config.toml`。 |
 
+**注意（2026-05-02）**：`run`サブコマンドのオプション（`--name`、`--provider`、`--model`、`--persona`、`--auto-approve-tools`）は、サブコマンド省略時（例：`agent-cli --persona <path>`）でも等価に解釈されなければならない（FR-01）。現時点で`agent-cli --persona <path>`が`error: unexpected argument '--persona' found`となる不具合が報告されている（`.aiprj/instructions.md`）。
+
 #### サブコマンド
 
 | 形式 | 説明 |
@@ -47,7 +49,7 @@
 | `agent-cli run --name <name>` | 表示名を指定して起動。 |
 | `agent-cli run --provider <name>` | AIバックエンド（`claude`／`codex`／`ollama`／`llama.cpp`）を指定して起動。 |
 | `agent-cli run --model <model>` | バックエンドのモデル名を上書き指定。 |
-| `agent-cli run --persona <path>` | エージェントペルソナファイル（役割・スキル定義）を指定して起動。 |
+| `agent-cli run --persona <path>` | エージェントペルソナファイル（役割・スキル定義）を指定して起動。`agent-cli --persona <path>`（サブコマンド省略）も等価とする（FR-01）。 |
 | `agent-cli --config <path> run ...` | 任意の設定ファイルで起動。 |
 | `agent-cli list` | レジストリを走査し、稼働中のピア一覧を出力。 |
 | `agent-cli send <peer> <text>` | 指定ピアにプロンプトを送信して終了（受信側で応答処理）。 |

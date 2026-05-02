@@ -276,6 +276,23 @@
 
 別ホストでのワンライナー導入検証（FR-09-2）において、`/quit` および `Ctrl+D` の双方で `agent-cli` プロセスが終了しない不具合が報告された。設計書 4.9「終了処理（shutdown coordination）」に従って実装し、テストで再発防止する。
 
+### T-508 `--persona` オプションのサブコマンド省略時対応（FR-01／FR-10）[x]
+
+2026-05-02に`agent-cli --persona /path/to/file.md`が`error: unexpected argument '--persona' found`となる不具合が報告された（`.aiprj/instructions.md`）。FR-01で「引数なしの`agent-cli`実行は`agent-cli run`と等価」と規定しているため、`--persona`はサブコマンド省略時でも解釈されなければならない。他の`run`専用オプション（`--name`、`--provider`、`--model`、`--auto-approve-tools`）も同様に等価に動作すべきである。
+
+- [x] `clap`定義を修正し、`run`サブコマンドのオプション（`--name`、`--provider`、`--model`、`--persona`、`--auto-approve-tools`）がサブコマンド省略時でも解釈されるようにする
+  - `RunArgs`を`Cli`構造体に`#[command(flatten)]`でフラット化し、各フィールドに`global = true`を付与
+  - `Command::Run(RunArgs)`を`Command::Run`（引数なし）に変更
+  - `main.rs`で`Command::Run`時に`cli.run_args`を使用するよう変更
+- [x] `agent-cli --persona <path>` が `agent-cli run --persona <path>` と等価に動作することを確認
+- [x] `agent-cli --name alice`、`agent-cli --provider ollama`、`agent-cli --model xxx`、`agent-cli --auto-approve-tools` も同様に等価動作することを確認
+- [x] 単体テストを追加して、サブコマンド省略時に各オプションが正しく解釈されることを検証
+  - `cli_parses_run_with_persona_and_provider` テストを拡張し、サブコマンド省略パターンを追加
+- 検証：
+  - `agent-cli --persona /home/hidemi/hestia-test/.hestia/personas/ai.md --help` でエラーなく表示されることを確認（従来は `error: unexpected argument '--persona' found`）
+  - 全5オプション（`--name`／`--provider`／`--model`／`--persona`／`--auto-approve-tools`）がサブコマンド省略時・明示的`run`時の双方で解釈されることを確認
+  - `cargo test` 55件 PASS、`cargo fmt --check` PASS、`cargo clippy` 警告ゼロ
+
 - [x] 共通の `tokio::sync::watch::Sender<bool>` shutdown チャネルを起動時に生成し、入力ループ・IPC 転送タスク・signal タスクへ `Receiver` をクローン配布
 - [x] `/quit` REPL コマンドのハンドラから shutdown チャネルへ通知し、入力ループを break する（`run_input_loop` 末尾で `shutdown_tx.send(true)`）
 - [x] 標準入力 EOF（`Ctrl+D`）：`BufReader::lines().next_line().await` が `Ok(None)` を返した時点で shutdown チャネルへ通知する

@@ -14,7 +14,7 @@ mod log;
 mod persona;
 mod tools;
 
-use crate::cli::{Cli, Command, ConfigAction, RunArgs};
+use crate::cli::{Cli, Command, ConfigAction};
 use crate::error::Result;
 
 #[tokio::main]
@@ -47,10 +47,10 @@ async fn run() -> Result<()> {
 
     let source = config::resolve_path(cli.config.as_deref())?;
 
-    match cli.command.unwrap_or(Command::Run(RunArgs::default())) {
-        Command::Run(args) => {
+    match cli.command.unwrap_or(Command::Run) {
+        Command::Run => {
             let cfg = config::load(&source)?;
-            app::run(cfg, args).await
+            app::run(cfg, cli.run_args).await
         }
         Command::List => {
             let cfg = config::load(&source)?;
