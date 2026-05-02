@@ -88,8 +88,8 @@ agent-cli --config ./project-a.toml config path
 | `auto_approve_tools` | bool | `false` | `true` ならツール実行時の y/N 承認をスキップ。実行時は REPL コマンド `/auto on`／`/auto off`／`/auto status` で同じスイッチを切替可能 |
 | `log_dir` | string | `~/.local/share/agent-cli/logs` | 会話ログの保存先 |
 | `registry_dir` | string | 空 | エージェントレジストリの場所。空時は `$XDG_RUNTIME_DIR/agent-cli` または `/tmp/agent-cli` を使用 |
-| `agents_dir` | string | `~/.config/agent-cli/agents` | ペルソナファイルの探索先 |
-| `persona_file` | string | 空 | 明示指定するペルソナファイル。空時は `<agents_dir>/<name>.md` または組み込みへフォールバック |
+| `agents_dir` | string | `~/.config/agent-cli/agents` | ペルソナファイルの探索先（`<agents_dir>/<name>.md`）。詳細は [`doc/personas.md`](personas.md) |
+| `persona_file` | string | 空 | 明示指定するペルソナファイル。空時は `<agents_dir>/<name>.md` または組み込みへフォールバック。詳細は [`doc/personas.md`](personas.md) |
 
 ### `[tools]`
 

@@ -103,6 +103,8 @@
 
 ## ペルソナ関連
 
+詳細な解決手順は [`doc/personas.md`](personas.md) §11「トラブルシューティング」を参照。
+
 ### 起動時に `persona file not found: ...`
 
 - `--persona` または `[runtime] persona_file` で指定したパスが存在しません。
@@ -117,6 +119,7 @@
 
 - ペルソナファイルを編集していますか？ パスは `/persona` の `source` で確認できます。
 - 反映直後の応答からシステムプロンプトが切り替わります。
+- ただし `allowed_tools`／`denied_tools`／`model`／`temperature` の差し替えは現状再起動が必要です（システムプロンプトのみ即時反映）。
 
 ## 設定ファイル関連
 

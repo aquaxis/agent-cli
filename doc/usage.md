@@ -122,7 +122,7 @@ agent-cli run --name alice    # reviewer ペルソナが自動適用
 agent-cli run --name bob      # coder ペルソナが自動適用
 ```
 
-REPL 上で `/persona` を打てば、現在適用中のロールとスキルが確認できます。
+REPL 上で `/persona` を打てば、現在適用中のロールとスキルが確認できます。フロントマターの全キー（`role`／`skills`／`allowed_tools`／`denied_tools`／`model`／`temperature` 等）と運用パターンの詳細は [`doc/personas.md`](personas.md) を参照。
 
 ### 5. CLI からのワンショット送信
 

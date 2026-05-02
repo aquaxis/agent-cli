@@ -195,7 +195,9 @@ enum ProviderEvent {
 4. 組み込み既定（汎用アシスタント）
 ```
 
-ペルソナの `role`／`skills`／本文はシステムプロンプトに合成。`allowed_tools`／`denied_tools` は `ToolRegistry::build` で反映され、結果は `/tools` で確認できます。再読込は REPL の `/reload-persona`（履歴保持）。
+ペルソナの `role`／`skills`／本文はシステムプロンプトに合成。`allowed_tools`／`denied_tools` は `ToolRegistry::build` で反映され、結果は `/tools` で確認できます。`model`／`temperature` は起動時に当該プロバイダのリクエスト body へ上書き（再読込時は反映されません）。再読込は REPL の `/reload-persona`（履歴保持）。
+
+設定方法・フロントマター全キー・記述例・運用シナリオは [`doc/personas.md`](personas.md) を参照。
 
 ## 7. 終了処理（shutdown coordination）
 

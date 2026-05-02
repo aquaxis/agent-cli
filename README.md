@@ -191,17 +191,36 @@ scripts/manual_acceptance.sh
 
 ## ペルソナ
 
-エージェントの役割・スキル・ツール権限を`~/.config/agent-cli/agents/<name>.md`に定義できます。サンプルは`example/agents/`を参照してください。
+エージェントの役割（`role`）／スキル／説明／使用ツール（`allowed_tools` / `denied_tools`）／モデル／温度を、Markdown（YAMLフロントマター＋本文）で定義できます。サンプルは`example/agents/`に同梱しています。
 
 ```bash
+mkdir -p ~/.config/agent-cli/agents
 cp example/agents/reviewer.md ~/.config/agent-cli/agents/alice.md
 agent-cli run --name alice
+# → <agents_dir>/alice.md が自動的に読み込まれる
 ```
+
+解決優先順位は **`--persona <path>` → `[runtime] persona_file` → `<agents_dir>/<name>.md` → 組み込み既定** の順。最小サンプル：
+
+```markdown
+---
+name: alice
+role: コードレビュアー
+skills: [Rust, セキュリティ]
+allowed_tools: [shell, fs_read]
+denied_tools:  [fs_write]
+---
+
+あなたは熟練のレビュアーです。最小差分で修正案を提示してください。
+```
+
+詳細な記法・フロントマター全キー・運用シナリオは [`doc/personas.md`](doc/personas.md) を参照。
 
 ## ドキュメント目次
 
 - [`doc/usage.md`](doc/usage.md) — CLI／REPL コマンド詳細
 - [`doc/config.md`](doc/config.md) — 設定リファレンス（最詳細）
+- [`doc/personas.md`](doc/personas.md) — ペルソナリファレンス（フロントマター全キー・運用シナリオ）
 - [`doc/tools.md`](doc/tools.md) — 内蔵ツール仕様
 - [`doc/architecture.md`](doc/architecture.md) — アーキテクチャ概要
 - [`doc/troubleshooting.md`](doc/troubleshooting.md) — 既知の失敗と対処
