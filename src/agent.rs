@@ -1,6 +1,9 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use futures::stream::StreamExt;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::ai::{Message, Provider, ProviderEvent};
 use crate::config::Config;
@@ -9,6 +12,15 @@ use crate::id::AgentId;
 use crate::log::{ConversationLog, LogEvent};
 use crate::persona::Persona;
 use crate::tools::{ToolCtx, ToolRegistry};
+
+/// REPL 入力ループへ送る、ツール実行承認のリクエスト（FR-04-1／設計書 4.3A）。
+///
+/// `agent` タスクは `response` の `oneshot::Sender` 経由でユーザーの y/N 応答を待つ。
+pub struct ApprovalRequest {
+    pub tool_name: String,
+    pub args: Value,
+    pub response: oneshot::Sender<bool>,
+}
 
 #[derive(Debug, Clone)]
 pub enum AgentInput {
@@ -59,7 +71,10 @@ pub struct Agent {
     pub config: Config,
     pub registry_dir: std::path::PathBuf,
     pub log: Option<ConversationLog>,
-    pub auto_approve: bool,
+    /// `/auto` REPL コマンドで実行時切替されるため `Arc<AtomicBool>` で共有（FR-04-2）。
+    pub auto_approve: Arc<AtomicBool>,
+    /// 入力ループへ承認リクエストを流すチャネル。`None` の場合は承認できないので拒否扱い（FR-04-1）。
+    pub approval_tx: Option<mpsc::Sender<ApprovalRequest>>,
     pub history: Vec<Message>,
 }
 
@@ -228,8 +243,10 @@ impl Agent {
                     .ok();
                 }
 
-                if !self.auto_approve {
-                    let approved = approval_prompt(&name, &args).await;
+                if !self.auto_approve.load(Ordering::SeqCst) {
+                    let approved =
+                        request_approval(self.approval_tx.as_ref(), name.clone(), args.clone())
+                            .await;
                     if !approved {
                         let output = "user denied tool execution";
                         if let Some(l) = log {
@@ -298,14 +315,32 @@ impl Agent {
     }
 }
 
-async fn approval_prompt(name: &str, args: &Value) -> bool {
-    use std::io::{stdin, stdout, Write};
-    let _ = writeln!(stdout(), "\n[tool approval] {name} {}", args);
-    let _ = write!(stdout(), "approve? [y/N]: ");
-    let _ = stdout().flush();
-    let mut line = String::new();
-    let _ = stdin().read_line(&mut line);
-    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+/// REPL 入力ループへ承認リクエストを送って応答を待つ（FR-04-1／設計書 4.3A）。
+///
+/// - `approval_tx` が `None`（テストや承認ハンドラ未接続時）：安全側で `false` を返す。
+/// - 送信失敗（入力ループ終了済み）：`false`。
+/// - oneshot 受信失敗（入力ループが状態を破棄）：`false`。
+///
+/// 旧実装の `std::io::stdin().read_line()` 直読みは禁止（tokio 側の stdin reader と
+/// stdin を奪い合い、承認 `y` 入力が取り違えられる事象が報告された）。
+async fn request_approval(
+    approval_tx: Option<&mpsc::Sender<ApprovalRequest>>,
+    tool_name: String,
+    args: Value,
+) -> bool {
+    let Some(tx) = approval_tx else {
+        return false;
+    };
+    let (resp_tx, resp_rx) = oneshot::channel::<bool>();
+    let req = ApprovalRequest {
+        tool_name,
+        args,
+        response: resp_tx,
+    };
+    if tx.send(req).await.is_err() {
+        return false;
+    }
+    resp_rx.await.unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -331,7 +366,8 @@ mod tests {
             config: cfg,
             registry_dir: PathBuf::from("/tmp/agent-cli-tests"),
             log: None,
-            auto_approve: true,
+            auto_approve: Arc::new(AtomicBool::new(true)),
+            approval_tx: None,
             history,
         }
     }
@@ -462,6 +498,194 @@ mod tests {
             got_info = message.contains("system prompt");
         }
         assert!(got_info);
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// FR-04-1：approval_tx 経由で承認 `true` が返れば、ツールが実行されその結果が反映される。
+    #[tokio::test]
+    async fn approval_channel_grants_tool_execution() {
+        let scripts = vec![
+            vec![
+                ProviderEvent::ToolUse {
+                    id: "call-1".into(),
+                    name: "shell".into(),
+                    args: serde_json::json!({"cmd": "echo approved"}),
+                },
+                ProviderEvent::Done,
+            ],
+            vec![
+                ProviderEvent::Text {
+                    delta: "after-tool".into(),
+                },
+                ProviderEvent::Done,
+            ],
+        ];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let mut agent = build_test_agent(scripts, history);
+        // auto_approve を OFF にして承認チャネルを必須化
+        agent.auto_approve = Arc::new(AtomicBool::new(false));
+        let (approval_tx, mut approval_rx) = mpsc::channel::<ApprovalRequest>(4);
+        agent.approval_tx = Some(approval_tx);
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        // 承認リクエストに対して y（true）を返す擬似ハンドラ
+        tokio::spawn(async move {
+            while let Some(req) = approval_rx.recv().await {
+                let _ = req.response.send(true);
+            }
+        });
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::UserPrompt("run echo".into()))
+            .await
+            .unwrap();
+
+        let mut tool_ok = false;
+        let mut output_contains_marker = false;
+        let mut text = String::new();
+        let mut saw_done = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::ToolResult { name, ok, output } if name == "shell" => {
+                    tool_ok = ok;
+                    output_contains_marker = output.contains("approved");
+                }
+                AgentEvent::Text { delta } => text.push_str(&delta),
+                AgentEvent::Done => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(tool_ok, "tool should be approved and succeed");
+        assert!(
+            output_contains_marker,
+            "expected echo output to include marker"
+        );
+        assert_eq!(text, "after-tool");
+        assert!(saw_done);
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// FR-04-1：承認 `false` が返ればツールは実行されず "user denied tool execution" が返る。
+    #[tokio::test]
+    async fn approval_channel_denial_skips_tool() {
+        let scripts = vec![
+            vec![
+                ProviderEvent::ToolUse {
+                    id: "call-deny".into(),
+                    name: "shell".into(),
+                    args: serde_json::json!({"cmd": "echo denied"}),
+                },
+                ProviderEvent::Done,
+            ],
+            vec![
+                ProviderEvent::Text { delta: "ok".into() },
+                ProviderEvent::Done,
+            ],
+        ];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let mut agent = build_test_agent(scripts, history);
+        agent.auto_approve = Arc::new(AtomicBool::new(false));
+        let (approval_tx, mut approval_rx) = mpsc::channel::<ApprovalRequest>(4);
+        agent.approval_tx = Some(approval_tx);
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        tokio::spawn(async move {
+            while let Some(req) = approval_rx.recv().await {
+                let _ = req.response.send(false);
+            }
+        });
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::UserPrompt("denied".into()))
+            .await
+            .unwrap();
+
+        let mut tool_denied = false;
+        let mut saw_done = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::ToolResult { name, ok, output } if name == "shell" => {
+                    tool_denied = !ok && output.contains("denied tool execution");
+                }
+                AgentEvent::Done => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(tool_denied, "tool result should reflect user denial");
+        assert!(saw_done);
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// FR-04-2：`auto_approve = true` のとき、approval_tx を経由せず即実行される。
+    #[tokio::test]
+    async fn auto_approve_atomic_skips_approval_channel() {
+        let scripts = vec![
+            vec![
+                ProviderEvent::ToolUse {
+                    id: "call-auto".into(),
+                    name: "shell".into(),
+                    args: serde_json::json!({"cmd": "echo auto"}),
+                },
+                ProviderEvent::Done,
+            ],
+            vec![ProviderEvent::Done],
+        ];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let mut agent = build_test_agent(scripts, history);
+        // auto_approve は build_test_agent の既定で true なので明示しないが、念のため
+        agent.auto_approve.store(true, Ordering::SeqCst);
+        let (approval_tx, mut approval_rx) = mpsc::channel::<ApprovalRequest>(4);
+        agent.approval_tx = Some(approval_tx);
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::UserPrompt("auto".into()))
+            .await
+            .unwrap();
+
+        // ツール実行が approval を経由していないことを確認
+        let mut tool_ok = false;
+        let mut saw_done = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::ToolResult { name, ok, .. } if name == "shell" => {
+                    tool_ok = ok;
+                }
+                AgentEvent::Done => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(tool_ok);
+        assert!(saw_done);
+        // approval_rx に何も来ていない
+        assert!(
+            approval_rx.try_recv().is_err(),
+            "approval channel should not be invoked when auto_approve=true"
+        );
 
         drop(in_tx);
         let _ = handle.await;

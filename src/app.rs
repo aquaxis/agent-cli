@@ -1,13 +1,14 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tokio::sync::{mpsc, watch, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, RwLock};
 
-use crate::agent::{Agent, AgentEvent, AgentInput};
+use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest};
 use crate::ai;
 use crate::cli::RunArgs;
 use crate::config::Config;
@@ -31,6 +32,8 @@ pub(crate) struct ReplState {
     tool_names: Vec<String>,
     history_path: PathBuf,
     history: RwLock<Vec<String>>,
+    /// `/auto on|off|status` で切替するため `Arc<AtomicBool>` を共有（FR-04-2／設計書 4.3A）。
+    auto_approve: Arc<AtomicBool>,
 }
 
 const HISTORY_LIMIT: usize = 200;
@@ -124,7 +127,12 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
     let tool_names = tools.names();
 
     let history = Agent::build_initial_history(&resolution.persona);
-    let auto_approve = config.runtime.auto_approve_tools || args.auto_approve_tools;
+    let auto_approve = Arc::new(AtomicBool::new(
+        config.runtime.auto_approve_tools || args.auto_approve_tools,
+    ));
+
+    // 承認チャネル（FR-04-1／設計書 4.3A）。agent タスクが入力ループへ y/N を求める経路。
+    let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(8);
 
     let initial_persona = resolution.persona.clone();
     let agent = Agent {
@@ -136,7 +144,8 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
         config: config.clone(),
         registry_dir: registry_dir.clone(),
         log: Some(log),
-        auto_approve,
+        auto_approve: auto_approve.clone(),
+        approval_tx: Some(approval_tx),
         history,
     };
 
@@ -152,6 +161,7 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
         tool_names,
         history_path,
         history: RwLock::new(initial_history),
+        auto_approve: auto_approve.clone(),
     });
 
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
@@ -233,6 +243,7 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
                 shutdown_tx,
                 shutdown_rx,
                 agent_idle_rx,
+                approval_rx,
                 true,
             )
             .await;
@@ -296,14 +307,28 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
     Ok(())
 }
 
-/// 入力ループの状態（FR-03-2／設計書 4.2A）。
+/// 入力ループの状態（FR-03-2／FR-04-1／設計書 4.2A／4.3A）。
 ///
 /// - `Ready`：プロンプト描画と stdin 読取を行う。
-/// - `Pending`：直前のユーザー入力に対する AI 応答を待っており、stdin 読取は抑止。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// - `Pending`：直前のユーザー入力に対する AI 応答を待っており、通常入力の stdin 読取は抑止。
+/// - `AwaitingApproval(resp_tx)`：agent からツール実行承認を求められている状態。
+///   次の stdin 行を y/N と解釈し、`resp_tx` で agent へ返却する。
 enum PromptState {
     Ready,
     Pending,
+    AwaitingApproval(oneshot::Sender<bool>),
+}
+
+impl PromptState {
+    fn is_ready(&self) -> bool {
+        matches!(self, PromptState::Ready)
+    }
+    fn is_pending(&self) -> bool {
+        matches!(self, PromptState::Pending)
+    }
+    fn is_awaiting_approval(&self) -> bool {
+        matches!(self, PromptState::AwaitingApproval(_))
+    }
 }
 
 /// 標準入力（または任意の `AsyncRead`）からの行入力を `AgentInput` に変換するメインループ。
@@ -320,6 +345,7 @@ enum PromptState {
 ///
 /// `interactive` が `true` のときのみプロンプト（`> `）を描画する。
 /// 単体テストでは `interactive = false` で標準出力を汚さない。
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_input_loop<R>(
     reader: R,
     input_tx: mpsc::Sender<AgentInput>,
@@ -327,6 +353,7 @@ pub(crate) async fn run_input_loop<R>(
     shutdown_tx: watch::Sender<bool>,
     mut shutdown_rx: watch::Receiver<bool>,
     mut agent_idle_rx: mpsc::Receiver<()>,
+    approval_rx: mpsc::Receiver<ApprovalRequest>,
     interactive: bool,
 ) where
     R: AsyncRead + Unpin,
@@ -334,8 +361,10 @@ pub(crate) async fn run_input_loop<R>(
     let buffered = BufReader::new(reader);
     let mut lines = buffered.lines();
     let mut prompt_state = PromptState::Ready;
+    // 承認チャネルが閉じたら `None` にして以後 `pending()` 待ちに切替（busy loop 回避）
+    let mut approval_rx: Option<mpsc::Receiver<ApprovalRequest>> = Some(approval_rx);
     loop {
-        if interactive && prompt_state == PromptState::Ready {
+        if interactive && prompt_state.is_ready() {
             print_prompt();
         }
         tokio::select! {
@@ -346,7 +375,7 @@ pub(crate) async fn run_input_loop<R>(
                 }
             }
             // Pending 状態のときだけ AI 応答完了通知を待つ（stdin は休止）
-            res = agent_idle_rx.recv(), if prompt_state == PromptState::Pending => {
+            res = agent_idle_rx.recv(), if prompt_state.is_pending() => {
                 match res {
                     Some(()) => {
                         prompt_state = PromptState::Ready;
@@ -355,11 +384,51 @@ pub(crate) async fn run_input_loop<R>(
                     None => break, // display_task 終了 → これ以上待っても来ない
                 }
             }
-            // Ready 状態のときだけ stdin から読み込む
-            next = lines.next_line(), if prompt_state == PromptState::Ready => {
+            // 承認リクエスト到着（AwaitingApproval 中ではないとき限定）。FR-04-1
+            req = async {
+                match approval_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending::<Option<ApprovalRequest>>().await,
+                }
+            }, if !prompt_state.is_awaiting_approval() && approval_rx.is_some() => {
+                match req {
+                    Some(req) => {
+                        if interactive {
+                            println!();
+                            println!("[tool approval] {} {}", req.tool_name, req.args);
+                            print!("approve? [y/N]: ");
+                            let _ = std::io::stdout().flush();
+                        }
+                        prompt_state = PromptState::AwaitingApproval(req.response);
+                    }
+                    None => {
+                        // 承認チャネルが閉じた → 以後待たない
+                        approval_rx = None;
+                    }
+                }
+            }
+            // Ready または AwaitingApproval のときに stdin から読み込む
+            next = lines.next_line(), if prompt_state.is_ready() || prompt_state.is_awaiting_approval() => {
                 match next {
                     Ok(Some(line)) => {
                         let trimmed = line.trim_end_matches('\r').trim().to_string();
+
+                        // AwaitingApproval なら入力を y/N として解釈し agent へ返答
+                        if prompt_state.is_awaiting_approval() {
+                            let approved = matches!(
+                                trimmed.to_ascii_lowercase().as_str(),
+                                "y" | "yes"
+                            );
+                            // 状態を Pending に遷移させながら oneshot を取り出して送信
+                            let prev = std::mem::replace(&mut prompt_state, PromptState::Pending);
+                            if let PromptState::AwaitingApproval(resp_tx) = prev {
+                                let _ = resp_tx.send(approved);
+                            }
+                            // tool 実行→続報→Done を待つ。古い idle 通知が残っていれば drain
+                            while agent_idle_rx.try_recv().is_ok() {}
+                            continue;
+                        }
+
                         if let Some(rest) = trimmed.strip_prefix('/') {
                             if !handle_repl_command(rest, &input_tx, &state).await {
                                 break;
@@ -391,6 +460,13 @@ pub(crate) async fn run_input_loop<R>(
                 }
             }
         }
+    }
+    // shutdown 経路で AwaitingApproval を抜ける場合、agent の oneshot::Receiver を
+    // ぶら下げないよう false（拒否）を送って解放する（設計書 4.3A）。
+    if let PromptState::AwaitingApproval(resp_tx) =
+        std::mem::replace(&mut prompt_state, PromptState::Ready)
+    {
+        let _ = resp_tx.send(false);
     }
     let _ = shutdown_tx.send(true);
 }
@@ -450,7 +526,33 @@ fn print_header(
     if !persona.frontmatter.skills.is_empty() {
         println!("  skills    : {}", persona.frontmatter.skills.join(", "));
     }
-    println!("type /help for commands. ^D to exit.");
+    println!("type /help for commands. /quit, /exit, or ^D to terminate.");
+}
+
+/// `/auto [on|off|status]` ハンドラ（FR-04-2／設計書 4.3A）。
+fn handle_auto_command(arg: &str, state: &Arc<ReplState>) {
+    let arg = arg.trim().to_ascii_lowercase();
+    match arg.as_str() {
+        "on" | "true" | "1" => {
+            state.auto_approve.store(true, Ordering::SeqCst);
+            println!("[auto] tool approval: on (skipping y/N prompts)");
+        }
+        "off" | "false" | "0" => {
+            state.auto_approve.store(false, Ordering::SeqCst);
+            println!("[auto] tool approval: off (will ask y/N for each tool call)");
+        }
+        "" | "status" => {
+            let cur = if state.auto_approve.load(Ordering::SeqCst) {
+                "on"
+            } else {
+                "off"
+            };
+            println!("[auto] tool approval: {cur}");
+        }
+        other => {
+            eprintln!("usage: /auto [on|off|status]  (got: {other})");
+        }
+    }
 }
 
 fn print_prompt() {
@@ -497,8 +599,16 @@ async fn handle_repl_command(
     match cmd {
         "quit" | "exit" => return false,
         "help" => {
-            println!("/list / /send <peer> <text> / /tools / /persona / /reload-persona / /peer <id> / /history [n] / /cancel / /quit");
+            println!(
+                "Commands: /list /send <peer> <text> /tools /persona /reload-persona /peer <id> \
+                /history [n] /cancel /auto [on|off|status] /help /quit (alias: /exit)"
+            );
+            println!(
+                "Tool approval can be skipped via: REPL `/auto on`, CLI `--auto-approve-tools`, \
+                or config `[runtime] auto_approve_tools = true`."
+            );
         }
+        "auto" => handle_auto_command(arg, state),
         "history" => {
             let n: usize = arg.parse().unwrap_or(20);
             let h = state.persona.read().await;
@@ -701,7 +811,14 @@ mod tests {
             tool_names: Vec::new(),
             history_path: dir.join("history.txt"),
             history: RwLock::new(Vec::new()),
+            auto_approve: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// テスト用ヘルパー：未使用の approval チャネルを返す。
+    fn dummy_approval_rx() -> mpsc::Receiver<ApprovalRequest> {
+        let (_tx, rx) = mpsc::channel::<ApprovalRequest>(4);
+        rx
     }
 
     #[tokio::test]
@@ -725,6 +842,7 @@ mod tests {
                 shutdown_tx,
                 shutdown_rx,
                 idle_rx,
+                dummy_approval_rx(),
                 false,
             )
             .await;
@@ -761,6 +879,7 @@ mod tests {
                 shutdown_tx,
                 shutdown_rx,
                 idle_rx,
+                dummy_approval_rx(),
                 false,
             )
             .await;
@@ -795,6 +914,7 @@ mod tests {
                 shutdown_tx,
                 shutdown_rx,
                 idle_rx,
+                dummy_approval_rx(),
                 false,
             )
             .await;
@@ -833,6 +953,7 @@ mod tests {
                 shutdown_tx,
                 shutdown_rx,
                 idle_rx,
+                dummy_approval_rx(),
                 false,
             )
             .await;
@@ -897,6 +1018,7 @@ mod tests {
                 shutdown_tx,
                 shutdown_rx,
                 idle_rx,
+                dummy_approval_rx(),
                 false,
             )
             .await;
@@ -932,6 +1054,187 @@ mod tests {
         }
 
         drop(writer);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    /// FR-13／T-507：`/exit` で `/quit` 同等の終了が起きる。
+    #[tokio::test]
+    async fn input_loop_terminates_on_exit_command() {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(tmp.path());
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
+        let shutdown_observer = shutdown_rx.clone();
+
+        let (mut writer, reader) = tokio::io::duplex(64);
+        writer.write_all(b"/exit\n").await.unwrap();
+
+        let handle = tokio::spawn(async move {
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                dummy_approval_rx(),
+                false,
+            )
+            .await;
+        });
+
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "input loop should terminate on /exit");
+        assert!(
+            *shutdown_observer.borrow(),
+            "/exit should propagate as shutdown=true"
+        );
+    }
+
+    /// FR-04-1／T-506：承認リクエスト到着 → "y" 入力 → oneshot に true が届き Pending へ遷移、
+    /// その間ユーザー入力は agent へ流出しない。
+    #[tokio::test]
+    async fn approval_y_resolves_true_and_blocks_user_prompt() {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(tmp.path());
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (idle_tx, idle_rx) = mpsc::channel::<()>(8);
+        let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(4);
+
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        // 後から y を投入する
+
+        let handle = tokio::spawn(async move {
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                approval_rx,
+                false,
+            )
+            .await;
+        });
+
+        // 承認リクエスト送信
+        let (resp_tx, resp_rx) = oneshot::channel::<bool>();
+        approval_tx
+            .send(ApprovalRequest {
+                tool_name: "shell".into(),
+                args: serde_json::json!({"cmd": "echo hi"}),
+                response: resp_tx,
+            })
+            .await
+            .unwrap();
+
+        // 状態が AwaitingApproval に遷移するまで少し待つ
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // この時点でユーザーが「これは普通の入力だ」と思って打ったテキストは
+        // y/N 解釈になるべきで、UserPrompt として agent に届いてはならない。
+        writer.write_all(b"some text\n").await.unwrap();
+        let leaked = tokio::time::timeout(Duration::from_millis(200), input_rx.recv()).await;
+        assert!(
+            leaked.is_err(),
+            "approval-mode input must not reach agent as UserPrompt"
+        );
+        // 上で投入した "some text" は y/yes に該当しないので oneshot は false を受領済み
+        let approved = tokio::time::timeout(Duration::from_secs(2), resp_rx)
+            .await
+            .expect("oneshot timeout")
+            .expect("oneshot dropped");
+        assert!(!approved, "non-y input should resolve to false");
+
+        // 続けて承認リクエスト → 今度は y を投入 → true で解決
+        let (resp_tx2, resp_rx2) = oneshot::channel::<bool>();
+        approval_tx
+            .send(ApprovalRequest {
+                tool_name: "shell".into(),
+                args: serde_json::json!({"cmd": "echo hi"}),
+                response: resp_tx2,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        writer.write_all(b"y\n").await.unwrap();
+        let approved2 = tokio::time::timeout(Duration::from_secs(2), resp_rx2)
+            .await
+            .expect("oneshot2 timeout")
+            .expect("oneshot2 dropped");
+        assert!(approved2, "'y' should resolve to true");
+
+        // 承認後、Pending → idle で Ready に戻り通常入力を受け付ける
+        idle_tx.send(()).await.unwrap();
+        writer.write_all(b"after\n").await.unwrap();
+        let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
+            .await
+            .expect("post-approval prompt timeout")
+            .expect("input_rx closed");
+        match msg {
+            AgentInput::UserPrompt(s) => assert_eq!(s, "after"),
+            other => panic!("unexpected: {:?}", other),
+        }
+
+        drop(writer);
+        drop(approval_tx);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    /// FR-04-1：shutdown 経路で AwaitingApproval を抜ける際、oneshot に false（拒否）が届く。
+    #[tokio::test]
+    async fn shutdown_during_awaiting_approval_replies_false() {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(tmp.path());
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
+        let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(4);
+
+        let (_writer, reader) = tokio::io::duplex(64);
+
+        let shutdown_clone = shutdown_tx.clone();
+        let handle = tokio::spawn(async move {
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                approval_rx,
+                false,
+            )
+            .await;
+        });
+
+        // 承認リクエストを送って AwaitingApproval に遷移させる
+        let (resp_tx, resp_rx) = oneshot::channel::<bool>();
+        approval_tx
+            .send(ApprovalRequest {
+                tool_name: "shell".into(),
+                args: serde_json::json!({}),
+                response: resp_tx,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // shutdown を発火
+        shutdown_clone.send(true).unwrap();
+
+        // oneshot が false で解決される（agent 側がぶら下がらない）
+        let resp = tokio::time::timeout(Duration::from_secs(2), resp_rx)
+            .await
+            .expect("oneshot timeout");
+        match resp {
+            Ok(b) => assert!(!b, "shutdown should deny pending approval"),
+            Err(_) => panic!("oneshot was dropped without sending; agent would hang"),
+        }
+
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 }
