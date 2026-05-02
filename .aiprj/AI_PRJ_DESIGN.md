@@ -39,7 +39,7 @@
 |------------|------|
 | `--config <path>` | 使用する設定ファイルパスを指定。未指定時は`~/.config/agent-cli/config.toml`。 |
 
-**注意（2026-05-02）**：`run`サブコマンドのオプション（`--name`、`--provider`、`--model`、`--persona`、`--auto-approve-tools`）は、サブコマンド省略時（例：`agent-cli --persona <path>`）でも等価に解釈されなければならない（FR-01）。現時点で`agent-cli --persona <path>`が`error: unexpected argument '--persona' found`となる不具合が報告されている（`.aiprj/instructions.md`）。
+**注意**：`run`サブコマンドのオプション（`--name`、`--provider`、`--model`、`--persona`、`--auto-approve-tools`）は、サブコマンド省略時（例：`agent-cli --persona <path>`）でも等価に解釈される（FR-01）。実装は`Cli`構造体に`RunArgs`を`#[command(flatten)]`でフラット化し、各フィールドに`global = true`を付与することで対応済み（T-508）。
 
 #### サブコマンド
 
