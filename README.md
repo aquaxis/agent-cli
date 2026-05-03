@@ -161,6 +161,25 @@ REPL内では以下の`/`コマンドが使えます。
 
 承認モードのまま実行されたツール要求は`[tool approval] <tool> <args>` バナーと`approve? [y/N]: `を表示します。`y`／`yes`のみ承認、それ以外（空入力や別単語）は拒否扱いです。
 
+### `[thinking]` 表示の抑制
+
+`glm-5.1:cloud` のような長尺 reasoning モデルは大量の thinking トークンを返すため、REPL が `[thinking] ...` で埋まることがあります。`[ui] show_thinking` で表示量を 3 段階で制御できます。
+
+```toml
+[ui]
+show_thinking = "hidden"     # 完全に抑制
+# show_thinking = "collapsed"  # 既定。先頭 80 文字 + "..." の 1 行
+# show_thinking = "expanded"   # 全文表示
+```
+
+| 値 | 挙動 |
+|----|------|
+| `"hidden"` | `[thinking]` を一切表示しない |
+| `"collapsed"`（既定） | 各 thinking delta を「先頭 80 文字 + `...`」に切り詰め、改行があれば 1 行目のみ |
+| `"expanded"` | 受信 text を全文表示 |
+
+設定変更は `agent-cli` 再起動で反映されます。詳細は [`doc/config.md`](doc/config.md) の「UI 表示モード」を参照。
+
 ### `[info] max tool-use iterations reached` の意味
 
 REPL でこのメッセージが出るのは、AI が 1 回のユーザー入力に対して **ツール実行（tool_use）を上限回連続して繰り返しても結論に到達できなかった** ときです（無限ループ防止のための防護機構）。
@@ -185,7 +204,7 @@ REPL でこのメッセージが出るのは、AI が 1 回のユーザー入力
 ## 検証
 
 ```bash
-# 自動テスト（53件）
+# 自動テスト（74件）
 cargo test
 
 # フォーマット／リント

@@ -145,7 +145,7 @@ max_tool_iterations = 48   # 多段オーケストレーター用途
 
 | キー | 型 | 既定 | 説明 |
 |------|----|------|------|
-| `show_thinking` | string | `"collapsed"` | thinking 表示モード：`"collapsed"`／`"expanded"`／`"hidden"` |
+| `show_thinking` | string | `"collapsed"` | thinking 表示モード：`"collapsed"`（先頭 80 文字 + 1 行目のみに切り詰め）／`"expanded"`（全文）／`"hidden"`（非表示）。詳細は下記「UI 表示モード」 |
 
 ## 4. 完全サンプル
 
@@ -326,15 +326,15 @@ max_output_kb = 4096  # 4 MB
 
 ## 8. UI 表示モード
 
-`ui.show_thinking` で thinking ブロックの表示量を制御します。
+`ui.show_thinking` で thinking ブロック（Claude の `thinking_delta`／Ollama の `message.thinking`）の表示量を制御します。`agent-cli` 起動時に解釈され、未知値（`"verbose"` 等）は既定の `"collapsed"` にフォールバックします。
 
 | 値 | 挙動 |
 |----|------|
-| `"collapsed"`（既定） | 1 行サマリで表示 |
-| `"expanded"` | thinking 全文を表示 |
-| `"hidden"` | thinking を一切表示しない |
+| `"collapsed"`（既定） | 各 thinking delta を「先頭 80 文字 + `...`」に切り詰め、改行があれば 1 行目のみ。`[thinking] <truncated>...` の形式で 1 行表示 |
+| `"expanded"` | 受信した thinking text を全文逐次表示（`[thinking] <text>`） |
+| `"hidden"` | thinking 行を一切表示しない（`AgentEvent::Thinking` を REPL 側で捨てる） |
 
-> 現在の実装ではすべてのモードで `[thinking] <text>` 行を出力しています。`hidden` のサポートは今後追加予定です。
+設定変更は `agent-cli` 再起動で反映されます。実行時切替は未対応。
 
 ## 9. よくある設定ミスと診断
 

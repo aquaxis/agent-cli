@@ -113,6 +113,20 @@ Anthropic Claude バックエンド利用時に下記のような多行メッセ
 - セッション中は `/auto on` で承認スキップに切替（`/auto off` で復帰、`/auto status` で現在値表示）。
 - 永続化したい場合は設定ファイルに `[runtime] auto_approve_tools = true`、または起動時に `--auto-approve-tools`。
 
+### `[thinking]` で画面が埋まる（特に `glm-5.1:cloud`）
+
+`glm-5.1:cloud` のような長尺 reasoning モデルは応答前に大量の thinking トークンを返します。agent-cli はこれを `[thinking] <text>` で逐次表示するため、ターミナルが thinking 行で埋め尽くされて本文の応答が見えにくくなることがあります。
+
+対処：`~/.config/agent-cli/config.toml` の `[ui] show_thinking` を変更して `agent-cli` を再起動してください。
+
+| 値 | 挙動 | 推奨 |
+|----|------|------|
+| `"hidden"` | `[thinking]` を一切表示しない | thinking が不要、応答だけ見たい場合 |
+| `"collapsed"`（既定） | 各 delta を「先頭 80 文字 + `...`」の 1 行に切り詰め | thinking の存在は確認したいが詳細は不要 |
+| `"expanded"` | 全文表示（修正前の挙動） | デバッグ・推論過程を全部見たい場合 |
+
+設定変更後の反映には `agent-cli` 再起動が必要です（実行時切替は未対応）。実装と仕様の詳細は [`doc/config.md`](config.md) の「UI 表示モード」節、関連コードは `src/app.rs::display_event` および `src/config.rs::ShowThinkingMode`。
+
 ### `[info] max tool-use iterations reached` と表示される
 
 | 項目 | 内容 |

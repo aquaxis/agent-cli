@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest};
 use crate::ai;
 use crate::cli::RunArgs;
-use crate::config::{Config, ConfigSource};
+use crate::config::{Config, ConfigSource, ShowThinkingMode};
 use crate::error::Result;
 use crate::id::AgentId;
 use crate::ipc::registry::{RegistryEntry, RegistryHandle};
@@ -253,10 +253,11 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // イベント表示。`Done` または `Error` を観測したら入力ループへ idle 通知（FR-03-2）。
     // `Error` も idle として扱うのは、Provider 構築直後の失敗で `Done` が来ないケースに
     // 入力ループが永久に Pending で固まるのを防ぐ防衛策。
+    let show_thinking = config.ui.show_thinking_mode();
     let display_task = tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
             let is_idle = matches!(ev, AgentEvent::Done | AgentEvent::Error { .. });
-            display_event(ev);
+            display_event(ev, show_thinking);
             if is_idle {
                 let _ = agent_idle_tx.send(()).await;
             }
@@ -560,15 +561,22 @@ fn print_prompt() {
     let _ = std::io::stdout().flush();
 }
 
-fn display_event(ev: AgentEvent) {
+fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode) {
     match ev {
         AgentEvent::Text { delta } => {
             print!("{delta}");
             let _ = std::io::stdout().flush();
         }
-        AgentEvent::Thinking { text } => {
-            eprintln!("\n[thinking] {text}");
-        }
+        AgentEvent::Thinking { text } => match show_thinking {
+            ShowThinkingMode::Hidden => {}
+            ShowThinkingMode::Collapsed => {
+                let collapsed = collapse_thinking_text(&text);
+                eprintln!("\n[thinking] {collapsed}");
+            }
+            ShowThinkingMode::Expanded => {
+                eprintln!("\n[thinking] {text}");
+            }
+        },
         AgentEvent::ToolCall { name, args } => {
             eprintln!("\n[tool-call] {name} {args}");
         }
@@ -585,6 +593,25 @@ fn display_event(ev: AgentEvent) {
         AgentEvent::Info { message } => {
             eprintln!("[info] {message}");
         }
+    }
+}
+
+/// `[ui] show_thinking = "collapsed"` 時に thinking delta を 1 行・80 文字以内へ
+/// 切り詰める（FR-03-1-2／設計書 4.3C）。長尺 reasoning を返すモデル
+/// （`glm-5.1:cloud` 等）でも 1 ターンの REPL 出力が画面を埋め尽くさないようにする。
+fn collapse_thinking_text(text: &str) -> String {
+    const MAX: usize = 80;
+    let first_line = text.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        return String::from("...");
+    }
+    let truncated_at_chars: String = first_line.chars().take(MAX).collect();
+    let truncated = truncated_at_chars.chars().count() < first_line.chars().count();
+    let multiline = text.lines().count() > 1 || text.ends_with('\n');
+    if truncated || multiline {
+        format!("{truncated_at_chars}...")
+    } else {
+        truncated_at_chars
     }
 }
 
@@ -817,6 +844,36 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
+
+    /// FR-03-1-2／設計書 4.3C：`collapse_thinking_text` の挙動。
+    /// `[ui] show_thinking = "collapsed"` で thinking delta を 80 文字 + 改行で
+    /// 1 行に切り詰めることを保証。
+    #[test]
+    fn collapse_thinking_text_keeps_short_single_line_intact() {
+        assert_eq!(collapse_thinking_text("hello"), "hello");
+    }
+
+    #[test]
+    fn collapse_thinking_text_truncates_long_single_line() {
+        let long: String = std::iter::repeat_n('a', 200).collect();
+        let collapsed = collapse_thinking_text(&long);
+        assert!(collapsed.ends_with("..."));
+        // 末尾 "..." を除いた本文は 80 文字。
+        assert_eq!(collapsed.chars().count(), 83);
+    }
+
+    #[test]
+    fn collapse_thinking_text_truncates_to_first_line() {
+        let multi = "step 1: analyze\nstep 2: act";
+        let collapsed = collapse_thinking_text(multi);
+        assert_eq!(collapsed, "step 1: analyze...");
+    }
+
+    #[test]
+    fn collapse_thinking_text_handles_blank_input() {
+        assert_eq!(collapse_thinking_text(""), "...");
+        assert_eq!(collapse_thinking_text("\n\n"), "...");
+    }
 
     fn build_state(dir: &Path) -> Arc<ReplState> {
         Arc::new(ReplState {

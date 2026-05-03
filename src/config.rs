@@ -209,6 +209,30 @@ fn default_show_thinking() -> String {
     "collapsed".to_string()
 }
 
+/// `[ui] show_thinking` の表示モード（FR-03-1-2／設計書 4.3C）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowThinkingMode {
+    /// 一切表示しない。
+    Hidden,
+    /// 各 delta の先頭 80 文字までを表示し、残りは `...` で省略。
+    Collapsed,
+    /// 受け取ったまま全文表示。
+    Expanded,
+}
+
+impl UiConfig {
+    /// `show_thinking` 文字列を `ShowThinkingMode` へ正規化する。未知値は既定の
+    /// `Collapsed` にフォールバック（パースエラーで起動を止めない）。
+    pub fn show_thinking_mode(&self) -> ShowThinkingMode {
+        match self.show_thinking.as_str() {
+            "hidden" => ShowThinkingMode::Hidden,
+            "expanded" => ShowThinkingMode::Expanded,
+            "collapsed" => ShowThinkingMode::Collapsed,
+            _ => ShowThinkingMode::Collapsed,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ConfigSource {
     pub path: PathBuf,
@@ -375,6 +399,35 @@ max_tool_iterations = 4294967295
 "#;
         let cfg: Config = toml::from_str(toml_src).expect("u32::MAX must parse");
         assert_eq!(cfg.runtime.max_tool_iterations, u32::MAX);
+    }
+
+    /// FR-03-1-2／設計書 4.3C：`[ui] show_thinking` の文字列パース。
+    /// 既知 3 値（`hidden`／`collapsed`／`expanded`）と未知値のフォールバックを検証。
+    #[test]
+    fn show_thinking_mode_parses_known_values() {
+        for (raw, expected) in [
+            ("hidden", ShowThinkingMode::Hidden),
+            ("collapsed", ShowThinkingMode::Collapsed),
+            ("expanded", ShowThinkingMode::Expanded),
+        ] {
+            let ui = UiConfig {
+                show_thinking: raw.into(),
+            };
+            assert_eq!(ui.show_thinking_mode(), expected, "raw={raw}");
+        }
+    }
+
+    #[test]
+    fn show_thinking_mode_unknown_value_falls_back_to_collapsed() {
+        let ui = UiConfig {
+            show_thinking: "verbose".into(),
+        };
+        assert_eq!(ui.show_thinking_mode(), ShowThinkingMode::Collapsed);
+        // 未指定時（既定値）も Collapsed 相当。
+        assert_eq!(
+            UiConfig::default().show_thinking_mode(),
+            ShowThinkingMode::Collapsed
+        );
     }
 
     /// `max_tool_iterations` の既定値は 24（2026-05-03 に 8 から引き上げ）。

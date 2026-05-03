@@ -546,6 +546,68 @@ Ollama `/api/chat` の NDJSON ストリームで `message.thinking` を返すモ
 - 同フィールドが空文字の場合、`Thinking` が emit されないことを assert。
 - 既存テスト（`content` のみ／`tool_calls` のみ／`done` のみ）への回帰がないことを既存テスト群で保証。
 
+#### `[ui] show_thinking` の REPL 反映（FR-03-1-2 付随）
+
+`Provider` が emit した `ProviderEvent::Thinking` は `Agent` 経由で `AgentEvent::Thinking` として `display_task` に届く。`display_task` は起動時に解決した `ShowThinkingMode` を保持し、`display_event(ev, show_thinking)` で 3 値分岐を行う。
+
+##### `ShowThinkingMode` 型
+
+```rust
+// src/config.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShowThinkingMode {
+    Hidden,    // [ui] show_thinking = "hidden"
+    Collapsed, // [ui] show_thinking = "collapsed"（既定）
+    Expanded,  // [ui] show_thinking = "expanded"
+}
+
+impl UiConfig {
+    pub fn show_thinking_mode(&self) -> ShowThinkingMode { /* hidden | expanded | collapsed | _ */ }
+}
+```
+
+未知値（`"verbose"` 等）は `Collapsed` にフォールバック。
+
+##### `display_event` の分岐
+
+```rust
+// src/app.rs
+match show_thinking {
+    ShowThinkingMode::Hidden => { /* 何も表示しない */ }
+    ShowThinkingMode::Collapsed => {
+        let collapsed = collapse_thinking_text(&text);
+        eprintln!("\n[thinking] {collapsed}");
+    }
+    ShowThinkingMode::Expanded => {
+        eprintln!("\n[thinking] {text}");
+    }
+}
+```
+
+##### `collapse_thinking_text` のアルゴリズム
+
+入力文字列 `text` に対して：
+
+1. 最初の `\n` までを first line とする（残りは捨てる）。
+2. trim した first line が空ならば `"..."` を返す。
+3. first line を `chars()` で 80 文字までに切り詰める（`take(80)`）。
+4. 切り詰めが発生した（80 文字超）か、または元の text が複数行（`\n` を含む）ならば `"<truncated>..."` 形式で返す。それ以外は first line をそのまま返す。
+
+これにより：
+- `"hello"` → `"hello"`（短い 1 行はそのまま）
+- 長い 1 行（200 文字）→ 80 文字 + `"..."`（合計 83 文字）
+- `"step 1\nstep 2"` → `"step 1..."`（1 行目に `...` 付加）
+- `""` または `"\n\n"` → `"..."`
+
+##### テスト要件
+
+- `collapse_thinking_text_keeps_short_single_line_intact`：短い 1 行はそのまま
+- `collapse_thinking_text_truncates_long_single_line`：80 文字超で切り詰め＋`...`
+- `collapse_thinking_text_truncates_to_first_line`：複数行は 1 行目 +`...`
+- `collapse_thinking_text_handles_blank_input`：空・改行のみは `"..."`
+- `show_thinking_mode_parses_known_values`：3 値の正規化
+- `show_thinking_mode_unknown_value_falls_back_to_collapsed`：未知値の `Collapsed` フォールバック
+
 ### 4.3A ツール承認の入出力統合（FR-04-1）
 
 承認プロンプト（"approve? [y/N]:"）と応答は、REPL のメイン入力ループ（4.2／4.2A）と stdin 読取経路を共有する。`std::io::stdin().read_line()` を agent タスクから直接呼ぶ実装は禁止する（tokio 側の stdin reader と OS パイプを奪い合い、入力が取り違えられるため）。

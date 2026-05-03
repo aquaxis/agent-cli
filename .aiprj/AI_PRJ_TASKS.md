@@ -120,6 +120,40 @@
 - [x] バックエンド一覧、モデル名、APIキー設定状態を表示
 - 検証：実機実行で4バックエンド分が表示される。**達成。**
 
+### T-512 `[ui] show_thinking` 設定の REPL 反映（FR-03-1-2／設計書 4.3C 付随）[x]
+
+2026-05-03 にユーザーから「`[thinking]` が表示されるようになった。抑制する設定を追加して下さい」との要望を受領（会話）。調査の結果、`[ui] show_thinking` は `src/config.rs::UiConfig` に定義され `~/.config/agent-cli/config.toml` でも編集可能だったが、`src/app.rs::display_event` が値を一切参照せず常に `eprintln!("\n[thinking] {text}")` を実行している不具合を発見。設定が無効化されていた。
+
+T-511 で Ollama parser が `message.thinking` を実際に emit するようになったため、`glm-5.1:cloud` のような長尺 reasoning モデルでは画面が thinking で埋め尽くされる事象が顕在化した。本タスクで `show_thinking` 設定を実際に消費するよう修正する。
+
+実装結果（2026-05-03 完了）:
+- [x] `src/config.rs` に `pub enum ShowThinkingMode { Hidden, Collapsed, Expanded }` を追加
+- [x] `UiConfig::show_thinking_mode(&self) -> ShowThinkingMode` メソッド追加。`"hidden"`／`"collapsed"`／`"expanded"` の 3 値を正規化、未知値は `Collapsed` にフォールバック（パースエラーで起動を止めない）
+- [x] `src/app.rs::display_event` のシグネチャに `show_thinking: ShowThinkingMode` を追加
+- [x] `display_task` 起動時に `config.ui.show_thinking_mode()` を解決して `display_event` に渡す
+- [x] `AgentEvent::Thinking` 分岐：
+  - `Hidden` → 何も表示しない
+  - `Collapsed` → `collapse_thinking_text()` で「先頭 80 文字 + 1 行目」に切り詰め
+  - `Expanded` → 全文表示（修正前の挙動）
+- [x] `collapse_thinking_text(text)` 関数追加：first line の trim → 空なら `"..."`／非空なら 80 chars に take → 切り詰めまたは複数行なら `"<truncated>..."` を返す
+- [x] 単体テスト 6 件追加：
+  - `app::tests::collapse_thinking_text_keeps_short_single_line_intact`
+  - `app::tests::collapse_thinking_text_truncates_long_single_line`
+  - `app::tests::collapse_thinking_text_truncates_to_first_line`
+  - `app::tests::collapse_thinking_text_handles_blank_input`
+  - `config::tests::show_thinking_mode_parses_known_values`
+  - `config::tests::show_thinking_mode_unknown_value_falls_back_to_collapsed`
+- [x] `doc/config.md`「8. UI 表示モード」節を新仕様で書き換え（切り詰めアルゴリズム明記、起動時反映の注記）。`[ui]` 表の `show_thinking` 行も追従
+- [x] `doc/providers/ollama.md`「Thinking 表示の制御」表を新仕様（80 文字切り詰め）に更新、`"hidden"` 推奨を追記
+- [x] CHANGELOG.md に Added エントリを追記
+
+検証結果:
+- [x] `cargo test` 80 件 PASS（既存 74 件 ＋ 新規 6 件）
+- [x] `cargo fmt --all -- --check` PASS
+- [x] `cargo clippy --all-targets -- -D warnings` 警告ゼロ
+- [x] `cargo build --release` 成功
+- [ ] 実機検証：`[ui] show_thinking = "hidden"` で `glm-5.1:cloud` 対話 → `[thinking]` が出ないことを目視確認（要 ollama サーバー、ユーザー側で実施）
+
 ### T-511 Ollama バックエンドの `message.thinking` フィールド対応（FR-03-1-2／設計書 3.6・4.3C）[x]
 
 2026-05-03 にユーザーから `.aiprj/instructions.md` 経由で「`glm-5.1:cloud` はストリーミング応答に `message.thinking` フィールドを持つ。agent-cli の parser がこれを decode できていない可能性」との指摘を受領。

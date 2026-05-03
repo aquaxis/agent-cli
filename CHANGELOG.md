@@ -6,6 +6,7 @@
 
 ### Added
 
+- `[ui] show_thinking` 設定が REPL の thinking 表示を実際に制御するようになった（FR-03-1-2 付随、T-512）。これまで設定は定義されていたものの `display_event` で消費されていなかった。3 値を実装：`"hidden"`（一切表示しない）／`"collapsed"`（既定。各 delta を「先頭 80 文字 + 1 行目」に切り詰め）／`"expanded"`（全文表示。従来挙動）。未知値は `"collapsed"` にフォールバック。`glm-5.1:cloud` のような長尺 reasoning モデルで画面が thinking で埋め尽くされる場合は `"hidden"` を推奨。
 - Ollama parser が `message.thinking` フィールドを `ProviderEvent::Thinking` として emit するようになった（FR-03-1-2、T-511）。`glm-5.1:cloud` 等の thinking 対応モデルで REPL に `[thinking] ...` が表示される。emit 順は `Thinking` → `Text` → `ToolUse`（Anthropic 仕様と整合）。`Capabilities::thinking` も `true` に変更。
 - `[runtime] max_tool_iterations` 設定キーを追加（FR-04-3、T-510／T-510-2）。1 ターン内の tool_use 反復上限を可変設定できる。最小 1（`0`／負値は内部で `1` へ丸め込み）、最大 `u32::MAX = 4,294,967,295`。設定方法・推奨レンジ・境界値挙動は `doc/config.md` の `[runtime]` 節を参照。
 
@@ -29,11 +30,12 @@
     - REPL コマンド：`/persona` / `/reload-persona` / `/peer <id>` / `/tools`
   - 設定ファイル `~/.config/agent-cli/config.toml`、`--config` / `AGENT_CLI_CONFIG` で個別指定
   - 自己診断 `agent-cli doctor`
-  - スモークテスト `agent-cli selftest`（4 ステージ）
+  - スモークテスト `agent-cli selftest`（5 ステージ）
     - Stage 1：Provider "OK" 往復
     - Stage 2：シェルツール直接実行
     - Stage 3：IPC ラウンドトリップ
-    - Stage 4：子プロセスを起動してレジストリ登録 + Ping/Pong
+    - Stage 4：子プロセスを起動してレジストリ登録 + Ping/Pong + Prompt/Ack
+    - Stage 5：子プロセスへの peer prompt → AI 応答 → 会話ログ書き込み確認
   - ワンライナー対応 `install.sh`
   - サンプルペルソナ：`example/agents/{coder,reviewer,planner}.md`
   - ドキュメント：`README.md` / `README.en.md` / `doc/` 配下 / `CONTRIBUTING.md` / `CHANGELOG.md` / `LICENSE`
@@ -49,7 +51,7 @@
 - `cargo build` 警告ゼロ
 - `cargo clippy --all-targets -- -D warnings` 通過
 - `cargo fmt --all -- --check` 通過
-- `cargo test` 全 41 テスト成功（Provider パーサ、Agent ループ E2E、IPC、ペルソナ、ドキュメント整合性、CLI 整合性）
+- `cargo test` 全 74 テスト成功（Provider パーサ、Agent ループ E2E、IPC、ペルソナ、ドキュメント整合性、CLI 整合性、Ollama thinking、`max_tool_iterations` 境界値）
 - `cargo doc --no-deps` 警告ゼロ
 
 [Unreleased]: https://github.com/aquaxis/agent-cli/compare/HEAD...HEAD

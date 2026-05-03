@@ -65,7 +65,7 @@ base_url = "https://proxy.example.com/anthropic"
 ## 既知の制限
 
 - 大量の tool_use を伴う長時間応答時、`reqwest` のタイムアウト（120 秒）を超えると失敗します。長時間ジョブはツール側でタイムアウトを管理してください。
-- `thinking_delta` の表示は逐次行で出力されるため、ターミナル幅次第で視認性が落ちます。`ui.show_thinking = "collapsed"` を推奨。
+- `thinking_delta` の表示は逐次行で出力されるため、ターミナル幅次第で視認性が落ちます。既定の `[ui] show_thinking = "collapsed"`（先頭 80 文字 + 1 行目）が無難。完全に抑制したい場合は `"hidden"`、デバッグ等で全文必要なら `"expanded"`。詳細は [`doc/config.md`](../config.md) の「UI 表示モード」参照。
 
 ## トラブルシューティング
 

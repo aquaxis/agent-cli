@@ -88,6 +88,7 @@ stdin -> run_input_loop -> mpsc -> Agent loop -> Provider -> ProviderEvent strea
 - ツール実行は `[runtime] max_tool_iterations` 反復（既定 24、最小 1、最大 `u32::MAX`）。`agent.rs::process_turn` の `self.config.runtime.max_tool_iterations.max(1)`。無限ループ防止のための防護機構。`auto_approve_tools=false`（既定）の場合は 3.3 の承認チャネル経由で y/N を取得する。
 - 上限到達時：設定回数の反復を消化しても AI が `tool_use` を返し続ける場合、ループを抜けて `AgentEvent::Info { message: "max tool-use iterations reached" }` ＋ `AgentEvent::Done` をこの順で発行する。エラーチャネルではなく Info チャネルで通知する（「異常」ではなく「未収束」を意味するため）。REPL は通常の `Done` と同じ扱いで次入力プロンプトを再描画する。意味と対処、推奨レンジは `doc/troubleshooting.md` ／ `doc/config.md` 参照。
 - `Done` は通常応答完了だけでなく、`provider.complete_stream` の失敗時にも必ず発行され、入力ループが Pending のまま固まらない。
+- `display_task` は起動時に `config.ui.show_thinking_mode()` から `ShowThinkingMode { Hidden, Collapsed, Expanded }` を解決し、`AgentEvent::Thinking` を 3 値で分岐して描画する（FR-03-1-2／設計書 4.3C）。`Hidden` は描画スキップ、`Collapsed` は `collapse_thinking_text()` で「先頭 80 文字 + 1 行目」に切り詰め、`Expanded` は全文。設定変更は再起動で反映、実行時切替なし。
 
 ### 3.2 ピア間メッセージング
 

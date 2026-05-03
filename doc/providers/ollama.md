@@ -46,9 +46,11 @@ ollama pull llama3.1:8b        # ローカル版例
 
 | 設定 | 挙動 |
 |------|------|
-| `"collapsed"`（既定） | `[thinking] ...` の最初の数行のみ表示 |
+| `"collapsed"`（既定） | 各 thinking delta を「先頭 80 文字 + `...`」に切り詰めた 1 行で表示 |
 | `"expanded"` | thinking 全文を逐次表示 |
 | `"hidden"` | thinking を一切表示しない |
+
+ノイズが多い場合は `[ui] show_thinking = "hidden"` を推奨します。詳細は [`doc/config.md`](../config.md) の「UI 表示モード」節を参照。
 
 ## 動作確認
 
