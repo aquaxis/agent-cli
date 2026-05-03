@@ -47,8 +47,10 @@ impl CodexProvider {
             .clone()
             .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         let model = entry.model.clone().unwrap_or_else(|| "gpt-4.1".to_string());
+        // See ollama.rs — default 900s for streaming reasoning models.
+        let client_timeout = entry.request_timeout_secs.unwrap_or(900);
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(client_timeout))
             .build()?;
         Ok(Self {
             api_key,

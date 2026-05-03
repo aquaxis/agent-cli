@@ -51,8 +51,11 @@ impl ClaudeProvider {
             .model
             .clone()
             .unwrap_or_else(|| "claude-opus-4-7".to_string());
+        // Default 900s — extended thinking + tool_use loops can run several
+        // minutes; reqwest `timeout()` covers the full streaming response.
+        let client_timeout = entry.request_timeout_secs.unwrap_or(900);
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(client_timeout))
             .build()?;
         Ok(Self {
             api_key,

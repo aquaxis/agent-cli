@@ -37,8 +37,10 @@ impl LlamaCppProvider {
         let key_env = entry.api_key_env.clone();
         let api_key = key_env.as_ref().and_then(|k| std::env::var(k).ok());
         let context = ProviderContext::new(source, key_env, api_key.as_deref());
+        // See ollama.rs — default 900s for streaming reasoning models.
+        let client_timeout = entry.request_timeout_secs.unwrap_or(900);
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(180))
+            .timeout(Duration::from_secs(client_timeout))
             .build()?;
         Ok(Self {
             base_url,

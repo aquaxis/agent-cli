@@ -35,8 +35,14 @@ impl OllamaProvider {
             .model
             .clone()
             .unwrap_or_else(|| "glm-5.1:cloud".to_string());
+        // Default 900s (15 min) — cloud reasoning models (e.g. glm-5.1:cloud)
+        // can stream `thinking` tokens for several minutes before producing
+        // actual content, and reqwest's `timeout()` applies to the entire
+        // streaming response, not per-chunk. Override via
+        // `[provider.ollama] request_timeout_secs = N` in agent-cli config.
+        let client_timeout = entry.request_timeout_secs.unwrap_or(900);
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(180))
+            .timeout(Duration::from_secs(client_timeout))
             .build()?;
         // Ollama は基本的に API キー不要（ローカル）。クラウド経路で必要な場合のみ
         // entry.api_key_env が設定される運用なので、診断コンテキストには key 情報を反映する。
@@ -92,7 +98,10 @@ impl Provider for OllamaProvider {
         Capabilities {
             streaming: true,
             tool_use: true,
-            thinking: false,
+            // FR-03-1-2 / 設計書 4.3C：thinking 対応モデル（例：glm-5.1:cloud）が
+            // `message.thinking` を返すため true。非対応モデルでは parse_ndjson_line が
+            // 何も emit しないだけで害がない（方針 A）。
+            thinking: true,
         }
     }
 
@@ -199,6 +208,14 @@ pub(crate) fn parse_ndjson_line(line: &str) -> OllamaLineOutcome {
     };
     let mut events = Vec::new();
     if let Some(msg) = v.get("message") {
+        // FR-03-1-2 / 設計書 4.3C：emit 順は Thinking → Text → ToolUse（Anthropic 仕様と整合）。
+        if let Some(thinking) = msg.get("thinking").and_then(|t| t.as_str()) {
+            if !thinking.is_empty() {
+                events.push(ProviderEvent::Thinking {
+                    text: thinking.to_string(),
+                });
+            }
+        }
         if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
             if !content.is_empty() {
                 events.push(ProviderEvent::Text {
@@ -300,5 +317,64 @@ mod tests {
         let outcome = parse_ndjson_line("not-json");
         assert!(outcome.events.is_empty());
         assert!(!outcome.done);
+    }
+
+    /// FR-03-1-2 / 設計書 4.3C：`message.thinking` を `ProviderEvent::Thinking` として emit。
+    /// 同一フレーム内に thinking と content がある場合は Thinking → Text の順で発行する。
+    #[test]
+    fn parses_thinking_field_emits_thinking_event() {
+        let line = r#"{"message":{"role":"assistant","thinking":"reason about the prompt","content":"hello"},"done":false}"#;
+        let outcome = parse_ndjson_line(line);
+        assert!(!outcome.done);
+        assert_eq!(
+            outcome.events.len(),
+            2,
+            "expected Thinking + Text, got: {:?}",
+            outcome.events
+        );
+        match &outcome.events[0] {
+            ProviderEvent::Thinking { text } => {
+                assert_eq!(text, "reason about the prompt");
+            }
+            other => panic!("first event should be Thinking, got: {other:?}"),
+        }
+        match &outcome.events[1] {
+            ProviderEvent::Text { delta } => {
+                assert_eq!(delta, "hello");
+            }
+            other => panic!("second event should be Text, got: {other:?}"),
+        }
+    }
+
+    /// 空の `message.thinking` は emit しない（既存の content 空文字スキップと同方針）。
+    #[test]
+    fn empty_thinking_is_not_emitted() {
+        let line = r#"{"message":{"role":"assistant","thinking":"","content":"x"},"done":false}"#;
+        let outcome = parse_ndjson_line(line);
+        let thinking_count = outcome
+            .events
+            .iter()
+            .filter(|e| matches!(e, ProviderEvent::Thinking { .. }))
+            .count();
+        assert_eq!(thinking_count, 0, "empty thinking should not emit");
+        let text_count = outcome
+            .events
+            .iter()
+            .filter(|e| matches!(e, ProviderEvent::Text { .. }))
+            .count();
+        assert_eq!(text_count, 1, "non-empty content should still emit Text");
+    }
+
+    /// thinking のみのフレーム（content・tool_calls なし）でも Thinking が emit される。
+    /// `glm-5.1:cloud` が回答前に thinking ストリームだけを長く流すケースを想定。
+    #[test]
+    fn thinking_only_frame_emits_only_thinking() {
+        let line = r#"{"message":{"role":"assistant","thinking":"step 1: ..."},"done":false}"#;
+        let outcome = parse_ndjson_line(line);
+        assert_eq!(outcome.events.len(), 1);
+        assert!(matches!(
+            &outcome.events[0],
+            ProviderEvent::Thinking { text } if text == "step 1: ..."
+        ));
     }
 }

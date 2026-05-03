@@ -90,6 +90,41 @@ agent-cli --config ./project-a.toml config path
 | `registry_dir` | string | 空 | エージェントレジストリの場所。空時は `$XDG_RUNTIME_DIR/agent-cli` または `/tmp/agent-cli` を使用 |
 | `agents_dir` | string | `~/.config/agent-cli/agents` | ペルソナファイルの探索先（`<agents_dir>/<name>.md`）。詳細は [`doc/personas.md`](personas.md) |
 | `persona_file` | string | 空 | 明示指定するペルソナファイル。空時は `<agents_dir>/<name>.md` または組み込みへフォールバック。詳細は [`doc/personas.md`](personas.md) |
+| `max_tool_iterations` | u32 | `24` | 1 ターン内の tool_use 反復上限。最小 1（`0`／負値は内部で `1` へ丸め込み）、最大 `u32::MAX = 4,294,967,295`。無限ループ防止の防護機構。詳細は下記「`max_tool_iterations` のチューニング」を参照 |
+
+#### `max_tool_iterations` のチューニング
+
+AI が 1 回のユーザー入力に対して `tool_use → ツール結果 → tool_use → …` を繰り返すループの上限です。上限到達時は REPL に `[info] max tool-use iterations reached` を表示し、当該ターンを `Done` で終了します（エラーではなく情報通知）。
+
+**Q&A：**
+
+| 質問 | 回答 |
+|------|------|
+| 設定ファイルで変更できますか？ | はい。`[runtime] max_tool_iterations` を編集して `agent-cli` を再起動。実行中の REPL では動的には変わりません。 |
+| 無制限の設定は可能ですか？ | いいえ（厳密には）。型 `u32` のため最大 `u32::MAX = 4,294,967,295` 回まで設定可能（実用上は無制限相当）。「真の無上限ループ」は API 課金・GPU 占有・stdout 占有の暴走防止のため意図的に提供しません。事実上の無制限が必要なら `max_tool_iterations = 4294967295` を指定してください。 |
+
+**境界値挙動：**
+
+- `0` または負値：実装側で `.max(1)` により `1` 反復として動作。
+- `1` 〜 `u32::MAX`：そのまま採用。
+- `u32::MAX` 超：TOML パース時にオーバーフローエラーで起動失敗。
+
+**推奨レンジ（用途別）：**
+
+| 用途 | 推奨値 | 根拠 |
+|------|--------|------|
+| 単純対話・教育用 | `4-8` | ループ暴走時に早く打ち切れる |
+| 既定（design-then-debug 等） | `24`（既定値） | 設計成果物生成 → 検証 → lint 修正 → fs_write の典型ワークフローが収まる |
+| 多段オーケストレーター | `32-48` | 複数ツールを順次呼ぶ場合 |
+| 長尺自律実行（実験用途） | `64-256` | 大規模タスクを段階的に分解する場合 |
+| それ以上 | 非推奨 | 「ループに陥っていないか」を疑うべき範囲。`/cancel`／`Ctrl+C` で介入できる前提で運用 |
+
+設定例：
+
+```toml
+[runtime]
+max_tool_iterations = 48   # 多段オーケストレーター用途
+```
 
 ### `[tools]`
 
@@ -180,11 +215,12 @@ model    = "default"
 base_url = "http://127.0.0.1:8080"
 
 [runtime]
-auto_approve_tools = false
-log_dir            = "~/.local/share/agent-cli/logs"
-registry_dir       = "/tmp/agent-cli"
-agents_dir         = "~/.config/agent-cli/agents"
-persona_file       = ""
+auto_approve_tools  = false
+log_dir             = "~/.local/share/agent-cli/logs"
+registry_dir        = "/tmp/agent-cli"
+agents_dir          = "~/.config/agent-cli/agents"
+persona_file        = ""
+max_tool_iterations = 48                            # 多段オーケストレーター想定
 
 [tools]
 enabled = ["shell", "fs_read", "fs_write", "send_to"]

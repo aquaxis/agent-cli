@@ -6,6 +6,15 @@
 
 ### Added
 
+- Ollama parser が `message.thinking` フィールドを `ProviderEvent::Thinking` として emit するようになった（FR-03-1-2、T-511）。`glm-5.1:cloud` 等の thinking 対応モデルで REPL に `[thinking] ...` が表示される。emit 順は `Thinking` → `Text` → `ToolUse`（Anthropic 仕様と整合）。`Capabilities::thinking` も `true` に変更。
+- `[runtime] max_tool_iterations` 設定キーを追加（FR-04-3、T-510／T-510-2）。1 ターン内の tool_use 反復上限を可変設定できる。最小 1（`0`／負値は内部で `1` へ丸め込み）、最大 `u32::MAX = 4,294,967,295`。設定方法・推奨レンジ・境界値挙動は `doc/config.md` の `[runtime]` 節を参照。
+
+### Changed
+
+- tool_use ループの上限を 8（ハードコード）から `[runtime] max_tool_iterations`（既定 24）に変更（FR-04-3）。design-then-debug 系オーケストレーター（AI が設計成果物を生成 → 検証ツール → lint 修正 → 最終 fs_write）が 1 ターン内に収まるよう既定値を引き上げた。
+
+### Added
+
 - 初版リリースに向けた骨格実装：
   - 単独起動の Rust 製 CLI（`agent-cli`）
   - REPL ＋ tools 機能 ＋ thinking 表示（Claude Code 相当）

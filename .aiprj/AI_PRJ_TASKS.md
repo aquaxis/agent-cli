@@ -120,6 +120,32 @@
 - [x] バックエンド一覧、モデル名、APIキー設定状態を表示
 - 検証：実機実行で4バックエンド分が表示される。**達成。**
 
+### T-511 Ollama バックエンドの `message.thinking` フィールド対応（FR-03-1-2／設計書 3.6・4.3C）[x]
+
+2026-05-03 にユーザーから `.aiprj/instructions.md` 経由で「`glm-5.1:cloud` はストリーミング応答に `message.thinking` フィールドを持つ。agent-cli の parser がこれを decode できていない可能性」との指摘を受領。
+
+実装事実の確認結果（本セッション、`src/ai/ollama.rs` 読取）：
+- `parse_ndjson_line`（行 189-241）は `message.content` と `message.tool_calls` のみを extract し、`message.thinking` を黙って捨てている。
+- `Capabilities::thinking` は `false` 固定（行 99-103）。`glm-5.1:cloud` が thinking を返してもユーザーには見えず、設定 `[ui] show_thinking` も無意味になる。
+- 他バックエンド（Claude／Codex／llama.cpp）の thinking 取扱いとの整合：Claude は `thinking_delta` を emit、Codex は擬似実装、llama.cpp は非対応。Ollama は本指摘により「条件付き対応」へ位置付けを変更する。
+
+実装項目：
+- [x] `src/ai/ollama.rs::parse_ndjson_line` で `message.thinking` を抽出し、非空文字列なら `ProviderEvent::Thinking { text }` として emit。同一フレーム内の emit 順は `Thinking` → `Text` → `ToolUse`（Anthropic 仕様と整合）。
+- [x] `src/ai/ollama.rs::capabilities` で `thinking: true` を返す（方針 A／設計書 4.3C）。
+- [x] 単体テスト 3 件追加：
+  - `parses_thinking_field_emits_thinking_event`：`{"message":{"thinking":"reason about the prompt","content":"hello"}}` で `Thinking + Text` の順で emit
+  - `empty_thinking_is_not_emitted`：`{"message":{"thinking":"","content":"x"}}` で `Thinking` が emit されない（content の Text は emit）
+  - `thinking_only_frame_emits_only_thinking`：thinking のみのフレームでも `Thinking` のみが emit（`glm-5.1:cloud` の長尺 reasoning ストリームを想定）
+  - 既存テスト（`content` のみ／`tool_calls` のみ／`done` のみ／空行／不正 JSON）への回帰なし
+- [x] `doc/providers/ollama.md` の対応機能マトリクスを更新（`Thinking ✓ (モデル依存)`、`glm-5.1:cloud` で動作）。「Thinking 表示の制御」節を追加し `[ui] show_thinking` の 3 モードを併記
+- [x] CHANGELOG.md に Added エントリを追記
+
+検証結果：
+- [x] `cargo test` 74 件 PASS（既存 ＋ 新規 Ollama thinking テスト 3 件）
+- [x] `cargo fmt --all -- --check` PASS
+- [x] `cargo clippy --all-targets -- -D warnings` 警告ゼロ
+- [ ] 実機検証：`agent-cli run --provider ollama --model glm-5.1:cloud` で対話を行い、thinking ブロックが REPL に表示されること（要 ollama サーバー＋クラウドアクセス、T-704／T-601-B の実機検証時に併せて確認予定）
+
 ---
 
 ## フェーズ3：Tools
@@ -352,6 +378,62 @@
 - [ ] `claude` 以外のバックエンド（codex／ollama／llama.cpp）での HTTP 4xx 実機検証：実装は同経路を共有するため理論上同等動作。実 API キー／実サーバー環境での確認は別タスク T-704／T-601-D に委ねる。
 
 なお、報告された事象自体（Anthropic からのクレジット残高不足）はユーザーの Anthropic アカウントに紐づく問題であり、agent-cli 側でエラー原因そのものを解消することはできない。本タスクは「ユーザーが原因を素早く切り分けられる診断導線」を整備するもので、その目的は実機検証で達成された。
+
+### T-510 ツール実行イテレーション上限メッセージの説明追加（FR-04-3／設計書 4.3B）[x]
+
+2026-05-03 にユーザーから `[info] max tool-use iterations reached` メッセージの意味について `.aiprj/instructions.md` 経由で質問が寄せられた。本メッセージは `src/agent.rs::process_turn` が tool_use ループの 8 反復上限（`let max_iterations = 8;`、行 178）に達した際に `AgentEvent::Info { message: "max tool-use iterations reached" }`（行 328-332）として発行される情報通知であり、エラーではない。意味と対処をドキュメントから即座に確認できるよう整備する。
+
+実装事実の確認結果（本セッション、`src/agent.rs` 読取）：
+- 上限値は当初 8（マジックナンバーとして直書き）。後続セッションで設定可変化済（後述）。
+- 反復ごとに「Provider 呼び出し → ストリーミング応答受信 → ツール実行 → 続報のための再呼び出し」を行い、`pending_tools` が空になった反復で `Done` を発行して当該ターンを終了する。
+- 上限反復を消化しても tool_use が連続する場合、ループを抜けて `Info` ＋ `Done` を順に発行する（`Error` ではなく `Info`）。
+- REPL（`app::display_event`）は `AgentEvent::Info` を `[info]` プレフィックスで描画する慣行があり、本メッセージもこの慣行に乗る。
+
+追加実装（2026-05-03、別経路で対応済）：
+- `src/config.rs::RuntimeConfig` に `max_tool_iterations: u32`（既定 24、`#[serde(default = "default_max_tool_iterations")]`）を追加。
+- `src/agent.rs::process_turn` を `let max_iterations = self.config.runtime.max_tool_iterations.max(1);` に変更。`0` を含む不正値は `1` へ丸め込み。
+- 既定値が 8 → 24 に引き上げ（design-then-debug オーケストレーターの最終 fs_write を 1 ターン内に収めるため）。
+- 上記変更を踏まえ、ドキュメント側の追従（`README.md`／`doc/config.md`／`doc/troubleshooting.md`／`doc/architecture.md`／`doc/usage.md` で「上限 8 ハードコード」→「`[runtime] max_tool_iterations` 既定 24」への書き換え）が必要。本タスクを再オープンするか、ドキュメント追従を T-510-2 として分離するかは次セッションの `/ai` 実行時に判断する。
+
+実装結果（2026-05-03 当初時点）：
+- [x] `README.md` の「ツール承認をスキップする」節と「終了方法」節の間に「`[info] max tool-use iterations reached` の意味」節を追加。エラーではなく情報通知である点と 5 項目の対処（プロンプト分割／意図具体化／`denied_tools` 除外／`/clear`／上限引き上げ検討）を明記し、`doc/troubleshooting.md` へリンク。
+- [x] `doc/troubleshooting.md` の「REPL 関連」セクション末尾に「`[info] max tool-use iterations reached` と表示される」節を追加。種別／発生条件／直後の挙動／影響を表形式で整理し、対処を 5 項目で記述。
+- [x] `doc/architecture.md` 3.1「ユーザープロンプト処理」の bullet を拡張し、`max_iterations = 8` の存在と防護機構の意図、上限到達時の Info ＋ Done 発行シーケンスを明記。
+- [x] `doc/usage.md` の「ツール実行承認のスキップ」節と「ユースケース」節の間に「REPL 出力の `[info]` メッセージ」節を新設。代表的な 5 種の `[info]` メッセージ（`cancel requested`／`history persisted`／`system prompt updated`／`history cleared`／`max tool-use iterations reached`）を表で整理し、後者の詳細は `troubleshooting.md` へ誘導。
+- [x] 単体テスト `agent_emits_max_tool_iterations_info_when_loop_caps` を `src/agent.rs::tests` に追加。`MockProvider` に 9 個分の `[ToolUse(shell, echo loop), Done]` スクリプトを与え、`Agent::process_turn` 実行後の `AgentEvent` 列が「`ToolCall` × 8 ＋ `ToolResult` × 8 ＋ `Info { message == "max tool-use iterations reached" }` ＋ `Done`」となり、`AgentEvent::Error` が 0 件であることを assert。
+- 将来拡張として `[runtime] max_tool_iterations`（既定 8）の設定追加検討は次フェーズへ持ち越し（要件 FR-04-3 はこの拡張余地を許容している）。
+
+検証結果：
+- [x] `cargo test` 68 件 PASS（既存 67 件 ＋ 新規 `agent_emits_max_tool_iterations_info_when_loop_caps`）
+- [x] `cargo fmt --all -- --check` PASS（差分なし）
+- [x] `cargo clippy --all-targets -- -D warnings` 警告ゼロ
+- [x] 単体テストで「上限反復 → Info ＋ Done が発行され、Error は出ない」一連挙動を自動検証（ドキュメント記述と実装挙動の同値性を保証）。なお当該テストは `config.rs::tests_default_config()` 経由で `max_tool_iterations` の既定値（現行 24）を採用するため、テスト用に低めの値を設定する派生テストの追加が望ましい（T-510-2）。
+- [ ] 実機で上限到達を再現できる短いシナリオは未実施（実プロバイダ環境での再現が必要なため、T-704 ／実 API キー検証時に併せて確認予定）
+
+### T-510-2 `max_tool_iterations` 可変化のドキュメント追従と回帰テスト（FR-04-3）[x]
+
+T-510 完了後（2026-05-03）に `src/config.rs`／`src/agent.rs` 側で `[runtime] max_tool_iterations` が追加され、既定値が 8 → 24 へ引き上げられた（`.aiprj/instructions.md` での要望「上限を可変に設定できるようにしてください」への対応）。本タスクではドキュメント側の追従と、可変上限を踏まえたテスト強化を行う。
+
+実装項目：
+- [x] `README.md`「`[info] max tool-use iterations reached` の意味」節を更新。`[runtime] max_tool_iterations`（既定 24、最小 1、最大 `u32::MAX`）の存在と「設定ファイルで変更できますか？／無制限の設定は可能ですか？」への明示回答、推奨レンジ（単純対話 4-8／既定 24／オーケストレーター 24-48／長尺自律 64-256）を併記
+- [x] `doc/config.md` の `[runtime]` セクション：
+  - 表に `max_tool_iterations` 行を追加（型 `u32`、既定 24、最小 1、最大 `u32::MAX`）
+  - 「`max_tool_iterations` のチューニング」サブ節を新設：Q&A 表（設定ファイル変更可否／無制限指定可否）、境界値挙動（`.max(1)` 丸め込み）、用途別推奨レンジ表 5 段階、設定例
+  - 「全機能有効構成」サンプルに `max_tool_iterations = 48` 行を追加（多段オーケストレーター想定）
+- [x] `doc/troubleshooting.md`「`[info] max tool-use iterations reached` と表示される」節の対処 5 を「`[runtime] max_tool_iterations` を引き上げる（既定 24、最小 1、最大 `u32::MAX`、再起動で反映）」へ書き換え。発生条件と意味も新仕様に追従
+- [x] `doc/architecture.md` 3.1 を「最大 8 反復」→「`[runtime] max_tool_iterations` 反復（既定 24、最小 1、最大 `u32::MAX`）」に更新。上限到達時の挙動説明も追従
+- [x] `doc/usage.md` の `[info]` メッセージ表で本メッセージの説明を新仕様に更新
+- [x] 単体テスト：`agent_emits_max_tool_iterations_info_when_loop_caps` を `agent.config.runtime.max_tool_iterations = 4` で上書きする形に改修（既定 24 だと 24 反復分のシェル実行を待つことになり遅いため）。5 個のスクリプトで 4 反復消化 → Info 発行まで検証
+- [x] 単体テスト追加：`agent_clamps_zero_max_tool_iterations_to_one`（agent.rs）。`max_tool_iterations = 0` 投入時に `.max(1)` で 1 反復として動作し、1 個目の tool_use 後に Info ＋ Done が emit されることを assert（境界値テスト：下限）
+- [x] 単体テスト追加：`max_tool_iterations_accepts_u32_max`（config.rs）。`max_tool_iterations = 4294967295` を含む TOML がパース成功し値が保持されることを assert（境界値テスト：上限）
+- [x] 単体テスト追加：`max_tool_iterations_default_is_24`（config.rs）。`DEFAULT_CONFIG` および `[runtime]` セクション省略時の既定値が `24` であることを assert
+- [x] CHANGELOG.md に Added（`[runtime] max_tool_iterations` キー）／Changed（既定 8→24、ハードコード→設定可変）の 2 エントリを追記
+
+検証結果：
+- [x] `cargo test` 74 件 PASS（既存 68 件 ＋ 新規 6 件：`agent_clamps_zero_max_tool_iterations_to_one`／`max_tool_iterations_accepts_u32_max`／`max_tool_iterations_default_is_24`／Ollama thinking 3 件。既存 `agent_emits_max_tool_iterations_info_when_loop_caps` は cap 24 への適応のため期待値を 8→4 に書き換え）
+- [x] `cargo fmt --all -- --check` PASS
+- [x] `cargo clippy --all-targets -- -D warnings` 警告ゼロ
+- [x] 5 ドキュメント（README／doc/config／doc/troubleshooting／doc/architecture／doc/usage）が新仕様（既定 24、最小 1、最大 `u32::MAX`、設定可能、無制限不可）で一貫していること、および同じ Q&A／推奨レンジが提示されていることを確認
 
 ---
 

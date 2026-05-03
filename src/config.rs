@@ -86,6 +86,12 @@ pub struct ProviderEntry {
     pub thinking: Option<bool>,
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// Total HTTP request timeout in seconds, including streaming. Optional —
+    /// providers fall back to a generous default (≥ 900s) so cloud reasoning
+    /// models (e.g. `glm-5.1:cloud`) that emit minutes of `thinking` tokens
+    /// before content do not get aborted mid-stream.
+    #[serde(default)]
+    pub request_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +106,17 @@ pub struct RuntimeConfig {
     pub agents_dir: String,
     #[serde(default)]
     pub persona_file: String,
+    /// Maximum tool-use iterations per peer prompt. Each iteration is one
+    /// (LLM call → optional tool calls + their results) round. The default
+    /// of 8 is too low for design-then-debug workflows where the agent
+    /// generates artifacts, runs validators, and iterates on lint feedback.
+    /// Bump to 16+ for orchestrators that own multiple tools per turn.
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: u32,
+}
+
+fn default_max_tool_iterations() -> u32 {
+    24
 }
 
 impl Default for RuntimeConfig {
@@ -110,6 +127,7 @@ impl Default for RuntimeConfig {
             registry_dir: String::new(),
             agents_dir: default_agents_dir(),
             persona_file: String::new(),
+            max_tool_iterations: default_max_tool_iterations(),
         }
     }
 }
@@ -340,6 +358,40 @@ mod tests {
         assert!(cfg.provider.llamacpp.is_some());
         assert_eq!(cfg.tools.enabled.len(), 4);
         assert_eq!(cfg.tools.shell.timeout_secs, 60);
+    }
+
+    /// FR-04-3 境界値（上限）：`max_tool_iterations` に `u32::MAX` を指定した TOML が
+    /// パース可能で、値がそのまま保持される。実際にループを 42 億回回すテストはしない
+    /// （パース成功までで「真の無制限指定は不可だが事実上の無制限相当が可能」を保証）。
+    #[test]
+    fn max_tool_iterations_accepts_u32_max() {
+        let toml_src = r#"
+[provider]
+kind = "claude"
+[provider.claude]
+api_key_env = "ANTHROPIC_API_KEY"
+[runtime]
+max_tool_iterations = 4294967295
+"#;
+        let cfg: Config = toml::from_str(toml_src).expect("u32::MAX must parse");
+        assert_eq!(cfg.runtime.max_tool_iterations, u32::MAX);
+    }
+
+    /// `max_tool_iterations` の既定値は 24（2026-05-03 に 8 から引き上げ）。
+    /// `[runtime]` セクションを省略した場合の既定値も同じになる。
+    #[test]
+    fn max_tool_iterations_default_is_24() {
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert_eq!(cfg.runtime.max_tool_iterations, 24);
+
+        let minimal = r#"
+[provider]
+kind = "claude"
+[provider.claude]
+api_key_env = "ANTHROPIC_API_KEY"
+"#;
+        let cfg2: Config = toml::from_str(minimal).unwrap();
+        assert_eq!(cfg2.runtime.max_tool_iterations, 24);
     }
 
     #[test]

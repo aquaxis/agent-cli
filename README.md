@@ -161,6 +161,17 @@ REPL内では以下の`/`コマンドが使えます。
 
 承認モードのまま実行されたツール要求は`[tool approval] <tool> <args>` バナーと`approve? [y/N]: `を表示します。`y`／`yes`のみ承認、それ以外（空入力や別単語）は拒否扱いです。
 
+### `[info] max tool-use iterations reached` の意味
+
+REPL でこのメッセージが出るのは、AI が 1 回のユーザー入力に対して **ツール実行（tool_use）を上限回連続して繰り返しても結論に到達できなかった** ときです（無限ループ防止のための防護機構）。
+
+- これは **エラーではなく情報通知**（`[info]` プレフィックス）です。`[error]` ではないので、エラーログ／監視警報には残りません。
+- 直後にプロンプト `> ` が再描画され、次の入力を受け付けます。会話履歴は維持されます。
+- **設定ファイルで変更できますか？** はい。`~/.config/agent-cli/config.toml` の `[runtime] max_tool_iterations` で変更可能（既定 24）。変更は `agent-cli` 再起動で反映。
+- **無制限の設定は可能ですか？** 厳密な「無制限」は不可（API 課金・GPU 占有・stdout 占有の暴走防止のため意図的に制限）。型は `u32` のため最大 `u32::MAX = 4,294,967,295` まで設定可能で、実用上はこれで「無制限相当」です。
+- 推奨レンジ：単純対話 4-8、design-then-debug 系オーケストレーター 24-48、長尺自律実行 64-256。
+- 対処：プロンプトを分割する／意図を具体化する／不要ツールを `denied_tools` で除外する／`/clear` で履歴をリセットして再試行する／`max_tool_iterations` を引き上げる。詳細は [`doc/troubleshooting.md`](doc/troubleshooting.md) ／ [`doc/config.md`](doc/config.md) を参照。
+
 ### 終了方法
 
 以下のいずれでも確実に終了し、IPCソケット（`<registry_dir>/<agent-id>.sock`）とレジストリメタ（`<registry_dir>/<agent-id>.json`）を自動削除します。応答ストリーミング中／ツール実行中であっても1秒以内に終了します。

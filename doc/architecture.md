@@ -85,7 +85,8 @@ stdin -> run_input_loop -> mpsc -> Agent loop -> Provider -> ProviderEvent strea
 
 - `run_input_loop` は `enum PromptState { Ready, Pending, AwaitingApproval(oneshot::Sender<bool>) }` を保持し、`tokio::select!` で 4 経路（shutdown／idle／approval／stdin）を多重化。
 - ユーザー入力送信直後は `Pending` に遷移し、`Done` 受領（`display_task` から `mpsc::<()>` 経由）まで stdin 読取を抑止。これによりストリーミング出力と入力エコーの混在を防ぐ。
-- ツール実行は最大 8 反復。`auto_approve_tools=false`（既定）の場合は 3.3 の承認チャネル経由で y/N を取得する。
+- ツール実行は `[runtime] max_tool_iterations` 反復（既定 24、最小 1、最大 `u32::MAX`）。`agent.rs::process_turn` の `self.config.runtime.max_tool_iterations.max(1)`。無限ループ防止のための防護機構。`auto_approve_tools=false`（既定）の場合は 3.3 の承認チャネル経由で y/N を取得する。
+- 上限到達時：設定回数の反復を消化しても AI が `tool_use` を返し続ける場合、ループを抜けて `AgentEvent::Info { message: "max tool-use iterations reached" }` ＋ `AgentEvent::Done` をこの順で発行する。エラーチャネルではなく Info チャネルで通知する（「異常」ではなく「未収束」を意味するため）。REPL は通常の `Done` と同じ扱いで次入力プロンプトを再描画する。意味と対処、推奨レンジは `doc/troubleshooting.md` ／ `doc/config.md` 参照。
 - `Done` は通常応答完了だけでなく、`provider.complete_stream` の失敗時にも必ず発行され、入力ループが Pending のまま固まらない。
 
 ### 3.2 ピア間メッセージング

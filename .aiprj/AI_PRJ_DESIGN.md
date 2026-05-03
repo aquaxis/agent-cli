@@ -158,11 +158,12 @@ model    = "default"
 base_url = "http://127.0.0.1:8080"   # OpenAI互換エンドポイント
 
 [runtime]
-auto_approve_tools = false
-log_dir            = "~/.local/share/agent-cli/logs"
-registry_dir       = ""   # 空ならXDG_RUNTIME_DIR/agent-cli または /tmp/agent-cli を使用
-agents_dir         = "~/.config/agent-cli/agents"
-persona_file       = ""   # 空なら <agents_dir>/<name>.md → 組み込み既定 の順で解決
+auto_approve_tools  = false
+log_dir             = "~/.local/share/agent-cli/logs"
+registry_dir        = ""   # 空ならXDG_RUNTIME_DIR/agent-cli または /tmp/agent-cli を使用
+agents_dir          = "~/.config/agent-cli/agents"
+persona_file        = ""   # 空なら <agents_dir>/<name>.md → 組み込み既定 の順で解決
+max_tool_iterations = 24   # 1 ターン内の tool_use 反復上限。最小 1。FR-04-3。
 
 [tools]
 enabled = ["shell", "fs_read", "fs_write", "send_to"]
@@ -323,9 +324,9 @@ pub enum ProviderEvent {
 
 | バックエンド | tool_use | thinking | ストリーミング | 備考 |
 |--------------|----------|----------|----------------|------|
-| claude | ネイティブ対応 | ネイティブ対応 | SSE | Anthropic Messages API。最も機能が揃う基準実装。 |
+| claude | ネイティブ対応 | ネイティブ対応（`thinking_delta`） | SSE | Anthropic Messages API。最も機能が揃う基準実装。 |
 | codex | function calling | 非対応（疑似実装：応答前に`<thinking>`タグを要求するプロンプトで近似） | SSE | OpenAI互換。`tool_use`はOpenAIのfunction callingへ変換。 |
-| ollama | tools対応モデル時のみ（`/api/chat`の`tools`） | 非対応 | NDJSON | モデルがtoolsをサポートしない場合は`Capabilities::tool_use=false`。 |
+| ollama | tools対応モデル時のみ（`/api/chat`の`tools`） | 条件付き対応（`message.thinking` を emit、4.3C／FR-03-1-2） | NDJSON | モデルがtoolsをサポートしない場合は`Capabilities::tool_use=false`。`glm-5.1:cloud` 等の thinking 対応モデルでは `message.thinking` を `ProviderEvent::Thinking` として emit。 |
 | llama.cpp | OpenAI互換のtools対応版で利用可 | 非対応 | SSE | `/v1/chat/completions`を利用。サーバー側ビルドに依存。 |
 
 `tool_bridge.rs`が、Claudeのcontent block表現とOpenAI形式のfunction call表現を共通の`ProviderEvent::ToolUse`へ正規化する。
@@ -447,6 +448,104 @@ FR-03-2「REPL入出力サイクル」を実装するため、入力プロンプ
 4. 応答完了（`AgentEvent::Done` 発行時）に、入力ループへ「次のプロンプト準備可」を通知（4.2A）。
 5. 次入力待機に戻る。
 
+### 4.3B ツール実行イテレーション上限（FR-04-3）
+
+`Agent::process_turn`（`src/agent.rs`）は設定可能な上限値で tool_use ループを回す。各反復で「Provider 呼び出し → ストリーミング応答受信 → ツール実行（必要時）→ 結果を会話履歴へ追加 → 次反復で再度 Provider 呼び出し」を繰り返す。
+
+#### 上限値の決定
+
+```rust
+let max_iterations = self.config.runtime.max_tool_iterations.max(1);
+```
+
+- 設定キー：`[runtime] max_tool_iterations`（型：`u32`）
+- 既定値：`24`（`config.rs::default_max_tool_iterations()`）
+- 最小値：`1`（`.max(1)` により `0` は `1` へ丸め込み）
+- 既定値 24 の根拠：design-then-debug 系のオーケストレーター（AI が成果物を生成 → 検証ツールを呼ぶ → lint feedback で修正 → 最終成果物を fs_write）が 1 ターン内に収まる値。歴史的には 8 がハードコードされていたが、複数ツールを順次呼ぶワークフローで不足することが判明したため 24 へ引き上げられた。
+- 増やす：複数ツールを多段で呼ぶオーケストレーター用途では 32／48 等へ引き上げてよい。
+- 減らす：シンプルな対話用途や、誤動作時に早く打ち切りたい場合は 4／8 等へ下げてよい。
+
+#### 反復終了条件
+
+1. ある反復内で `pending_tools` が空のまま `Done` を受領した場合（テキスト応答のみ、もしくは Provider 側エラー）：その時点で当該ターンを `AgentEvent::Done` で完了し、上限到達メッセージは発行しない。
+2. 反復が `max_iterations` 回に達してもまだ tool_use が連続している場合：ループを抜けて以下を順に発行する。
+   - `AgentEvent::Info { message: "max tool-use iterations reached" }`
+   - `AgentEvent::Done`
+
+#### 設計意図
+
+- AI が「ツール結果を踏まえて続報 → さらにツール → さらに続報」を延々と繰り返すケース（プロンプトが曖昧、目的関数が定まっていない、ツールが期待結果を返さない等）で会話ループが事実上の無限ループになるのを防ぐ防護機構である。
+- 上限到達は「異常」ではなく「未収束」を意味する。エラーチャネル（`AgentEvent::Error`）ではなく `Info` チャネルで通知し、エラーログ／監視警報には影響しない。
+- REPL 側は通常の `Done` と同じ扱いで次のユーザー入力プロンプトを再描画する（4.2A プロンプト同期と整合）。ユーザーは続けて新しい入力を投入することで会話を継続できる。
+- ユーザー向けには「プロンプトを分割する」「意図を具体化する」「不要ツールを `denied_tools` で除外する」が一次対処、`[runtime] max_tool_iterations` の引き上げが二次対処として案内する。
+
+#### FAQ／境界値仕様（FR-04-3）
+
+| 質問 | 回答 |
+|------|------|
+| Q1：設定ファイルで変更できますか？ | はい。`[runtime] max_tool_iterations` を編集して `agent-cli` を再起動すれば反映される。実行中の REPL では動的には変わらない。 |
+| Q2：無制限の設定は可能ですか？ | いいえ。型が `u32` のため最大は `u32::MAX = 4,294,967,295` 回。実用上はこれで「無制限相当」だが、「真の無上限ループ」モードは意図的に提供しない（API 課金・GPU 占有・stdout 占有の暴走防止のため、必ず u32 ガードで打ち切る設計）。 |
+
+境界値挙動：
+
+- `0`／負値（`u32` でパース後の符号付きとして扱われない値含む）：`.max(1)` により `1` 反復として動作。
+- `1` 〜 `u32::MAX`：そのまま採用。
+- `u32::MAX` 超：TOML パース時にオーバーフローエラーで起動失敗。
+- 動的変更：未対応。`/auto` のような実行時切替コマンドは提供しない（混乱を招くため）。設定変更後は `agent-cli` を再起動する。
+
+推奨レンジ（用途別）：
+
+| 用途 | 推奨値 | 根拠 |
+|------|--------|------|
+| 単純対話・教育用 | 4-8 | ループ暴走時に早く打ち切れる |
+| 既定（design-then-debug 等） | 24（既定値） | 設計成果物生成 → 検証 → lint 修正 → fs_write の典型ワークフローが収まる |
+| 多段オーケストレーター | 32-48 | 複数ツールを順次呼ぶ場合 |
+| 長尺自律実行（実験用途） | 64-256 | エージェントが大規模タスクを段階的に分解する場合 |
+| それ以上 | 非推奨 | 「ループに陥っていないか」を疑うべき範囲。`/cancel`／`Ctrl+C` で介入できる前提で運用する |
+
+### 4.3C Ollama バックエンドの thinking フィールド処理（FR-03-1-2）
+
+Ollama `/api/chat` の NDJSON ストリームで `message.thinking` を返すモデル（例：`glm-5.1:cloud`）について、`src/ai/ollama.rs::parse_ndjson_line` は当該フィールドを取得して `ProviderEvent::Thinking { text }` として emit する。
+
+#### NDJSON フレームの想定構造
+
+```json
+{
+  "model": "glm-5.1:cloud",
+  "message": {
+    "role": "assistant",
+    "content": "...",
+    "thinking": "...",
+    "tool_calls": [ ... ]
+  },
+  "done": false
+}
+```
+
+`message.thinking` は string 型で、増分（delta）として複数フレームに分割されることがある。`content` と同様に、空文字の場合は何も emit しない。
+
+#### パーサ要件
+
+- `message.content` が `String` で非空 → `ProviderEvent::Text { delta }` を emit（既存挙動維持）
+- `message.thinking` が `String` で非空 → `ProviderEvent::Thinking { text }` を emit（**新規追加**）
+- `message.tool_calls` が配列 → `ProviderEvent::ToolUse { id, name, args }` を 1 件ずつ emit（既存挙動維持）
+- `done == true` → `ProviderEvent::Done` を emit（既存挙動維持）
+- 同一フレーム内に複数フィールドが存在する場合は `Thinking` → `Text` → `ToolUse` の順で emit する（thinking が text に先行する Anthropic 仕様と整合させる）
+
+#### Capabilities
+
+`Capabilities::thinking` は現状 `false` 固定。本要件対応後は以下のいずれかとする：
+- **方針 A（既定 true）**：`thinking: true` を返す。thinking 非対応モデルでは `parse_ndjson_line` が何も emit しないだけで害はない。シンプルさを優先する場合の選択。
+- **方針 B（モデル名判定）**：`provider.ollama.model` を見て、既知の thinking 対応モデル（`glm-5.1:cloud` 等）には `true`、それ以外は `false` を返す。誤誘導は避けられるが、新モデル追加に追従しづらい。
+
+実装は方針 A を既定とする。ユーザー側で `[ui] show_thinking = "hidden"` 等の表示制御を併用すれば、thinking 出力の可視性は調整可能（4.3 と整合）。
+
+#### テスト要件
+
+- `parse_ndjson_line` の単体テストで `message.thinking` を含む NDJSON を投入し、`ProviderEvent::Thinking { text }` が正しい順序で emit されることを assert。
+- 同フィールドが空文字の場合、`Thinking` が emit されないことを assert。
+- 既存テスト（`content` のみ／`tool_calls` のみ／`done` のみ）への回帰がないことを既存テスト群で保証。
+
 ### 4.3A ツール承認の入出力統合（FR-04-1）
 
 承認プロンプト（"approve? [y/N]:"）と応答は、REPL のメイン入力ループ（4.2／4.2A）と stdin 読取経路を共有する。`std::io::stdin().read_line()` を agent タスクから直接呼ぶ実装は禁止する（tokio 側の stdin reader と OS パイプを奪い合い、入力が取り違えられるため）。
@@ -555,6 +654,7 @@ FR-03-2「REPL入出力サイクル」を実装するため、入力プロンプ
 - すべてのfallible関数は`Result<T, AppError>`を返す。
 - `AppError`は`thiserror`で定義し、`Config`／`Provider`／`Tool`／`Ipc`／`Registry`／`Ui`等のvariantを持つ。
 - ユーザー向けには簡潔なメッセージ、詳細は`tracing`のデバッグログに残す。
+- `AgentEvent` の `Info` と `Error` を厳密に区別する。`Info` は補助情報・状態通知（例：`cancel requested`、`max tool-use iterations reached`、`history persisted`）であり、エラーログ／監視警報には残さない。`Error` はプロバイダ／ツール／IPC 等で発生した失敗事象であり、診断情報（5.1）と併せて出力する。REPL は `Info` を `[info]` プレフィックス、`Error` を `[error]` プレフィックスで描画する。
 
 ### 5.1 プロバイダエラーの診断情報付与（FR-09-3）
 
@@ -624,6 +724,8 @@ FR-03-2「REPL入出力サイクル」を実装するため、入力プロンプ
   - REPL終了経路（4.9）：擬似stdinのEOFで`App::run`が完了し、`/quit`入力で`App::run`が完了し、いずれの場合も`<registry_dir>/<agent-id>.sock`／`.json`が削除されていること。
   - REPL入出力サイクル（4.2A／FR-03-2）：擬似stdinから 2 行のユーザー入力を順に投入し、それぞれが `AgentInput::UserPrompt` として agent ループに到達し、各 `Done` の後に次のプロンプトが受理されることを単体テストで保証する。
   - ツール承認入出力統合（4.3A／FR-04-1）：擬似 `ApprovalRequest` を入力ループへ送信し、続けて擬似 stdin に "y\n" を投入すると `oneshot` 応答が `true` で帰ること、`n\n` の場合は `false` で帰ること、また AwaitingApproval 中はユーザー入力が `AgentInput::UserPrompt` として agent ループへ流出しないことを単体テストで保証する。
+  - ツール実行イテレーション上限（4.3B／FR-04-3）：`MockProvider` が常に tool_use を返すストリームを構築し、`Agent::process_turn` を 1 ターン回したときに `AgentEvent::Info { message: "max tool-use iterations reached" }` と `AgentEvent::Done` がこの順で発行され、かつ `AgentEvent::Error` は発行されないことを単体テストで保証する。tool_use 反復回数が `config.runtime.max_tool_iterations`（既定 24、テスト時は別の値で上書き可能）のとおりであることも併せて確認する。
+  - Ollama thinking フィールド対応（4.3C／FR-03-1-2）：`parse_ndjson_line` に `{"message":{"thinking":"reason ...","content":"answer"}}` 形式のフレームを投入し、`ProviderEvent::Thinking { text: "reason ..." }` ＋ `ProviderEvent::Text { delta: "answer" }` がこの順で emit されることを assert。`thinking` が空文字の場合に `Thinking` が emit されないこと、`thinking` を含まない既存フレームの解釈に回帰がないことも併せて検証する。
 - CI想定：`cargo fmt --check`／`cargo clippy -- -D warnings`／`cargo test`をすべて通過させる。
 
 ### 8.2 自己診断（`agent-cli doctor`）

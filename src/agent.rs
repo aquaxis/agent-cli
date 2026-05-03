@@ -175,7 +175,11 @@ impl Agent {
         event_tx: &mpsc::Sender<AgentEvent>,
         log: Option<&ConversationLog>,
     ) -> Result<()> {
-        let max_iterations = 8;
+        // Configurable cap (config.toml: [runtime] max_tool_iterations).
+        // Default raised from the historical 8 to 24 so design-then-debug
+        // orchestrators (the AI conductor generates HDL, then iterates on
+        // lint feedback) finish their final fs_write inside the loop.
+        let max_iterations = self.config.runtime.max_tool_iterations.max(1);
         for _ in 0..max_iterations {
             let specs = self.tools.specs();
             let mut stream = match self.provider.complete_stream(&self.history, &specs).await {
@@ -493,6 +497,128 @@ mod tests {
         assert!(tool_ok, "tool result was not ok");
         assert!(tool_output_contains_test, "stdout did not include marker");
         assert_eq!(text, "tool ran");
+        assert!(saw_done);
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// FR-04-3／設計書 4.3B：tool_use ループが `max_tool_iterations` に達したとき、
+    /// `AgentEvent::Info { message: "max tool-use iterations reached" }` と
+    /// `AgentEvent::Done` がこの順で発行され、`AgentEvent::Error` は発行されないことを検証。
+    /// 既定値（24）は遅いため、テスト用に `max_tool_iterations = 4` へ上書き。
+    #[tokio::test]
+    async fn agent_emits_max_tool_iterations_info_when_loop_caps() {
+        // 5 個用意するが、process_turn は 4 反復で打ち切る（5 個目は呼び出されない）。
+        let mut scripts = Vec::new();
+        for i in 0..5 {
+            scripts.push(vec![
+                ProviderEvent::ToolUse {
+                    id: format!("call-{i}"),
+                    name: "shell".into(),
+                    args: serde_json::json!({"cmd": "echo loop"}),
+                },
+                ProviderEvent::Done,
+            ]);
+        }
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let mut agent = build_test_agent(scripts, history);
+        agent.config.runtime.max_tool_iterations = 4;
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(64);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::UserPrompt("loop forever".into()))
+            .await
+            .unwrap();
+
+        let mut tool_calls = 0usize;
+        let mut tool_results = 0usize;
+        let mut info_messages: Vec<String> = Vec::new();
+        let mut error_count = 0usize;
+        let mut saw_done = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::ToolCall { name, .. } if name == "shell" => tool_calls += 1,
+                AgentEvent::ToolResult { name, .. } if name == "shell" => tool_results += 1,
+                AgentEvent::Info { message } => info_messages.push(message),
+                AgentEvent::Error { .. } => error_count += 1,
+                AgentEvent::Done => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(tool_calls, 4, "expected 4 tool calls (max_iterations cap)");
+        assert_eq!(tool_results, 4, "expected 4 tool results");
+        assert_eq!(
+            error_count, 0,
+            "no Error events should be emitted on loop cap"
+        );
+        assert!(
+            info_messages
+                .iter()
+                .any(|m| m == "max tool-use iterations reached"),
+            "Info {{ message: 'max tool-use iterations reached' }} not found, got: {info_messages:?}"
+        );
+        assert!(saw_done, "Done event missing");
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// FR-04-3 境界値（下限）：`max_tool_iterations = 0` は `.max(1)` により 1 反復として動作。
+    /// 1 反復で tool_use が emit されるとループが続行できないため Info ＋ Done が即発行される。
+    #[tokio::test]
+    async fn agent_clamps_zero_max_tool_iterations_to_one() {
+        let scripts = vec![
+            vec![
+                ProviderEvent::ToolUse {
+                    id: "call-0".into(),
+                    name: "shell".into(),
+                    args: serde_json::json!({"cmd": "echo clamped"}),
+                },
+                ProviderEvent::Done,
+            ],
+            // 2 個目以降は呼ばれない（1 反復で打ち切られるため）。
+            vec![ProviderEvent::Done],
+        ];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let mut agent = build_test_agent(scripts, history);
+        agent.config.runtime.max_tool_iterations = 0; // .max(1) で 1 へ丸め込み
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::UserPrompt("test clamp".into()))
+            .await
+            .unwrap();
+
+        let mut tool_calls = 0usize;
+        let mut info_messages: Vec<String> = Vec::new();
+        let mut saw_done = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::ToolCall { .. } => tool_calls += 1,
+                AgentEvent::Info { message } => info_messages.push(message),
+                AgentEvent::Done => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(tool_calls, 1, "0 should be clamped to 1 iteration");
+        assert!(
+            info_messages
+                .iter()
+                .any(|m| m == "max tool-use iterations reached"),
+            "Info should fire because 1 iteration with tool_use cannot continue"
+        );
         assert!(saw_done);
 
         drop(in_tx);

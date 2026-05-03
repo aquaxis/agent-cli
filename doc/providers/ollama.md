@@ -36,9 +36,19 @@ ollama pull llama3.1:8b        # ローカル版例
 |------|------|------|
 | Streaming | ✓ | NDJSON |
 | Tool use | ✓ (モデル依存) | `tools` 対応モデルでのみ動作 |
-| Thinking | ✗ | 非対応 |
+| Thinking | ✓ (モデル依存) | NDJSON `message.thinking` を `[thinking]` として表示。`glm-5.1:cloud` 等で動作 |
 
-`Capabilities` は静的に `tool_use=true` を返しますが、サーバー／モデルが対応していない場合はツール呼び出しが行われない（または無視される）ことがあります。
+`Capabilities` は静的に `tool_use=true` ／ `thinking=true` を返しますが、サーバー／モデルが対応していない場合はツール呼び出し／thinking 出力が行われない（または無視される）ことがあります。
+
+### Thinking 表示の制御
+
+`glm-5.1:cloud` 等の thinking 対応モデルが `message.thinking` フィールドを返すと、agent-cli は `ProviderEvent::Thinking` として REPL に `[thinking]` プレフィックス付きで表示します（emit 順は `Thinking` → `Text` → `ToolUse`、Anthropic 仕様と整合）。表示モードは `[ui] show_thinking` で制御できます：
+
+| 設定 | 挙動 |
+|------|------|
+| `"collapsed"`（既定） | `[thinking] ...` の最初の数行のみ表示 |
+| `"expanded"` | thinking 全文を逐次表示 |
+| `"hidden"` | thinking を一切表示しない |
 
 ## 動作確認
 
