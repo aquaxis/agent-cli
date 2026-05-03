@@ -556,6 +556,38 @@ FR-03-2「REPL入出力サイクル」を実装するため、入力プロンプ
 - `AppError`は`thiserror`で定義し、`Config`／`Provider`／`Tool`／`Ipc`／`Registry`／`Ui`等のvariantを持つ。
 - ユーザー向けには簡潔なメッセージ、詳細は`tracing`のデバッグログに残す。
 
+### 5.1 プロバイダエラーの診断情報付与（FR-09-3）
+
+`ai/<backend>.rs` の `complete_stream` 実装で HTTP 4xx／5xx を受領した場合、`AppError::Provider` に診断情報を埋め込み、REPL／`doctor`／`selftest` 表示時に併記する。具体的な構造と挙動：
+
+- `ProviderError` 構造体（`error.rs` または `ai/mod.rs`）：
+  - `provider: &'static str`（`"claude"`／`"codex"`／`"ollama"`／`"llama.cpp"`）
+  - `status: u16`（HTTPステータス）
+  - `body: String`（応答本文。長尺なら先頭〜中盤を保持）
+  - `request_id: Option<String>`（応答ヘッダー `request-id`／`x-request-id` または本文中の `request_id` フィールドから抽出）
+  - `config_path: PathBuf`（解決済み設定ファイルパス）
+  - `api_key_env: String`（当該バックエンドの `api_key_env`）
+  - `api_key_mask: Option<String>`（環境変数値の先頭4文字＋`...`＋末尾4文字。空文字／未設定は `None`）
+  - `hint: Option<String>`（特定パターン検出時の対処ヒント）
+- パターン検出（`hint` の生成）：
+  - Anthropic `invalid_request_error` ＋ 本文に `credit balance is too low`：「Anthropic アカウントのクレジット残高が不足しています。https://console.anthropic.com/settings/billing で確認・購入するか、別アカウントの API キーを `<api_key_env>` に設定してください。」
+  - `invalid_api_key`／`authentication_error`／HTTP 401：「API キーが無効または失効しています。`<api_key_env>` の値を確認するか、Anthropic Console から再発行してください。」
+  - HTTP 429／`rate_limit_error`：「レート制限に達しました。数分待つか、より低頻度な使用に切り替えてください。」
+- 表示フォーマット（REPL の `[error]` 出力を例示）：
+
+  ```
+  [error] provider error (claude): HTTP 400 Bad Request
+    request_id : req_011Caej2JtMYvLF9GMAfUuAf
+    config     : /home/hidemi/.local/config/agent-cli/config.toml
+    api_key_env: ANTHROPIC_API_KEY (sk-a...x9k2)
+    detail     : {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. ..."}}
+    hint       : Anthropic アカウントのクレジット残高が不足しています。https://console.anthropic.com/settings/billing で確認・購入するか、別アカウントの API キーを ANTHROPIC_API_KEY に設定してください。
+  ```
+
+- `doctor` の Claude／Codex 疎通ステップは、現状の「到達確認」に加え、本診断情報を表示できる経路を持つ。`tracing::debug` ではフルレスポンスを残しつつ、ユーザー向けには上記のサマリ形式で出力する。
+- セキュリティ：API キーの全文は決して出力しない。マスク表示は先頭4文字＋末尾4文字に限定し、それ以外（中央部・全文）はログにも残さない。
+- 2026-05-03 報告事象（`.aiprj/instructions.md`）：`/home/hidemi/.local/config/agent-cli/config.toml` という非XDG標準パスの設定ファイルを使用しているため、`agent-cli config path` で「実際にどの設定ファイルが解決されているか」を確認できる経路を README／`doc/troubleshooting.md` でも案内する。
+
 ## 6. 依存ライブラリ（想定）
 
 | 用途 | クレート |

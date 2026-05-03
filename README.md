@@ -112,7 +112,9 @@ model    = "glm-5.1:cloud"
 
 複数プロファイルを使い分けるには、`--config`で別ファイルを指定して並行起動してください。各エージェントは`[runtime] registry_dir`を共有すれば相互にピア検出が可能です。
 
-詳しくは[`doc/config.md`](doc/config.md)を参照してください。
+実際にどの設定ファイルが採用されているかは `agent-cli config path` で確認できます。プロバイダ HTTP エラー時のメッセージにも `config` 行として解決済みパスが表示されるので、`~/.local/config/...` と `~/.config/...` の混同などを切り分けるときに役立ちます。
+
+詳しくは[`doc/config.md`](doc/config.md)を、よくあるエラーへの対処は[`doc/troubleshooting.md`](doc/troubleshooting.md)を参照してください。
 
 ## 主要コマンド
 

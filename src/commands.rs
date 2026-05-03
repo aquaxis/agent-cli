@@ -185,11 +185,11 @@ pub async fn doctor(cfg: &Config, source: &ConfigSource) -> Result<()> {
     // Provider connectivity (best-effort).
     // クラウドルーティングモデル（例: ollama の `*:cloud` タグ）はコールドスタートで
     // 数十秒かかることがあるため、selftest Stage 1 と同じ 60 秒を上限にする。
-    print!("[doctor] provider conn   : ");
-    let provider = match ai::build(cfg) {
+    println!("[doctor] provider conn   :");
+    let provider = match ai::build(cfg, source) {
         Ok(p) => p,
         Err(e) => {
-            println!("BUILD FAIL ({e})");
+            print_provider_error("[doctor]   ", &e);
             all_ok = false;
             return finish(all_ok);
         }
@@ -203,18 +203,31 @@ pub async fn doctor(cfg: &Config, source: &ConfigSource) -> Result<()> {
     )
     .await;
     match conn {
-        Ok(Ok(_)) => println!("OK (stream initiated)"),
+        Ok(Ok(_)) => println!("[doctor]   OK (stream initiated)"),
         Ok(Err(e)) => {
-            println!("FAIL ({e})");
+            print_provider_error("[doctor]   ", &e);
             all_ok = false;
         }
         Err(_) => {
-            println!("TIMEOUT (>60s)");
+            println!("[doctor]   TIMEOUT (>60s)");
             all_ok = false;
         }
     }
 
     finish(all_ok)
+}
+
+/// `AppError::Provider` の多行詳細をインデント付きで標準出力へ整形表示する（FR-09-3）。
+/// `ProviderError::Display` が改行を含む文字列を返すため、それを行ごとにプレフィックスを付与する。
+fn print_provider_error(indent: &str, e: &AppError) {
+    let s = e.to_string();
+    let mut iter = s.lines();
+    if let Some(first) = iter.next() {
+        println!("{indent}FAIL: {first}");
+    }
+    for line in iter {
+        println!("{indent}  {line}");
+    }
 }
 
 fn finish(ok: bool) -> Result<()> {
@@ -227,7 +240,11 @@ fn finish(ok: bool) -> Result<()> {
     }
 }
 
-pub async fn selftest(cfg: &Config, provider_override: Option<&str>) -> Result<()> {
+pub async fn selftest(
+    cfg: &Config,
+    source: &ConfigSource,
+    provider_override: Option<&str>,
+) -> Result<()> {
     let mut cfg = cfg.clone();
     if let Some(p) = provider_override {
         cfg.apply_overrides(Some(p), None);
@@ -236,10 +253,10 @@ pub async fn selftest(cfg: &Config, provider_override: Option<&str>) -> Result<(
     let mut stage1_ok = false;
 
     println!("[selftest] stage 1 (provider OK round-trip)");
-    match stage_provider_ok(&cfg).await {
+    match stage_provider_ok(&cfg, source).await {
         Ok(()) => stage1_ok = true,
         Err(e) => {
-            println!("[selftest]   FAIL ({e})");
+            print_provider_error("[selftest]   ", &e);
             all_ok = false;
         }
     }
@@ -279,9 +296,9 @@ pub async fn selftest(cfg: &Config, provider_override: Option<&str>) -> Result<(
     }
 }
 
-async fn stage_provider_ok(cfg: &Config) -> Result<()> {
+async fn stage_provider_ok(cfg: &Config, source: &ConfigSource) -> Result<()> {
     use futures::StreamExt;
-    let provider = ai::build(cfg)?;
+    let provider = ai::build(cfg, source)?;
     let messages = vec![
         ai::Message::System {
             content: "You are a tester. Respond with exactly the literal text OK.".into(),

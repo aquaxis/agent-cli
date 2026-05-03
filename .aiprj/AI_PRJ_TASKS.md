@@ -312,6 +312,47 @@
     - `SIGTERM`：4 ms
   - [x] `cargo test` 45 件 PASS、`cargo fmt --check` PASS、`cargo clippy --all-targets -- -D warnings` 警告ゼロ
 
+### T-509 Claude バックエンドのクレジット残高不足エラー診断（FR-09-3／設計書 5.1）[x]
+
+2026-05-03 にユーザーから以下の事象が報告された（`.aiprj/instructions.md`）：
+
+- `kind = "claude"` で REPL からプロンプトを送信した際、`[error] provider error (claude): HTTP 400 Bad Request: {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. ..."},"request_id":"req_011Caej2JtMYvLF9GMAfUuAf"}` が返った。
+- 設定ファイルは `/home/hidemi/.local/config/agent-cli/config.toml`（XDG 標準の `~/.config/agent-cli/config.toml` ではないため、`--config`／`AGENT_CLI_CONFIG`／`XDG_CONFIG_HOME` のいずれかで指定されていると推定される）。
+- ユーザー認識：「ANTHROPIC_API_KEY も適切に設定している」。
+
+エラーメッセージ自体は Anthropic からの正当なレスポンス（HTTP 400／`invalid_request_error`／`credit balance is too low`）であり、agent-cli の不具合ではなくアカウントのクレジット残高不足を示している可能性が高い。ただし、現状のエラー表示では「どの設定ファイル／どのキーを使っているか」「課金面の問題か別アカウントキー混入か」を即座に切り分けにくいため、診断導線を整備する。
+
+調査項目：
+- [x] 設定ファイル解決経路の確認（`.aiprj/AI_LOG/2026-05-03_000.md`）：ユーザーが instructions.md に記した `/home/hidemi/.local/config/agent-cli/config.toml` は誤記（`.local/config` ではなく `.config`）で実在しない。実際に使用されているのは XDG 標準パス `/home/hidemi/.config/agent-cli/config.toml`。`AGENT_CLI_CONFIG` 未設定、`--config` 無指定、`src/config.rs::default_path()` が `dirs::config_dir()` 経由で解決。`agent-cli config path` で確認可能。
+- [x] `provider.claude.api_key_env` の解決確認：実設定は `api_key_env = "ANTHROPIC_API_KEY"`。標準的な指定で誤参照なし。
+- [x] 環境変数値の整合性確認：`ANTHROPIC_API_KEY` は 108 文字、`sk-ant-...nQAA` のフォーマットで設定済。HTTP 401（`authentication_error`）ではなく HTTP 400（`invalid_request_error` ＋ `credit balance is too low`）が返っているため、Anthropic 側の認証は通過しており、当該アカウントのクレジット残高不足が直接原因。**agent-cli 側の不具合ではない**ことを確認済。
+
+実装項目（2026-05-03 完了）:
+- [x] `ProviderError` 構造体を `src/ai/mod.rs` に新設（`provider`／`status`／`status_text`／`body`／`request_id`／`config_path`／`api_key_env`／`api_key_mask`／`hint`）。`Display` 実装で多行サマリ形式に整形し、`into_app_error()` で `AppError::Provider` のペイロードに変換。`ProviderContext` 構造体（`config_path`／`api_key_env`／`api_key_mask`）を併設し、各バックエンドが `from_config(cfg, source)` で構築・保持。
+- [x] `extract_request_id(headers, body)` 共通ヘルパを `ai/mod.rs` に追加。レスポンスヘッダー（`request-id`／`x-request-id`）優先、本文 JSON（`request_id`／`error.request_id`／`id`）フォールバック。
+- [x] `mask_api_key(key)` 関数を `config.rs` に追加。8 文字未満は `***`、それ以上は先頭 4 文字＋`...`＋末尾 4 文字。
+- [x] `derive_hint(status, body)` 関数を `ai/mod.rs` に追加。クレジット残高不足／認証エラー（401）／レート制限（429）／5xx の 4 パターンを識別して日本語ヒントを返す。
+- [x] 4 バックエンド（claude／codex／ollama／llama.cpp）の HTTP エラー経路を `ProviderError::new(...).with_http().with_body().with_request_id().with_context().detect_hint().into_app_error()` に統一。`tracing::debug` ではフルレスポンスを残す。
+- [x] `ai::build` のシグネチャを `(cfg: &Config, source: &ConfigSource) -> Result<Box<dyn Provider>>` に拡張。呼び出し元（`main.rs`／`commands::doctor`／`commands::selftest`／`commands::stage_provider_ok`／`app::run`）を全て更新。`app::run` のシグネチャも `(Config, ConfigSource, RunArgs)` に拡張。
+- [x] APIキーは絶対に全文出力しない方針を `ProviderContext::new` に集約（マスク表示のみ）。`tracing` ログにも応答本文（JSON）のみを残し、APIキー値そのものは送出しない。
+- [x] `agent-cli doctor` の `provider conn` ステップを `print_provider_error()` 経由でインデント付き多行表示に変更（FAIL: HTTP ステータスサマリ → request_id ／ config ／ api_key_env ／ detail ／ hint の順）。
+- [x] REPL の `[error]` 表示は `ProviderError::Display` の改行をそのまま表示（`app::display_event` の変更不要）。
+- [x] `doc/troubleshooting.md` に「`HTTP 400 Bad Request` ＋ `Your credit balance is too low ...` が応答する」節と「どの設定ファイルが読まれているか分からない」節を追加。
+- [x] `README.md` の「設定方法」節で `agent-cli config path` と HTTP エラー時の `config` 行表示を相互参照する案内を追加。
+
+検証（2026-05-03 完了）:
+- [x] 単体テスト 11 件追加：`mask_api_key_handles_edge_cases`（config.rs）／`hint_for_credit_balance_too_low`／`hint_for_authentication_error`／`hint_for_rate_limit`／`hint_for_server_error`／`hint_none_for_unknown_400`／`extract_request_id_from_header`／`extract_request_id_from_x_header_when_no_request_id`／`extract_request_id_from_body_when_no_header`／`extract_request_id_returns_none_when_missing`／`provider_error_display_contains_all_fields`／`provider_error_display_marks_unset_key`（ai/mod.rs `diagnostics_tests`）。
+- [x] `cargo test` 67 件 PASS（既存 56 件 ＋ 新規 11 件）。
+- [x] `cargo clippy --all-targets -- -D warnings` 警告ゼロ。
+- [x] `cargo fmt --all -- --check` 通過。
+- [x] 実機検証（`~/.cargo/bin/agent-cli`、ANTHROPIC_API_KEY=`sk-a...nQAA`、108 文字、ユーザー提示のキー）:
+  - `agent-cli doctor`：`provider conn` で多行診断（HTTP 400 Bad Request／request_id=`req_011CaekkAEjwoRHiBNe875HH`／config=`/home/hidemi/.config/agent-cli/config.toml`／api_key_env=`ANTHROPIC_API_KEY (sk-a...nQAA)`／detail=Anthropic 応答 JSON 透過／hint=Anthropic billing 案内＋環境変数切替案内）が表示され、終了コード 1。
+  - `agent-cli run` 経由の REPL：プロンプト送信で同等の多行診断が `[error]` 表示として再現（`req_011Caekm33RtP1KcE5HUPQCg`）。
+- [x] 実機検証（再現性）：ユーザーが instructions.md で報告した HTTP 400 ＋ `credit balance is too low` を別 request_id（`req_011CaekJojzyfa3qLk7E8if3`）で再現。原因が Anthropic アカウントのクレジット残高不足であることを確認（HTTP 401 + `authentication_error` ではない＝認証は通過している）。
+- [ ] `claude` 以外のバックエンド（codex／ollama／llama.cpp）での HTTP 4xx 実機検証：実装は同経路を共有するため理論上同等動作。実 API キー／実サーバー環境での確認は別タスク T-704／T-601-D に委ねる。
+
+なお、報告された事象自体（Anthropic からのクレジット残高不足）はユーザーの Anthropic アカウントに紐づく問題であり、agent-cli 側でエラー原因そのものを解消することはできない。本タスクは「ユーザーが原因を素早く切り分けられる診断導線」を整備するもので、その目的は実機検証で達成された。
+
 ---
 
 ## フェーズ6：結合テスト・受け入れ

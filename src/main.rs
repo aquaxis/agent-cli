@@ -50,7 +50,7 @@ async fn run() -> Result<()> {
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => {
             let cfg = config::load(&source)?;
-            app::run(cfg, cli.run_args).await
+            app::run(cfg, source, cli.run_args).await
         }
         Command::List => {
             let cfg = config::load(&source)?;
@@ -70,7 +70,7 @@ async fn run() -> Result<()> {
         }
         Command::Selftest { provider } => {
             let cfg = config::load(&source)?;
-            commands::selftest(&cfg, provider.as_deref()).await
+            commands::selftest(&cfg, &source, provider.as_deref()).await
         }
         Command::Config { action } => match action {
             ConfigAction::Show => {

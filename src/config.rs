@@ -239,6 +239,24 @@ pub fn expand_path(p: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(expanded.into_owned()))
 }
 
+/// API キー値をマスク表示用に整形する（FR-09-3）。
+///
+/// 8 文字以上のキーは「先頭 4 文字 + `...` + 末尾 4 文字」、それより短いキーは
+/// 値の長さ自体を漏らさないよう一律 `***` を返す。空文字列は空文字列を返す
+/// （呼び出し側が「未設定」と区別したい場合は事前に `Option` で判定すること）。
+pub fn mask_api_key(key: &str) -> String {
+    if key.is_empty() {
+        return String::new();
+    }
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() < 8 {
+        return "***".to_string();
+    }
+    let head: String = chars.iter().take(4).collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}...{tail}")
+}
+
 impl Config {
     pub fn provider_entry(&self, kind: &str) -> Option<&ProviderEntry> {
         match kind {
@@ -333,6 +351,27 @@ mod tests {
             cfg.provider.ollama.as_ref().and_then(|p| p.model.clone()),
             Some("glm-5.1:cloud".into())
         );
+    }
+
+    #[test]
+    fn mask_api_key_handles_edge_cases() {
+        // 空文字列：そのまま空（未設定の判別は呼び出し側で）
+        assert_eq!(mask_api_key(""), "");
+        // 短いキー：長さも漏らさず一律 ***
+        assert_eq!(mask_api_key("abc"), "***");
+        assert_eq!(mask_api_key("1234567"), "***");
+        // 8 文字以上：先頭4 + ... + 末尾4
+        assert_eq!(mask_api_key("12345678"), "1234...5678");
+        assert_eq!(mask_api_key("sk-ant-api03-XYZ-abcdef"), "sk-a...cdef");
+        // Anthropic キー長（108 文字程度）でも動作
+        let long: String = "sk-ant-"
+            .chars()
+            .chain(std::iter::repeat_n('x', 100))
+            .chain("nQAA".chars())
+            .collect();
+        let masked = mask_api_key(&long);
+        assert!(masked.starts_with("sk-a..."));
+        assert!(masked.ends_with("nQAA"));
     }
 
     #[test]

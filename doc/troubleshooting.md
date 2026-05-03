@@ -16,10 +16,37 @@
 - `agent-cli doctor` の `provider conn` ステップで再現します。
 - 公式コンソールでキーの有効性を確認してください。
 
+### `HTTP 400 Bad Request` ＋ `Your credit balance is too low ...` が応答する（Claude）
+
+Anthropic Claude バックエンド利用時に下記のような多行メッセージが出るケース：
+
+```
+[error] provider error (claude): HTTP 400 Bad Request
+  request_id : req_011Caekm33...
+  config     : /home/hidemi/.config/agent-cli/config.toml
+  api_key_env: ANTHROPIC_API_KEY (sk-a...nQAA)
+  detail     : {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."},...}
+  hint       : Anthropic アカウントのクレジット残高が不足しています。https://console.anthropic.com/settings/billing で確認・購入するか、別アカウントの API キーを `api_key_env` の指す環境変数に設定してください。
+```
+
+- **直接原因はアカウントのクレジット残高不足**です（HTTP 400 ＋ `invalid_request_error` の応答パターン）。API キー認証自体は通過しています（無効なら HTTP 401 が返ります）。
+- 対処：
+  1. https://console.anthropic.com/settings/billing でクレジットを購入／自動チャージを有効化。
+  2. または別アカウントのキーを `api_key_env` で指定された環境変数に設定し直す。
+  3. 暫定回避として `provider.kind = "ollama"` などへ切替（設定ファイルを編集後 `agent-cli` を再起動）。
+- 表示される `config` 行は **実際に読み込まれた設定ファイルの解決済みパス**です。`~/.local/config/...` と `~/.config/...` などのタイポを防ぐため、迷ったら `agent-cli config path` でも確認できます。
+- `api_key_env` 行に表示される `(sk-a...nQAA)` は環境変数値の先頭 4 文字＋末尾 4 文字のマスクです。期待しているキーと一致しない場合は別のキーが渡されています。
+
 ### `HTTP 429: ...` が応答する
 
 - レート制限。短時間で大量のリクエストを発行していないか確認してください。
 - `[tools.shell] timeout_secs` を長めにとっておくと、長時間処理中の再試行で過剰なリクエストを抑えられます。
+
+### どの設定ファイルが読まれているか分からない
+
+- `agent-cli config path` で実際に解決される設定ファイルパスを表示します。
+- 解決順序：`--config <path>` → `AGENT_CLI_CONFIG` 環境変数 → 既定パス（`$XDG_CONFIG_HOME/agent-cli/config.toml`、未設定時は `~/.config/agent-cli/config.toml`）。
+- プロバイダ HTTP エラー時のメッセージにも `config` 行として実際のパスが表示されるので、`agent-cli config path` の出力と突き合わせると想定外のファイルが採用されていないかを即時確認できます。
 
 ## Ollama / llama.cpp 関連
 

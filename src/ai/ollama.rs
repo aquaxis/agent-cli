@@ -5,8 +5,11 @@ use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
 use crate::ai::tool_bridge::to_ollama_tools;
-use crate::ai::{Capabilities, EventStream, Message, Provider, ProviderEvent, ToolSpec};
-use crate::config::Config;
+use crate::ai::{
+    extract_request_id, Capabilities, EventStream, Message, Provider, ProviderContext,
+    ProviderError, ProviderEvent, ToolSpec,
+};
+use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 
 pub struct OllamaProvider {
@@ -14,10 +17,11 @@ pub struct OllamaProvider {
     pub model: String,
     pub temperature: Option<f32>,
     pub client: reqwest::Client,
+    pub context: ProviderContext,
 }
 
 impl OllamaProvider {
-    pub fn from_config(cfg: &Config) -> Result<Self> {
+    pub fn from_config(cfg: &Config, source: &ConfigSource) -> Result<Self> {
         let entry = cfg
             .provider
             .ollama
@@ -34,11 +38,17 @@ impl OllamaProvider {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(180))
             .build()?;
+        // Ollama は基本的に API キー不要（ローカル）。クラウド経路で必要な場合のみ
+        // entry.api_key_env が設定される運用なので、診断コンテキストには key 情報を反映する。
+        let key_env = entry.api_key_env.clone();
+        let key_value = key_env.as_ref().and_then(|k| std::env::var(k).ok());
+        let context = ProviderContext::new(source, key_env, key_value.as_deref());
         Ok(Self {
             base_url,
             model,
             temperature: entry.temperature,
             client,
+            context,
         })
     }
 }
@@ -116,11 +126,20 @@ impl Provider for OllamaProvider {
             .await?;
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::provider(
-                "ollama",
-                format!("HTTP {status}: {text}"),
-            ));
+            tracing::debug!(target: "agent_cli::ai::ollama", status = %status, body = %text, "provider HTTP error");
+            let request_id = extract_request_id(&headers, &text);
+            return Err(ProviderError::new("ollama")
+                .with_http(
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("").to_string(),
+                )
+                .with_body(text)
+                .with_request_id(request_id)
+                .with_context(&self.context)
+                .detect_hint()
+                .into_app_error());
         }
 
         let byte_stream = resp.bytes_stream();

@@ -6,8 +6,11 @@ use serde_json::{json, Value};
 
 use crate::ai::stream::SseAccumulator;
 use crate::ai::tool_bridge::to_openai_tools;
-use crate::ai::{Capabilities, EventStream, Message, Provider, ProviderEvent, ToolSpec};
-use crate::config::Config;
+use crate::ai::{
+    extract_request_id, Capabilities, EventStream, Message, Provider, ProviderContext,
+    ProviderError, ProviderEvent, ToolSpec,
+};
+use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 
 pub struct CodexProvider {
@@ -16,10 +19,11 @@ pub struct CodexProvider {
     pub model: String,
     pub temperature: Option<f32>,
     pub client: reqwest::Client,
+    pub context: ProviderContext,
 }
 
 impl CodexProvider {
-    pub fn from_config(cfg: &Config) -> Result<Self> {
+    pub fn from_config(cfg: &Config, source: &ConfigSource) -> Result<Self> {
         let entry = cfg
             .provider
             .codex
@@ -29,8 +33,15 @@ impl CodexProvider {
             .api_key_env
             .clone()
             .unwrap_or_else(|| "OPENAI_API_KEY".to_string());
-        let api_key = std::env::var(&key_env)
-            .map_err(|_| AppError::provider("codex", format!("env var {key_env} not set")))?;
+        let api_key_raw = std::env::var(&key_env);
+        let context =
+            ProviderContext::new(source, Some(key_env.clone()), api_key_raw.as_deref().ok());
+        let api_key = api_key_raw.map_err(|_| {
+            ProviderError::new("codex")
+                .with_body(format!("env var {key_env} not set"))
+                .with_context(&context)
+                .into_app_error()
+        })?;
         let base_url = entry
             .base_url
             .clone()
@@ -45,6 +56,7 @@ impl CodexProvider {
             model,
             temperature: entry.temperature,
             client,
+            context,
         })
     }
 }
@@ -124,11 +136,20 @@ impl Provider for CodexProvider {
             .await?;
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::provider(
-                "codex",
-                format!("HTTP {status}: {text}"),
-            ));
+            tracing::debug!(target: "agent_cli::ai::codex", status = %status, body = %text, "provider HTTP error");
+            let request_id = extract_request_id(&headers, &text);
+            return Err(ProviderError::new("codex")
+                .with_http(
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("").to_string(),
+                )
+                .with_body(text)
+                .with_request_id(request_id)
+                .with_context(&self.context)
+                .detect_hint()
+                .into_app_error());
         }
 
         let byte_stream = resp.bytes_stream();

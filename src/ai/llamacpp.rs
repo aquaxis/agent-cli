@@ -6,8 +6,11 @@ use serde_json::{json, Value};
 
 use crate::ai::stream::SseAccumulator;
 use crate::ai::tool_bridge::to_openai_tools;
-use crate::ai::{Capabilities, EventStream, Message, Provider, ProviderEvent, ToolSpec};
-use crate::config::Config;
+use crate::ai::{
+    extract_request_id, Capabilities, EventStream, Message, Provider, ProviderContext,
+    ProviderError, ProviderEvent, ToolSpec,
+};
+use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 
 /// llama.cpp サーバ（OpenAI 互換 /v1/chat/completions）に接続するプロバイダ。
@@ -17,10 +20,11 @@ pub struct LlamaCppProvider {
     pub temperature: Option<f32>,
     pub client: reqwest::Client,
     pub api_key: Option<String>,
+    pub context: ProviderContext,
 }
 
 impl LlamaCppProvider {
-    pub fn from_config(cfg: &Config) -> Result<Self> {
+    pub fn from_config(cfg: &Config, source: &ConfigSource) -> Result<Self> {
         let entry =
             cfg.provider.llamacpp.as_ref().ok_or_else(|| {
                 AppError::provider("llama.cpp", "[provider.\"llama.cpp\"] missing")
@@ -30,10 +34,9 @@ impl LlamaCppProvider {
             .clone()
             .unwrap_or_else(|| "http://127.0.0.1:8080".to_string());
         let model = entry.model.clone().unwrap_or_else(|| "default".to_string());
-        let api_key = entry
-            .api_key_env
-            .as_ref()
-            .and_then(|k| std::env::var(k).ok());
+        let key_env = entry.api_key_env.clone();
+        let api_key = key_env.as_ref().and_then(|k| std::env::var(k).ok());
+        let context = ProviderContext::new(source, key_env, api_key.as_deref());
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(180))
             .build()?;
@@ -43,6 +46,7 @@ impl LlamaCppProvider {
             temperature: entry.temperature,
             client,
             api_key,
+            context,
         })
     }
 }
@@ -126,11 +130,20 @@ impl Provider for LlamaCppProvider {
         let resp = req.json(&body).send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
+            let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::provider(
-                "llama.cpp",
-                format!("HTTP {status}: {text}"),
-            ));
+            tracing::debug!(target: "agent_cli::ai::llamacpp", status = %status, body = %text, "provider HTTP error");
+            let request_id = extract_request_id(&headers, &text);
+            return Err(ProviderError::new("llama.cpp")
+                .with_http(
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("").to_string(),
+                )
+                .with_body(text)
+                .with_request_id(request_id)
+                .with_context(&self.context)
+                .detect_hint()
+                .into_app_error());
         }
 
         let byte_stream = resp.bytes_stream();

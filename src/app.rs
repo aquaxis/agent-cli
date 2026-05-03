@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest};
 use crate::ai;
 use crate::cli::RunArgs;
-use crate::config::Config;
+use crate::config::{Config, ConfigSource};
 use crate::error::Result;
 use crate::id::AgentId;
 use crate::ipc::registry::{RegistryEntry, RegistryHandle};
@@ -69,7 +69,7 @@ fn append_history(path: &Path, line: &str) {
     }
 }
 
-pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
+pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Result<()> {
     config.apply_overrides(args.provider.as_deref(), args.model.as_deref());
 
     let id = AgentId::new();
@@ -93,7 +93,7 @@ pub async fn run(mut config: Config, args: RunArgs) -> Result<()> {
     );
 
     // Provider 構築（接続前検証）
-    let provider = ai::build(&config)?;
+    let provider = ai::build(&config, &source)?;
     let caps = provider.capabilities();
 
     let registry_dir = config.registry_dir()?;
