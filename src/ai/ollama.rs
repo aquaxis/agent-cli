@@ -44,8 +44,8 @@ impl OllamaProvider {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(client_timeout))
             .build()?;
-        // Ollama は基本的に API キー不要（ローカル）。クラウド経路で必要な場合のみ
-        // entry.api_key_env が設定される運用なので、診断コンテキストには key 情報を反映する。
+        // Ollama generally does not require an API key (local). The entry.api_key_env
+        // is set only when needed for cloud routes, so key info is reflected in the diagnostic context.
         let key_env = entry.api_key_env.clone();
         let key_value = key_env.as_ref().and_then(|k| std::env::var(k).ok());
         let context = ProviderContext::new(source, key_env, key_value.as_deref());
@@ -98,9 +98,9 @@ impl Provider for OllamaProvider {
         Capabilities {
             streaming: true,
             tool_use: true,
-            // FR-03-1-2 / 設計書 4.3C：thinking 対応モデル（例：glm-5.1:cloud）が
-            // `message.thinking` を返すため true。非対応モデルでは parse_ndjson_line が
-            // 何も emit しないだけで害がない（方針 A）。
+            // FR-03-1-2 / design doc 4.3C: Thinking-capable models (e.g. glm-5.1:cloud)
+            // return `message.thinking`, so this is true. Non-capable models simply
+            // emit nothing from parse_ndjson_line, which is harmless (policy A).
             thinking: true,
         }
     }
@@ -188,7 +188,7 @@ pub(crate) struct OllamaLineOutcome {
     pub done: bool,
 }
 
-/// Ollama `/api/chat` の NDJSON 行 1 件を解釈する純関数。
+/// Pure function to interpret a single NDJSON line from Ollama `/api/chat`.
 pub(crate) fn parse_ndjson_line(line: &str) -> OllamaLineOutcome {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -208,7 +208,7 @@ pub(crate) fn parse_ndjson_line(line: &str) -> OllamaLineOutcome {
     };
     let mut events = Vec::new();
     if let Some(msg) = v.get("message") {
-        // FR-03-1-2 / 設計書 4.3C：emit 順は Thinking → Text → ToolUse（Anthropic 仕様と整合）。
+        // FR-03-1-2 / design doc 4.3C: Emission order is Thinking -> Text -> ToolUse (consistent with Anthropic spec).
         if let Some(thinking) = msg.get("thinking").and_then(|t| t.as_str()) {
             if !thinking.is_empty() {
                 events.push(ProviderEvent::Thinking {
@@ -319,8 +319,8 @@ mod tests {
         assert!(!outcome.done);
     }
 
-    /// FR-03-1-2 / 設計書 4.3C：`message.thinking` を `ProviderEvent::Thinking` として emit。
-    /// 同一フレーム内に thinking と content がある場合は Thinking → Text の順で発行する。
+    /// FR-03-1-2 / design doc 4.3C: Emit `message.thinking` as `ProviderEvent::Thinking`.
+    /// When both thinking and content exist in the same frame, emit in Thinking -> Text order.
     #[test]
     fn parses_thinking_field_emits_thinking_event() {
         let line = r#"{"message":{"role":"assistant","thinking":"reason about the prompt","content":"hello"},"done":false}"#;
@@ -346,7 +346,7 @@ mod tests {
         }
     }
 
-    /// 空の `message.thinking` は emit しない（既存の content 空文字スキップと同方針）。
+    /// Empty `message.thinking` is not emitted (same policy as the existing content empty-string skip).
     #[test]
     fn empty_thinking_is_not_emitted() {
         let line = r#"{"message":{"role":"assistant","thinking":"","content":"x"},"done":false}"#;
@@ -365,8 +365,8 @@ mod tests {
         assert_eq!(text_count, 1, "non-empty content should still emit Text");
     }
 
-    /// thinking のみのフレーム（content・tool_calls なし）でも Thinking が emit される。
-    /// `glm-5.1:cloud` が回答前に thinking ストリームだけを長く流すケースを想定。
+    /// A thinking-only frame (no content or tool_calls) still emits a Thinking event.
+    /// Covers the case where `glm-5.1:cloud` streams a long thinking phase before the response.
     #[test]
     fn thinking_only_frame_emits_only_thinking() {
         let line = r#"{"message":{"role":"assistant","thinking":"step 1: ..."},"done":false}"#;

@@ -43,19 +43,19 @@ pub struct ToolCtx {
     pub registry_dir: PathBuf,
 }
 
-/// AI から呼び出し可能なツール抽象。
+/// Abstract tool callable by the AI.
 ///
-/// `name` は LLM 側へ提示する識別子、`schema` は引数の JSON Schema。
-/// `invoke` は与えられた引数とコンテキストから `ToolOutput` を返す。
+/// `name` is the identifier presented to the LLM, `schema` is the JSON Schema for arguments.
+/// `invoke` returns a `ToolOutput` from the given arguments and context.
 #[async_trait]
 pub trait Tool: Send + Sync {
-    /// ツール識別子（snake_case 推奨）。
+    /// Tool identifier (snake_case recommended).
     fn name(&self) -> &'static str;
-    /// LLM に渡す簡潔な説明文。
+    /// Brief description presented to the LLM.
     fn description(&self) -> &'static str;
-    /// 引数の JSON Schema。
+    /// JSON Schema for arguments.
     fn schema(&self) -> Value;
-    /// ツールを実行する。失敗時は `ToolOutput::err` で AI に返す。
+    /// Execute the tool. On failure, return `ToolOutput::err` to the AI.
     async fn invoke(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput>;
 }
 

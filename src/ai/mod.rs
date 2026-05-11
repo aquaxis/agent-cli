@@ -16,16 +16,16 @@ pub mod ollama;
 pub mod stream;
 pub mod tool_bridge;
 
-/// バックエンドが提供する機能の有無。
+/// Capabilities provided by the backend.
 ///
-/// REPL や `selftest` はこの情報を使って未対応機能の警告や代替表示を行う。
+/// REPL and `selftest` use this information for warnings or alternative display of unsupported features.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Capabilities {
-    /// ストリーミング応答に対応するか。
+    /// Whether streaming responses are supported.
     pub streaming: bool,
-    /// `tool_use`／function calling 相当の機能をネイティブに発火できるか。
+    /// Whether `tool_use` / function calling can be natively triggered.
     pub tool_use: bool,
-    /// thinking ブロック（内省ステップ）を別系統で受信できるか。
+    /// Whether thinking blocks (introspection steps) can be received on a separate stream.
     pub thinking: bool,
 }
 
@@ -41,7 +41,7 @@ pub enum Message {
     Assistant {
         content: String,
     },
-    /// 同期的に外部から差し込まれたツール実行結果
+    /// Tool execution result injected synchronously from outside
     ToolResult {
         tool_use_id: String,
         content: String,
@@ -77,18 +77,18 @@ pub enum ProviderEvent {
 
 pub type EventStream<'a> = Pin<Box<dyn Stream<Item = ProviderEvent> + Send + 'a>>;
 
-/// AI バックエンド抽象。各バックエンドは `complete_stream` で
-/// `ProviderEvent` 列を返し、上位の Agent 会話ループはバックエンド固有の表現を
-/// 知ることなく対話・ツール呼び出しを進められる。
+/// AI backend abstraction. Each backend returns a `ProviderEvent` stream
+/// via `complete_stream`, allowing the upper Agent conversation loop to
+/// drive dialog and tool calls without knowing backend-specific representations.
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// バックエンド識別子。`"claude"` / `"codex"` / `"ollama"` / `"llama.cpp"`。
+    /// Backend identifier. `"claude"` / `"codex"` / `"ollama"` / `"llama.cpp"`.
     fn name(&self) -> &'static str;
-    /// 当該バックエンドが提供する機能の有無。
+    /// Capabilities provided by this backend.
     fn capabilities(&self) -> Capabilities;
-    /// 現在使用中のモデル名。
+    /// Currently used model name.
     fn model(&self) -> &str;
-    /// 与えられた会話履歴とツール定義から、ストリーミングで `ProviderEvent` を返す。
+    /// Return a streaming `ProviderEvent` from the given conversation history and tool definitions.
     async fn complete_stream(
         &self,
         messages: &[Message],
@@ -111,12 +111,11 @@ pub fn build(cfg: &Config, source: &ConfigSource) -> Result<Box<dyn Provider>> {
 
 pub const SUPPORTED: &[&str] = &["claude", "codex", "ollama", "llama.cpp"];
 
-/// プロバイダ HTTP エラー時の診断情報（FR-09-3／設計書 5.1）。
+/// Diagnostic information for provider HTTP errors (FR-09-3 / design doc 5.1).
 ///
-/// 4xx／5xx 応答を受領した際にユーザーが原因を切り分けられるよう、
-/// 当該プロバイダが認識している周辺情報（解決済み設定ファイルパス・
-/// `api_key_env` 名・APIキーのマスク表示・`request_id`・特定パターンに対する
-/// ヒント）を一括で表示用に整形する。
+/// When a 4xx/5xx response is received, this formats all context known to the
+/// provider (resolved config file path, `api_key_env` name, masked API key,
+/// `request_id`, and pattern-specific hints) for user-friendly display.
 #[derive(Debug, Clone)]
 pub struct ProviderError {
     pub provider: String,
@@ -168,13 +167,13 @@ impl ProviderError {
         self
     }
 
-    /// 応答パターンを解析してヒント文を埋め込む。
+    /// Analyze the response pattern and embed a hint message.
     pub fn detect_hint(mut self) -> Self {
         self.hint = derive_hint(self.status, &self.body);
         self
     }
 
-    /// `AppError::provider(...)` への文字列ペイロードとして、多行サマリ形式で返す。
+    /// Return as a multi-line summary string for use as the `AppError::provider(...)` payload.
     pub fn into_app_error(self) -> AppError {
         let provider = self.provider.clone();
         AppError::provider(provider, self.to_string())
@@ -183,7 +182,7 @@ impl ProviderError {
 
 impl fmt::Display for ProviderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // 1 行目：HTTP ステータスサマリ
+        // Line 1: HTTP status summary
         match (self.status, &self.status_text) {
             (Some(code), Some(text)) => writeln!(f, "HTTP {code} {text}")?,
             (Some(code), None) => writeln!(f, "HTTP {code}")?,
@@ -204,7 +203,7 @@ impl fmt::Display for ProviderError {
             _ => {}
         }
         if !self.body.is_empty() {
-            // body は長尺になりうるので 1 行に潰して 1KB で打ち切る
+            // Body can be very long, so collapse to 1 line and truncate at 1KB
             let one_line = self.body.replace('\n', " ");
             let trimmed: String = one_line.chars().take(1024).collect();
             writeln!(f, "  detail     : {trimmed}")?;
@@ -216,7 +215,7 @@ impl fmt::Display for ProviderError {
     }
 }
 
-/// プロバイダごとの診断コンテキスト（解決済み設定ファイルパス・`api_key_env`・キーマスク）。
+/// Per-provider diagnostic context (resolved config file path, `api_key_env`, and key mask).
 #[derive(Debug, Clone)]
 pub struct ProviderContext {
     pub config_path: PathBuf,
@@ -239,14 +238,14 @@ impl ProviderContext {
     }
 }
 
-/// HTTP ステータスと応答本文から「特定パターン → 対処ヒント」の対応を返す。
+/// Return a "specific pattern -> remediation hint" mapping based on HTTP status and response body.
 pub fn derive_hint(status: Option<u16>, body: &str) -> Option<String> {
     let lower = body.to_lowercase();
     if lower.contains("credit balance is too low") {
         return Some(
-            "Anthropic アカウントのクレジット残高が不足しています。\
-             https://console.anthropic.com/settings/billing で確認・購入するか、\
-             別アカウントの API キーを `api_key_env` の指す環境変数に設定してください。"
+            "Your Anthropic account credit balance is too low. \
+             Check or purchase credits at https://console.anthropic.com/settings/billing, \
+             or set a different account's API key in the environment variable pointed to by `api_key_env`."
                 .to_string(),
         );
     }
@@ -256,33 +255,33 @@ pub fn derive_hint(status: Option<u16>, body: &str) -> Option<String> {
         || lower.contains("invalid x-api-key")
     {
         return Some(
-            "API キーが無効または失効しています。\
-             `api_key_env` の指す環境変数の値を確認するか、\
-             プロバイダのコンソールから再発行してください。"
+            "The API key is invalid or has been revoked. \
+             Verify the value of the environment variable pointed to by `api_key_env`, \
+             or reissue the key from the provider's console."
                 .to_string(),
         );
     }
     if status == Some(429) || lower.contains("rate_limit") || lower.contains("rate limit") {
         return Some(
-            "レート制限に達しました。数分待ってから再試行するか、\
-             より低頻度の呼び出しに切り替えてください。"
+            "Rate limit reached. Wait a few minutes before retrying, \
+             or switch to lower-frequency calls."
                 .to_string(),
         );
     }
     if matches!(status, Some(s) if (500..600).contains(&s)) {
         return Some(
-            "プロバイダ側の一時的な障害が疑われます。\
-             しばらく待ってから再試行してください。"
+            "A temporary provider-side outage is suspected. \
+             Wait a while before retrying."
                 .to_string(),
         );
     }
     None
 }
 
-/// 応答ヘッダーまたは本文 JSON から `request_id` を抽出する。
+/// Extract `request_id` from response headers or body JSON.
 ///
-/// - ヘッダー：`request-id`／`x-request-id` を優先（大文字小文字は不問）。
-/// - 本文 JSON：トップレベル `request_id`、または `error.request_id`、`id` を順に試す。
+/// - Headers: `request-id` / `x-request-id` take priority (case-insensitive).
+/// - Body JSON: tries top-level `request_id`, then `error.request_id`, then `id` in order.
 pub fn extract_request_id(headers: &reqwest::header::HeaderMap, body: &str) -> Option<String> {
     for name in ["request-id", "x-request-id"] {
         if let Some(v) = headers.get(name) {
@@ -332,7 +331,7 @@ mod diagnostics_tests {
     fn hint_for_credit_balance_too_low() {
         let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}"#;
         let hint = derive_hint(Some(400), body).expect("hint");
-        assert!(hint.contains("クレジット残高"));
+        assert!(hint.contains("credit balance"));
         assert!(hint.contains("billing"));
     }
 
@@ -340,24 +339,24 @@ mod diagnostics_tests {
     fn hint_for_authentication_error() {
         let body = r#"{"error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
         let hint = derive_hint(Some(401), body).expect("hint");
-        assert!(hint.contains("API キー"));
+        assert!(hint.contains("API key"));
     }
 
     #[test]
     fn hint_for_rate_limit() {
         let hint = derive_hint(Some(429), "rate_limit_exceeded").expect("hint");
-        assert!(hint.contains("レート制限"));
+        assert!(hint.contains("Rate limit"));
     }
 
     #[test]
     fn hint_for_server_error() {
         let hint = derive_hint(Some(503), "service unavailable").expect("hint");
-        assert!(hint.contains("一時的"));
+        assert!(hint.contains("temporary"));
     }
 
     #[test]
     fn hint_none_for_unknown_400() {
-        // 「クレジット不足」「認証エラー」のいずれにも当てはまらない 400 はヒントなし。
+        // A 400 that matches neither "credit balance too low" nor "authentication error" yields no hint.
         assert!(derive_hint(Some(400), "something else").is_none());
     }
 
@@ -410,8 +409,8 @@ mod diagnostics_tests {
         assert!(s.contains("/home/u/.config/agent-cli/config.toml"));
         assert!(s.contains("ANTHROPIC_API_KEY"));
         assert!(s.contains("sk-a...nQAA"));
-        assert!(s.contains("クレジット残高"));
-        // 機密漏洩防止：マスクされていないキー本体が含まれないこと
+        assert!(s.contains("credit balance"));
+        // Prevent credential leakage: unmasked key value must not be included
         assert!(!s.contains("sk-ant-fullkey"));
     }
 
@@ -431,7 +430,7 @@ mod diagnostics_tests {
 
 #[cfg(test)]
 pub mod testing {
-    //! テスト用ヘルパー：スクリプト化された `ProviderEvent` 列を返す `MockProvider`。
+    //! Test helper: `MockProvider` that returns scripted `ProviderEvent` sequences.
     use std::sync::Mutex;
 
     use super::*;
@@ -442,7 +441,7 @@ pub mod testing {
     }
 
     impl MockProvider {
-        /// `scripts[i]` は i 回目の `complete_stream` 呼び出しで放出するイベント列。
+        /// `scripts[i]` is the event sequence emitted on the i-th `complete_stream` call.
         pub fn new(scripts: Vec<Vec<ProviderEvent>>) -> Self {
             Self {
                 model: "mock".into(),

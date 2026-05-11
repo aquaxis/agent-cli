@@ -1,188 +1,188 @@
-# 使い方ドキュメント（`usage.md`）
+# Usage Reference (`usage.md`)
 
-## サブコマンド一覧
+## Subcommands
 
 ```text
 agent-cli [--config <path>] <subcommand>
 ```
 
-### グローバルオプション
+### Global Options
 
-| オプション | 説明 |
-|-----------|------|
-| `--config <path>` | 使用する設定ファイル。`AGENT_CLI_CONFIG` 環境変数も同等に使える |
+| Option | Description |
+|--------|-------------|
+| `--config <path>` | Config file to use. The `AGENT_CLI_CONFIG` environment variable is also accepted |
 
-### サブコマンド
+### Subcommands
 
-| 形式 | 用途 |
-|------|------|
-| `agent-cli run [...]` | REPL を起動（既定） |
-| `agent-cli list` | 稼働中のピア一覧 |
-| `agent-cli send <peer> <text>` | 指定ピアにプロンプト送信して終了 |
-| `agent-cli providers` | 利用可能バックエンドの状態 |
-| `agent-cli doctor` | 設定／API キー／疎通／レジストリ／bash の点検 |
-| `agent-cli selftest [--provider <name>]` | スモークテスト |
-| `agent-cli config show` | 現在の設定を出力 |
-| `agent-cli config edit` | `$EDITOR` で設定を開く |
-| `agent-cli config path` | 解決済み設定パスを出力 |
+| Form | Purpose |
+|------|---------|
+| `agent-cli run [...]` | Start the REPL (default) |
+| `agent-cli list` | List running peers |
+| `agent-cli send <peer> <text>` | Send a prompt to a peer and exit |
+| `agent-cli providers` | Show available backend status |
+| `agent-cli doctor` | Sanity-check config / API keys / connectivity / registry / bash |
+| `agent-cli selftest [--provider <name>]` | Run smoke test |
+| `agent-cli config show` | Print current configuration |
+| `agent-cli config edit` | Open config in `$EDITOR` |
+| `agent-cli config path` | Print resolved config path |
 
-### `run` サブコマンドの引数
+### `run` subcommand options
 
-| オプション | 説明 |
-|-----------|------|
-| `--name <name>` | エージェント表示名 |
-| `--provider <kind>` | バックエンドを上書き |
-| `--model <model>` | モデルを上書き |
-| `--persona <path>` | ペルソナファイルを明示指定 |
-| `--auto-approve-tools` | ツール実行の y/N 承認をスキップ |
+| Option | Description |
+|--------|-------------|
+| `--name <name>` | Agent display name |
+| `--provider <kind>` | Override backend |
+| `--model <model>` | Override model |
+| `--persona <path>` | Explicit persona file path |
+| `--auto-approve-tools` | Skip y/N approval for tool invocations |
 
-## REPL コマンド
+## REPL Commands
 
-REPL では `/` から始まる行はコマンド、それ以外はアクティブエージェントへの通常プロンプトです。
+In the REPL, lines starting with `/` are commands; everything else is a normal prompt to the active agent.
 
-| コマンド | 用途 |
-|---------|------|
-| `/list` | ピア一覧（id・name・provider・model・role） |
-| `/send <peer> <text>` | ピアへプロンプト送信 |
-| `/tools` | このエージェントで有効なツール名一覧 |
-| `/persona` | 自身のペルソナ（role／skills／description／tool 制限／ソースパス） |
-| `/reload-persona` | ペルソナファイルを再読込し、システムプロンプトを更新（履歴は保持） |
-| `/peer <id_or_name>` | 指定ピアのペルソナ概要を表示 |
-| `/history [n]` | 過去 n 件（既定 20）のユーザー入力を表示 |
-| `/clear`、`/reset` | 会話履歴を初期化（システムプロンプト＝ペルソナは保持、User／Assistant／ToolResult を全消去） |
-| `/cancel` | 進行中の処理を中断（要求のみ。実行中のストリームを即時停止する保証はない） |
-| `/auto [on\|off\|status]` | ツール承認スキップの実行時切替。引数なし／`status` で現在値を表示 |
-| `/help` | コマンド一覧 |
-| `/quit` / `/exit` | アプリ終了 |
+| Command | Purpose |
+|---------|---------|
+| `/list` | List peers (id, name, provider, model, role) |
+| `/send <peer> <text>` | Send a prompt to a peer |
+| `/tools` | List tools enabled for this agent |
+| `/persona` | Show this agent's persona (role / skills / description / tool restrictions / source path) |
+| `/reload-persona` | Re-resolve and reload the persona file, updating the system prompt (history preserved) |
+| `/peer <id_or_name>` | Show a peer's persona summary |
+| `/history [n]` | Show last n (default 20) user inputs |
+| `/clear`, `/reset` | Clear conversation history (system prompt = persona is kept; User / Assistant / ToolResult are all removed) |
+| `/cancel` | Request cancellation of in-flight processing (request only; no guarantee of immediate stream stop) |
+| `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime. No argument or `status` shows the current value |
+| `/help` | Show command list |
+| `/quit` / `/exit` | Terminate the application |
 
-### ツール実行承認のスキップ
+### Skipping Tool Approval
 
-シェル等のツール呼び出しは既定で y/N 承認を求めます。これをスキップする経路は次の 3 つです（任意の組み合わせで可）：
+Tool invocations (shell, fs_*, send_to) request y/N approval by default. There are three ways to skip approval (any combination works):
 
-| 経路 | 例 | 反映タイミング |
-|------|-----|----------------|
-| 設定ファイル | `[runtime] auto_approve_tools = true` | `agent-cli` 起動時 |
-| CLI フラグ | `agent-cli run --auto-approve-tools` | 起動時のみ（一時的に上書き） |
-| REPL コマンド | `/auto on` | 即時。`/auto off` で再度承認モードへ戻せる |
+| Method | Example | When it takes effect |
+|--------|---------|---------------------|
+| Config file | `[runtime] auto_approve_tools = true` | At `agent-cli` startup |
+| CLI flag | `agent-cli run --auto-approve-tools` | Startup only (temporary override) |
+| REPL command | `/auto on` | Immediately. `/auto off` returns to approval mode |
 
-`/auto status`（または引数なしの `/auto`）で現在値を確認できます。承認モードのままでツール要求を受けると `[tool approval] <tool> <args>` バナーと `approve? [y/N]: ` が表示されます。`y`／`yes` のみ承認、それ以外（空文字や別単語）は拒否扱いです。
+`/auto status` (or `/auto` with no argument) shows the current value. In approval mode, each tool request displays `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted; anything else (blank input, other words) counts as denial.
 
-### `[thinking]` 表示の抑制
+### Suppressing `[thinking]` Output
 
-Claude の `thinking_delta` や Ollama の `message.thinking`（`glm-5.1:cloud` 等）は `AgentEvent::Thinking` として REPL に渡り、`[thinking] <text>` 行として描画されます。長尺 reasoning モデルでは大量に流れるため、`[ui] show_thinking` で 3 段階に制御できます：
+Claude's `thinking_delta` and Ollama's `message.thinking` (e.g. `glm-5.1:cloud`) are passed to the REPL as `AgentEvent::Thinking` and rendered as `[thinking] <text>` lines. Long-reasoning models emit large amounts of thinking text, so `[ui] show_thinking` provides three levels of control:
 
-| 値 | 挙動 |
-|----|------|
-| `"hidden"` | `[thinking]` 行を一切表示しない |
-| `"collapsed"`（既定） | 各 delta を「先頭 80 文字 + `...`」に切り詰めた 1 行で表示 |
-| `"expanded"` | 受信 text を全文表示 |
+| Value | Behavior |
+|-------|----------|
+| `"hidden"` | Never print `[thinking]` lines |
+| `"collapsed"` (default) | Truncate each delta to a single line: "first 80 chars + `...`" |
+| `"expanded"` | Print the full thinking text verbatim |
 
-未知値（`"verbose"` など）は `"collapsed"` にフォールバックします。設定変更は `agent-cli` 再起動で反映され、実行時切替は提供されません。詳細は [`doc/config.md`](config.md) の「UI 表示モード」節を参照。
+Unknown values (e.g. `"verbose"`) fall back to `"collapsed"`. Changes take effect on next `agent-cli` restart; runtime toggling is not supported. See [`doc/config.md`](config.md) "UI display modes" for details.
 
-### REPL 出力の `[info]` メッセージ
+### `[info]` Messages in the REPL
 
-REPL は `AgentEvent` のうち `Info` バリアントを `[info]` プレフィックスで描画します。`Info` は補助情報・状態通知であり、エラーではありません（エラーは `[error]` プレフィックスで区別）。代表的なメッセージ：
+The REPL renders `Info` variants of `AgentEvent` with an `[info]` prefix. `Info` is supplementary / status information, not an error (errors use the `[error]` prefix). Common messages:
 
-| メッセージ | 発生条件 | 直後の挙動 |
-|------------|----------|------------|
-| `[info] cancel requested` | `/cancel` を入力 | 進行中の処理に中断要求を送る（即時停止保証なし） |
-| `[info] history persisted (N entries)` | `/history` などの履歴保存トリガー | 入力履歴ファイルへの flush 完了 |
-| `[info] system prompt updated` | `/reload-persona` で履歴先頭を差し替え | 以降の応答に新しいシステムプロンプトが反映 |
-| `[info] history cleared (N message(s) removed)` | `/clear`／`/reset` で会話履歴を初期化 | システムプロンプト（ペルソナ）は保持、User／Assistant／ToolResult を全消去 |
-| `[info] max tool-use iterations reached` | tool_use 反復が `[runtime] max_tool_iterations`（既定 24）に到達（FR-04-3／設計書 4.3B） | 当該ターンを `Done` で終了、次のユーザー入力プロンプトを再描画 |
+| Message | Trigger | What happens next |
+|---------|---------|-------------------|
+| `[info] cancel requested` | `/cancel` entered | Sends a cancellation request to in-flight processing (no guarantee of immediate stop) |
+| `[info] history persisted (N entries)` | History save trigger (e.g. `/history`) | Flush to input history file complete |
+| `[info] system prompt updated` | `/reload-persona` replaced the system prompt at the head of history | Subsequent responses use the new system prompt |
+| `[info] history cleared (N message(s) removed)` | `/clear` / `/reset` cleared conversation history | System prompt (persona) kept; User / Assistant / ToolResult all removed |
+| `[info] max tool-use iterations reached` | tool_use iteration count reached `[runtime] max_tool_iterations` (default 24) (FR-04-3 / design doc 4.3B) | The turn ends with `Done`; the next user input prompt is redrawn |
 
-`[info] max tool-use iterations reached` は AI がツール実行を `max_tool_iterations` 反復に渡って繰り返しても結論に達しなかった場合の防護機構です（`agent.rs::process_turn` の `self.config.runtime.max_tool_iterations.max(1)`）。上限値は設定ファイルで変更可能（既定 24、最小 1、最大 `u32::MAX`）。意味と対処は `doc/troubleshooting.md` の「`[info] max tool-use iterations reached` と表示される」節、設定値のチューニングは `doc/config.md` の `[runtime]` 節を参照してください。
+`[info] max tool-use iterations reached` is a guard mechanism that activates when the AI keeps cycling through `tool_use → tool result → tool_use → ...` without reaching a conclusion (`agent.rs::process_turn` applies `self.config.runtime.max_tool_iterations.max(1)`). The cap is configurable (default 24, min 1, max `u32::MAX`). For meaning and workarounds, see `doc/troubleshooting.md` "When `[info] max tool-use iterations reached` appears"; for tuning the value, see `doc/config.md` section `[runtime]`.
 
-## ユースケース
+## Use Cases
 
-### 1. 単独対話（claude）
+### 1. Standalone chat (claude)
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 agent-cli run --provider claude
 ```
 
-### 2. ローカル LLM（ollama）
+### 2. Local LLM (ollama)
 
 ```bash
 ollama serve &
 agent-cli run --provider ollama --model glm-5.1:cloud
 ```
 
-### 3. 2 プロセス協調（claude × ollama）
+### 3. Two-process coordination (claude x ollama)
 
 ```toml
-# 双方の設定で registry_dir を共有
+# Share registry_dir in both configs
 [runtime]
 registry_dir = "/tmp/agent-cli/team"
 ```
 
 ```bash
-# ターミナル A
+# Terminal A
 agent-cli run --provider claude --name alice
 
-# ターミナル B
+# Terminal B
 agent-cli run --provider ollama --model glm-5.1:cloud --name bob
 ```
 
-A 側：
+From terminal A:
 
 ```text
 > /list
-agent-01HX...    alice    claude    claude-opus-4-7    汎用アシスタント
-agent-01HY...    bob      ollama    glm-5.1:cloud      汎用アシスタント
+agent-01HX...    alice    claude    claude-opus-4-7    general assistant
+agent-01HY...    bob      ollama    glm-5.1:cloud      general assistant
 
-> /send bob "B 視点で1行レビューして"
+> /send bob "Give me a one-line review from B's perspective"
 delivered to agent-01HY...
 ```
 
-B 側に `[peer prompt from agent-01HX...]` が表示され、AI が応答します。
+Terminal B shows `[peer prompt from agent-01HX...]` and the AI responds.
 
-### 4. 役割分担（ペルソナ運用）
+### 4. Role assignment (persona operation)
 
 ```bash
 cp example/agents/reviewer.md ~/.config/agent-cli/agents/alice.md
 cp example/agents/coder.md    ~/.config/agent-cli/agents/bob.md
 
-# それぞれ別端末で
-agent-cli run --name alice    # reviewer ペルソナが自動適用
-agent-cli run --name bob      # coder ペルソナが自動適用
+# In separate terminals
+agent-cli run --name alice    # reviewer persona auto-applied
+agent-cli run --name bob      # coder persona auto-applied
 ```
 
-REPL 上で `/persona` を打てば、現在適用中のロールとスキルが確認できます。フロントマターの全キー（`role`／`skills`／`allowed_tools`／`denied_tools`／`model`／`temperature` 等）と運用パターンの詳細は [`doc/personas.md`](personas.md) を参照。
+Type `/persona` in the REPL to see the currently applied role and skills. For the full list of frontmatter keys (`role` / `skills` / `allowed_tools` / `denied_tools` / `model` / `temperature` etc.) and operational patterns, see [`doc/personas.md`](personas.md).
 
-### 5. CLI からのワンショット送信
+### 5. One-shot send from CLI
 
-REPL を立ち上げず、別エージェントへ短いメッセージだけ届けたい場合：
+To send a short message to another agent without starting a REPL:
 
 ```bash
 agent-cli send alice "stand-by"
 ```
 
-これは IPC クライアントとしてだけ動き、すぐに終了します。受信側エージェントは継続的に応答します。
+This runs as an IPC client only and exits immediately. The receiving agent continues to respond.
 
-### 6. 設定切り替え
+### 6. Configuration switching
 
 ```bash
 agent-cli --config ./project-a.toml run --name proj-a
 agent-cli --config ./project-b.toml run --name proj-b
 ```
 
-`registry_dir` を別にすればまったく独立した世界として動きます。
+If `registry_dir` is different, they run in completely isolated environments.
 
-## 入力履歴
+## Input History
 
-ユーザー入力（`/` で始まらない通常プロンプト）は、`<runtime.log_dir>/history.txt` に 1 行 1 件で永続化されます。次回起動時に読み込まれ、`/history [n]` で確認できます。
+User inputs (normal prompts not starting with `/`) are persisted to `<runtime.log_dir>/history.txt`, one entry per line. They are reloaded on next startup and can be viewed with `/history [n]`.
 
-- 既定 `runtime.log_dir = "~/.local/share/agent-cli/logs"` の場合、履歴は `~/.local/share/agent-cli/logs/history.txt`。
-- 上限は最終 200 件（メモリ上）。ファイル側は append-only。
-- 機微情報を入力した際は手動で削除してください。
+- With the default `runtime.log_dir = "~/.local/share/agent-cli/logs"`, history lives at `~/.local/share/agent-cli/logs/history.txt`.
+- The in-memory limit is the last 200 entries. The file is append-only.
+- If you enter sensitive information, delete it from the history file manually.
 
-## 会話履歴のリセット（`/clear`）
+## Resetting Conversation History (`/clear`)
 
-LLM へ毎ターン送られる会話文脈（System／User／Assistant／ToolResult）を初期化したい場合は `/clear`（または別名 `/reset`）を実行します。
+To reset the conversation context (System / User / Assistant / ToolResult) sent to the LLM each turn, run `/clear` (or its alias `/reset`).
 
-- システムプロンプト（ペルソナ由来）は保持されます。User／Assistant／ToolResult のみ全消去。
-- 直後の Info 出力に削除件数が表示されます：`[info] conversation history cleared (N message(s) removed; persona retained)`。
-- ペルソナ自体を差し替えたい場合は `/reload-persona` を併用してください。
-- `/clear` は当該プロセス内のメモリ上履歴のみ操作します。`<log_dir>/<agent-id>/<timestamp>.jsonl` の会話ログファイルは削除しません（後から見返せます）。
+- The system prompt (derived from the persona) is kept. Only User / Assistant / ToolResult messages are removed.
+- The subsequent Info output shows the removal count: `[info] conversation history cleared (N message(s) removed; persona retained)`.
+- To change the persona itself, use `/reload-persona` in combination.
+- `/clear` operates on the in-memory history within the current process. It does not delete conversation log files at `<log_dir>/<agent-id>/<timestamp>.jsonl` (you can review them later).

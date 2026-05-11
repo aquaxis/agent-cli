@@ -186,10 +186,10 @@ impl Provider for CodexProvider {
     }
 }
 
-/// OpenAI Chat Completions のストリームパース中間状態。
+/// Intermediate state for OpenAI Chat Completions stream parsing.
 #[derive(Default)]
 pub(crate) struct CodexParseState {
-    /// 現在組み立て中の tool_call: (id, name, partial JSON)
+    /// Currently assembling tool_call: (id, name, partial JSON)
     pub current_tool: Option<(String, String, String)>,
 }
 
@@ -204,7 +204,7 @@ fn flush_tool(state: &mut CodexParseState) -> Option<ProviderEvent> {
     Some(ProviderEvent::ToolUse { id, name, args: v })
 }
 
-/// Chat Completions の SSE フレーム 1 件を解釈する純関数。
+/// Pure function to interpret a single Chat Completions SSE frame.
 pub(crate) fn handle_codex_frame(frame: &str, state: &mut CodexParseState) -> CodexOutcome {
     let mut events = Vec::new();
     if frame.trim() == "[DONE]" {
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn flushes_pending_tool_on_done_marker() {
-        // finish_reason が来ずに [DONE] で締める変則ケースでも tool_use を出す
+        // Emit tool_use even in the edge case where [DONE] arrives without a finish_reason
         let evs = collect(&[
             r#"{"choices":[{"delta":{"tool_calls":[{"id":"call_x","function":{"name":"fs_read","arguments":"{}"}}]}}]}"#,
             "[DONE]",

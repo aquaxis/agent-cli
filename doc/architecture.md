@@ -1,8 +1,8 @@
-# アーキテクチャ概要（`architecture.md`）
+# Architecture Overview (`architecture.md`)
 
-`AI_PRJ_DESIGN.md` の要約版です。実装の地図として読んでください。
+This is a summary of `AI_PRJ_DESIGN.md`. Read it as a map for implementation.
 
-## 1. 全体像
+## 1. Big Picture
 
 ```text
 +--------------------+        +--------------------+
@@ -17,38 +17,38 @@
            v                              v
        AI Provider API              AI Provider API
 
-レジストリディレクトリ:
-  $XDG_RUNTIME_DIR/agent-cli/   または /tmp/agent-cli/
-    └─ <agent-id>.sock   ... 各プロセスのIPCソケット
-    └─ <agent-id>.json   ... メタ情報（name/provider/model/persona/...）
+Registry directory:
+  $XDG_RUNTIME_DIR/agent-cli/   or /tmp/agent-cli/
+    └─ <agent-id>.sock   ... IPC socket for each process
+    └─ <agent-id>.json   ... metadata (name/provider/model/persona/...)
 ```
 
-- 1 プロセス＝1 エージェント。
-- プロセス間連携は **ローカル Unix ドメインソケット**（`0600`）。外部公開ポートは開きません。
-- バックエンドへの HTTP 通信はプロセスごとに独立。
+- 1 process = 1 agent.
+- Inter-process communication uses **local Unix domain sockets** (`0600`). No publicly open ports.
+- HTTP communication to backends is independent per process.
 
-## 2. モジュール構成
+## 2. Module Structure
 
 ```text
 src/
-├── main.rs              ... CLI エントリ／サブコマンド分岐／std::process::exit による確定終了
-├── cli.rs               ... clap 引数定義
-├── app.rs               ... `run` の REPL 本体／run_input_loop／PromptState／handle_auto_command／wait_for_termination_signal
-├── agent.rs             ... 単一エージェントの会話ループ／ApprovalRequest／request_approval
+├── main.rs              ... CLI entry point / subcommand dispatch / definitive exit via std::process::exit
+├── cli.rs               ... clap argument definitions
+├── app.rs               ... `run` REPL body / run_input_loop / PromptState / handle_auto_command / wait_for_termination_signal
+├── agent.rs             ... single agent conversation loop / ApprovalRequest / request_approval
 ├── commands.rs          ... list/send/providers/doctor/selftest/config
-├── config.rs            ... 設定ファイル読込・解決順序
+├── config.rs            ... config file loading / resolution order
 ├── id.rs                ... AgentId
-├── persona.rs           ... ペルソナ（YAML+本文）
-├── log.rs               ... 会話ログ
+├── persona.rs           ... persona (YAML + body)
+├── log.rs               ... conversation log
 ├── error.rs             ... AppError
 ├── ai/
 │   ├── mod.rs           ... Provider trait, build()
-│   ├── claude.rs        ... Anthropic Messages（SSE, thinking, tool_use）
-│   ├── codex.rs         ... OpenAI Chat Completions（SSE, function calling）
-│   ├── ollama.rs        ... Ollama /api/chat（NDJSON, tool_calls）
-│   ├── llamacpp.rs      ... llama.cpp /v1/chat/completions（OpenAI 互換）
-│   ├── tool_bridge.rs   ... ツール定義の形式変換
-│   └── stream.rs        ... SSE フレームの組み立て
+│   ├── claude.rs        ... Anthropic Messages (SSE, thinking, tool_use)
+│   ├── codex.rs         ... OpenAI Chat Completions (SSE, function calling)
+│   ├── ollama.rs        ... Ollama /api/chat (NDJSON, tool_calls)
+│   ├── llamacpp.rs      ... llama.cpp /v1/chat/completions (OpenAI-compatible)
+│   ├── tool_bridge.rs   ... tool definition format conversion
+│   └── stream.rs        ... SSE frame assembly
 ├── tools/
 │   ├── mod.rs           ... Tool trait, ToolRegistry
 │   ├── shell.rs
@@ -57,40 +57,40 @@ src/
 │   └── send_to.rs
 └── ipc/
     ├── mod.rs           ... IpcMessage
-    ├── server.rs        ... UnixListener（0600）／Drop で accept abort + ソケット削除
+    ├── server.rs        ... UnixListener (0600) / Drop performs accept abort + socket deletion
     ├── client.rs        ... UnixStream
-    └── registry.rs      ... <agent-id>.{sock,json} 走査／Drop で自動クリーンアップ
+    └── registry.rs      ... <agent-id>.{sock,json} scan / Drop performs automatic cleanup
 ```
 
-主要型：
+Key types:
 
-- `Agent.auto_approve: Arc<AtomicBool>` — `/auto on|off` で実行時切替
-- `Agent.approval_tx: Option<mpsc::Sender<ApprovalRequest>>` — 入力ループへの承認要求経路
-- `enum PromptState { Ready, Pending, AwaitingApproval(oneshot::Sender<bool>) }` — REPL 入力ループの状態
+- `Agent.auto_approve: Arc<AtomicBool>` -- toggled at runtime with `/auto on|off`
+- `Agent.approval_tx: Option<mpsc::Sender<ApprovalRequest>>` -- approval request path to the input loop
+- `enum PromptState { Ready, Pending, AwaitingApproval(oneshot::Sender<bool>) }` -- REPL input loop state
 
-## 3. 主要データフロー
+## 3. Core Data Flows
 
-### 3.1 ユーザープロンプト処理
+### 3.1 User Prompt Processing
 
 ```text
 stdin -> run_input_loop -> mpsc -> Agent loop -> Provider -> ProviderEvent stream
             ^                          |
             |                          +-- text_delta -> mpsc -> display task -> stdout
             |                          +-- thinking   -> mpsc -> display task -> stdout
-            |                          +-- tool_use   -> 承認 (3.3) -> ToolRegistry -> ToolOutput
-            |                          +-- Done       -> mpsc -> display task -> agent_idle 通知 -> 入力ループ
+            |                          +-- tool_use   -> approval (3.3) -> ToolRegistry -> ToolOutput
+            |                          +-- Done       -> mpsc -> display task -> agent_idle notification -> input loop
             |
-            +-- agent_idle 受領で Pending -> Ready に復帰し、次のプロンプト `> ` を再描画
+            +-- On receiving agent_idle, transitions Pending -> Ready and redraws the next prompt `> `
 ```
 
-- `run_input_loop` は `enum PromptState { Ready, Pending, AwaitingApproval(oneshot::Sender<bool>) }` を保持し、`tokio::select!` で 4 経路（shutdown／idle／approval／stdin）を多重化。
-- ユーザー入力送信直後は `Pending` に遷移し、`Done` 受領（`display_task` から `mpsc::<()>` 経由）まで stdin 読取を抑止。これによりストリーミング出力と入力エコーの混在を防ぐ。
-- ツール実行は `[runtime] max_tool_iterations` 反復（既定 24、最小 1、最大 `u32::MAX`）。`agent.rs::process_turn` の `self.config.runtime.max_tool_iterations.max(1)`。無限ループ防止のための防護機構。`auto_approve_tools=false`（既定）の場合は 3.3 の承認チャネル経由で y/N を取得する。
-- 上限到達時：設定回数の反復を消化しても AI が `tool_use` を返し続ける場合、ループを抜けて `AgentEvent::Info { message: "max tool-use iterations reached" }` ＋ `AgentEvent::Done` をこの順で発行する。エラーチャネルではなく Info チャネルで通知する（「異常」ではなく「未収束」を意味するため）。REPL は通常の `Done` と同じ扱いで次入力プロンプトを再描画する。意味と対処、推奨レンジは `doc/troubleshooting.md` ／ `doc/config.md` 参照。
-- `Done` は通常応答完了だけでなく、`provider.complete_stream` の失敗時にも必ず発行され、入力ループが Pending のまま固まらない。
-- `display_task` は起動時に `config.ui.show_thinking_mode()` から `ShowThinkingMode { Hidden, Collapsed, Expanded }` を解決し、`AgentEvent::Thinking` を 3 値で分岐して描画する（FR-03-1-2／設計書 4.3C）。`Hidden` は描画スキップ、`Collapsed` は `collapse_thinking_text()` で「先頭 80 文字 + 1 行目」に切り詰め、`Expanded` は全文。設定変更は再起動で反映、実行時切替なし。
+- `run_input_loop` holds `enum PromptState { Ready, Pending, AwaitingApproval(oneshot::Sender<bool>) }` and multiplexes 4 channels (shutdown / idle / approval / stdin) via `tokio::select!`.
+- Immediately after sending user input, it transitions to `Pending` and suppresses stdin reads until `Done` is received (via `mpsc::<()>` from `display_task`). This prevents interleaving of streaming output and input echo.
+- Tool execution iterates up to `[runtime] max_tool_iterations` (default 24, minimum 1, maximum `u32::MAX`). See `self.config.runtime.max_tool_iterations.max(1)` in `agent.rs::process_turn`. This is a guard mechanism to prevent infinite loops. When `auto_approve_tools=false` (default), y/N confirmation is obtained via the approval channel described in 3.3.
+- On reaching the limit: If the AI continues returning `tool_use` after exhausting the configured number of iterations, the loop exits and issues `AgentEvent::Info { message: "max tool-use iterations reached" }` followed by `AgentEvent::Done` in this order. Notification goes through the Info channel rather than the Error channel (since it means "not converged" rather than "abnormal"). The REPL treats it the same as a normal `Done` and redraws the next input prompt. For meaning, mitigation, and recommended ranges, see `doc/troubleshooting.md` / `doc/config.md`.
+- `Done` is always issued not only on normal response completion but also when `provider.complete_stream` fails, ensuring the input loop never gets stuck in Pending state.
+- At startup, `display_task` resolves `ShowThinkingMode { Hidden, Collapsed, Expanded }` from `config.ui.show_thinking_mode()` and branches `AgentEvent::Thinking` rendering across 3 modes (FR-03-1-2 / Design doc 4.3C). `Hidden` skips rendering, `Collapsed` truncates to "first 80 chars + line 1" via `collapse_thinking_text()`, and `Expanded` shows full text. Setting changes take effect on restart; there is no runtime toggle.
 
-### 3.2 ピア間メッセージング
+### 3.2 Inter-Peer Messaging
 
 ```text
 proc A                                          proc B
@@ -113,12 +113,12 @@ ipc::client::send (UnixStream)
                                        Agent loop (B)
                                               │
                                               ▼
-                                      Provider 応答 -> 画面表示
+                                      Provider response -> screen display
 ```
 
-### 3.3 ツール実行承認の入出力統合
+### 3.3 Tool Execution Approval I/O Integration
 
-承認は agent タスクと入力ループ間の 2 本立てチャネルで行います（`std::io::stdin` 直読みは禁止）。
+Approval is handled via a two-channel path between the agent task and the input loop (direct reads from `std::io::stdin` are prohibited).
 
 ```text
 Agent::process_turn (auto_approve=false)
@@ -126,23 +126,23 @@ Agent::process_turn (auto_approve=false)
    ├── ApprovalRequest { tool_name, args, response: oneshot::Sender<bool> }
    │       │
    │       ▼ mpsc::Sender<ApprovalRequest>
-   │   run_input_loop  (PromptState::AwaitingApproval(resp_tx) に遷移)
+   │   run_input_loop  (transitions to PromptState::AwaitingApproval(resp_tx))
    │       │
-   │       │ "[tool approval] ... approve? [y/N]:" を描画
+   │       │ Draws "[tool approval] ... approve? [y/N]:"
    │       │
-   │       ▼ stdin から次の 1 行を取得
-   │   y/yes -> resp_tx.send(true)、それ以外 -> false
+   │       ▼ reads the next line from stdin
+   │   y/yes -> resp_tx.send(true), otherwise -> false
    │       │
    │       ▼ oneshot::Receiver<bool>
-   └── 承認結果に応じて tool 実行 or "user denied tool execution"
+   └── based on approval result, executes tool or "user denied tool execution"
 ```
 
-- `auto_approve` は `Arc<AtomicBool>` で agent と REPL 間で共有され、REPL コマンド `/auto on|off|status` で実行時切替可能。
-- 承認待機中（`AwaitingApproval`）に shutdown シグナルが入ると、`resp_tx.send(false)` で安全側倒し → agent の `oneshot::Receiver::await` が即解消し、ぶら下がりを防止。
+- `auto_approve` is shared between the agent and REPL via `Arc<AtomicBool>` and can be toggled at runtime with the REPL command `/auto on|off|status`.
+- While awaiting approval (`AwaitingApproval`), if a shutdown signal arrives, `resp_tx.send(false)` provides a fail-safe default, and the agent's `oneshot::Receiver::await` resolves immediately, preventing any dangling waits.
 
-## 4. レジストリ仕様
+## 4. Registry Specification
 
-`<registry_dir>/<agent-id>.json`：
+`<registry_dir>/<agent-id>.json`:
 
 ```json
 {
@@ -157,13 +157,13 @@ Agent::process_turn (auto_approve=false)
 }
 ```
 
-走査時：
+During scanning:
 
-- `*.json` を読み、対応する `*.sock` の存在を確認
-- 同期に `/proc/<pid>` の存在で PID 生存確認
-- いずれかが欠けていれば stale として `<agent-id>.{sock,json}` を掃除
+- Reads `*.json` and verifies the corresponding `*.sock` exists
+- Confirms PID liveness via `/proc/<pid>` existence
+- If either is missing, treats as stale and cleans up `<agent-id>.{sock,json}`
 
-## 5. Provider 抽象
+## 5. Provider Abstraction
 
 ```rust
 #[async_trait]
@@ -184,29 +184,29 @@ enum ProviderEvent {
 }
 ```
 
-各バックエンドは内部表現が違っても、同じ `ProviderEvent` 列に正規化して上位に渡します。
+Each backend normalizes its internal representation into the same `ProviderEvent` sequence before passing it upstream.
 
-## 6. ペルソナ機構
+## 6. Persona Mechanism
 
-優先順位：
+Priority order:
 
 ```text
 1. --persona <path>
 2. [runtime] persona_file
 3. <agents_dir>/<name>.md
-4. 組み込み既定（汎用アシスタント）
+4. Built-in default (general-purpose assistant)
 ```
 
-ペルソナの `role`／`skills`／本文はシステムプロンプトに合成。`allowed_tools`／`denied_tools` は `ToolRegistry::build` で反映され、結果は `/tools` で確認できます。`model`／`temperature` は起動時に当該プロバイダのリクエスト body へ上書き（再読込時は反映されません）。再読込は REPL の `/reload-persona`（履歴保持）。
+The persona's `role` / `skills` / body text are synthesized into the system prompt. `allowed_tools` / `denied_tools` are reflected in `ToolRegistry::build`, and the result can be confirmed with `/tools`. `model` / `temperature` override the corresponding provider's request body at startup (not reflected on reload). Reload is done via the REPL command `/reload-persona` (preserves conversation history).
 
-設定方法・フロントマター全キー・記述例・運用シナリオは [`doc/personas.md`](personas.md) を参照。
+For configuration methods, frontmatter keys, writing examples, and operational scenarios, see [`doc/personas.md`](personas.md).
 
-## 7. 終了処理（shutdown coordination）
+## 7. Shutdown Coordination
 
-`/quit`／`/exit`／`Ctrl+D`（EOF）／`Ctrl+C`（SIGINT）／`SIGTERM` のいずれを契機としても、同じ終了シーケンスへ合流します。
+Regardless of the trigger -- `/quit` / `/exit` / `Ctrl+D` (EOF) / `Ctrl+C` (SIGINT) / `SIGTERM` -- all paths converge to the same shutdown sequence.
 
 ```text
-[/quit /exit ハンドラ]   [stdin EOF 検出]   [SIGINT/SIGTERM ハンドラ]
+[/quit /exit handler]   [stdin EOF detected]   [SIGINT/SIGTERM handler]
               \              |              /
                \             v             /
                 +-- shutdown_tx.send(true) (tokio::sync::watch) --+
@@ -217,24 +217,24 @@ enum ProviderEvent {
         │ ipc_task.abort()                    │
         │ signal_task.abort()                 │
         │ drop(input_tx)                      │
-        │ agent_handle (500ms タイムアウト)    │
+        │ agent_handle (500ms timeout)        │
         │ display_task.await                  │
-        │ drop(ipc_server)  → IpcServer::Drop │
-        │   - accept ループ abort             │
-        │   - <id>.sock 削除                  │
+        │ drop(ipc_server)  -> IpcServer::Drop│
+        │   - accept loop abort               │
+        │   - <id>.sock deletion               │
         │ registry_handle (RegistryHandle::Drop)│
-        │   - <id>.sock / <id>.json 削除      │
+        │   - <id>.sock / <id>.json deletion  │
         └─────────────────────────────────────┘
                                     │
                                     ▼
                           std::process::exit(0)
 ```
 
-- `IpcServer` と `RegistryHandle` は `Drop` 実装で abort + ファイル削除を行うため、panic 時にも残骸が残らない。
-- `main` は `std::process::exit(0/1)` を明示的に呼び、tokio runtime drop が `tokio::io::stdin()` のブロッキングスレッドを待つ事象を回避。
-- 開発機では 5 経路すべて 1 秒以内に正常終了し、レジストリ残留物なしを確認済（`/quit` 110ms / `/exit` 110ms / `Ctrl+D` 110ms / `SIGINT` 19ms / `SIGTERM` 3ms）。
-- 承認待機中（`AwaitingApproval`）の場合は、入力ループ break 時に `oneshot::Sender::send(false)` で安全側倒し（3.3 参照）。
+- `IpcServer` and `RegistryHandle` perform abort + file deletion in their `Drop` implementations, ensuring no remnants remain even on panic.
+- `main` explicitly calls `std::process::exit(0/1)` to avoid the tokio runtime drop waiting for the `tokio::io::stdin()` blocking thread.
+- On development machines, all 5 paths confirmed normal termination within 1 second with no registry remnants (`/quit` 110ms / `/exit` 110ms / `Ctrl+D` 110ms / `SIGINT` 19ms / `SIGTERM` 3ms).
+- When awaiting approval (`AwaitingApproval`), on input loop break, `oneshot::Sender::send(false)` provides a fail-safe default (see 3.3).
 
-## 8. 対象 OS
+## 8. Target OS
 
-Linux のみ。Unix ドメインソケット、`XDG_RUNTIME_DIR`、`/proc/<pid>`、`tokio::signal::unix` を前提に実装しています。
+Linux only. The implementation assumes Unix domain sockets, `XDG_RUNTIME_DIR`, `/proc/<pid>`, and `tokio::signal::unix`.

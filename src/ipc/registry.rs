@@ -55,8 +55,8 @@ impl RegistryHandle {
 }
 
 impl Drop for RegistryHandle {
-    /// FR-13「アプリ終了」の保証として、`run` 完了経路（正常終了／パニック）いずれでも
-    /// レジストリメタ／ソケットが残らないことを担保する。
+    /// As a guarantee of FR-13 "App termination", ensures registry metadata and
+    /// socket are removed regardless of how `run` completes (normal exit or panic).
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.meta_path);
         let _ = std::fs::remove_file(&self.socket_path);
@@ -83,7 +83,7 @@ pub fn list_entries(dir: &Path) -> Result<Vec<RegistryEntry>> {
             Err(_) => continue,
         };
         if !parsed.socket.exists() {
-            // stale エントリは掃除
+            // Clean up stale entries
             let _ = std::fs::remove_file(&path);
             continue;
         }

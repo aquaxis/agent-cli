@@ -10,11 +10,11 @@ use clap::{Parser, Subcommand};
     long_about = None
 )]
 pub struct Cli {
-    /// 使用する設定ファイルパス。未指定時は AGENT_CLI_CONFIG → ~/.config/agent-cli/config.toml の順で解決。
+    /// Config file path to use. When unspecified, resolves in order: AGENT_CLI_CONFIG -> ~/.config/agent-cli/config.toml.
     #[arg(long, global = true, env = "AGENT_CLI_CONFIG")]
     pub config: Option<PathBuf>,
 
-    /// REPL 起動オプション（サブコマンド省略時にも利用可能）。
+    /// REPL startup options (available even when subcommand is omitted).
     #[command(flatten)]
     pub run_args: RunArgs,
 
@@ -24,34 +24,34 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// REPL を起動して 1 エージェントとして対話を開始
+    /// Start REPL and begin conversation as one agent
     Run,
 
-    /// 稼働中のピア一覧を表示
+    /// List running peers
     List,
 
-    /// 指定ピアにプロンプトを送信
+    /// Send a prompt to the specified peer
     Send {
-        /// 宛先 agent-id または表示名
+        /// Destination agent-id or display name
         peer: String,
-        /// 送信するプロンプト本文
+        /// Prompt text to send
         text: String,
     },
 
-    /// 利用可能なバックエンドと設定状況を表示
+    /// Show available backends and configuration status
     Providers,
 
-    /// 設定・APIキー・バックエンド疎通・レジストリ・シェルツールを点検
+    /// Check configuration, API keys, backend connectivity, registry, and shell tools
     Doctor,
 
-    /// 短いプロンプトとツール実行で動作確認するスモークテスト
+    /// Smoke test with a short prompt and tool execution
     Selftest {
-        /// 検証対象バックエンド（未指定時は config.provider.kind）
+        /// Backend to verify (defaults to config.provider.kind when unspecified)
         #[arg(long)]
         provider: Option<String>,
     },
 
-    /// 設定操作
+    /// Configuration operations
     Config {
         #[command(subcommand)]
         action: ConfigAction,
@@ -60,34 +60,34 @@ pub enum Command {
 
 #[derive(Parser, Debug, Default, Clone)]
 pub struct RunArgs {
-    /// エージェントの表示名
+    /// Agent display name
     #[arg(long, global = true)]
     pub name: Option<String>,
 
-    /// AI バックエンド (claude / codex / ollama / llama.cpp)
+    /// AI backend (claude / codex / ollama / llama.cpp)
     #[arg(long, global = true)]
     pub provider: Option<String>,
 
-    /// バックエンドのモデル名を上書き
+    /// Override the backend model name
     #[arg(long, global = true)]
     pub model: Option<String>,
 
-    /// エージェントペルソナファイルのパス
+    /// Path to the agent persona file
     #[arg(long, global = true)]
     pub persona: Option<PathBuf>,
 
-    /// ツール実行を確認なしで自動承認
+    /// Auto-approve tool execution without confirmation
     #[arg(long, global = true)]
     pub auto_approve_tools: bool,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ConfigAction {
-    /// 現在の設定を表示
+    /// Show current configuration
     Show,
-    /// 設定ファイルをエディタで開く
+    /// Open configuration file in editor
     Edit,
-    /// 解決済みの設定ファイルパスを表示
+    /// Show resolved configuration file path
     Path,
 }
 
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn cli_parses_run_with_persona_and_provider() {
-        // 明示的 run サブコマンド
+        // Explicit run subcommand
         let cli = Cli::try_parse_from([
             "agent-cli",
             "--config",
@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(cli.run_args.model.as_deref(), Some("glm-5.1:cloud"));
         assert!(cli.run_args.auto_approve_tools);
 
-        // サブコマンド省略時（FR-01 等価性）
+        // Subcommand omitted (FR-01 equivalence)
         let cli = Cli::try_parse_from([
             "agent-cli",
             "--name",

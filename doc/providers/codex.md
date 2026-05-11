@@ -1,13 +1,13 @@
-# Codex（OpenAI）バックエンド
+# Codex (OpenAI) Backend
 
-OpenAI Chat Completions API（streaming、function calling）を利用するバックエンドです。「codex」という名前は agent-cli 内部の `kind` であり、OpenAI のレガシー Codex モデルを意味するものではありません。
+This backend uses the OpenAI Chat Completions API (streaming, function calling). The name "codex" is the internal `kind` in agent-cli and does not refer to OpenAI's legacy Codex model.
 
-## 前提条件
+## Prerequisites
 
-- OpenAI のアカウントで API キーを発行
-- 環境変数として保持（既定 `OPENAI_API_KEY`）
+- Issue an API key from an OpenAI account
+- Set it as an environment variable (default: `OPENAI_API_KEY`)
 
-## 設定
+## Configuration
 
 ```toml
 [provider]
@@ -19,45 +19,45 @@ model       = "gpt-4.1"
 base_url    = "https://api.openai.com/v1"
 ```
 
-## 推奨モデル
+## Recommended Models
 
-OpenAI 公式のモデル名一覧から、以下を目安に選んでください。
+Choose from OpenAI's official model list; approximate guidance:
 
-| 用途 | 例 |
-|------|----|
-| 推論重視・コード | `gpt-4.1` 系 |
-| 汎用対話 | `gpt-4o` 系 |
-| 軽量 | `gpt-4o-mini` 系 |
+| Use case | Example |
+|----------|---------|
+| Reasoning / code | `gpt-4.1` series |
+| General chat | `gpt-4o` series |
+| Lightweight | `gpt-4o-mini` series |
 
-`base_url` を変えれば、OpenAI 互換のゲートウェイ／企業内プロキシ／Azure OpenAI 互換エンドポイントなどでも動作します。
+Changing `base_url` allows operation with OpenAI-compatible gateways, enterprise proxies, or Azure OpenAI endpoints.
 
-## 対応機能
+## Supported Features
 
-| 機能 | 対応 | 備考 |
-|------|------|------|
+| Feature | Support | Notes |
+|---------|---------|-------|
 | Streaming | ✓ | SSE |
-| Tool use | ✓ | function calling を `ProviderEvent::ToolUse` に正規化 |
-| Thinking | ✗ | 非対応（`Capabilities::thinking=false`） |
+| Tool use | ✓ | Normalizes function calling to `ProviderEvent::ToolUse` |
+| Thinking | ✗ | Not supported (`Capabilities::thinking=false`) |
 
-## 動作確認
+## Verification
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-# doctor は config の provider.kind を使う
+# doctor uses config's provider.kind
 agent-cli --config ./codex.toml doctor
-# selftest は --provider で上書き可能
+# selftest can override with --provider
 agent-cli selftest --provider codex
 ```
 
-## 既知の制限
+## Known Limitations
 
-- function calling 非対応モデルでは tool 呼び出しが行われない可能性があります。`gpt-4.1`／`gpt-4o` 系を推奨。
-- 完了レスポンスの `[DONE]` 直前で残った tool_call をフラッシュする実装になっています。途中切断の影響を受ける可能性があります。
+- Models that do not support function calling may not produce tool invocations. Use `gpt-4.1` / `gpt-4o` series for best results.
+- The implementation flushes remaining tool_calls before the `[DONE]` sentinel. Mid-stream disconnections may affect output.
 
-## トラブルシューティング
+## Troubleshooting
 
-| 症状 | 原因 | 対処 |
-|------|------|------|
-| `env var OPENAI_API_KEY not set` | 未設定 | `export OPENAI_API_KEY=...` |
-| `HTTP 401` | キー失効／組織制限 | 別の API キーを試す |
-| 不完全な応答 | モデルが function calling を使えない | モデルを変更 |
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `env var OPENAI_API_KEY not set` | Not set | `export OPENAI_API_KEY=...` |
+| `HTTP 401` | Key expired or organization restriction | Try a different API key |
+| Incomplete response | Model does not support function calling | Change model |

@@ -1,155 +1,155 @@
-# 設定リファレンス（`config.md`）
+# Configuration Reference (`config.md`)
 
-`agent-cli` の設定方法を網羅的に解説します。クイックリファレンスは `README.md` を、起動オプションの詳細は `doc/usage.md` を参照してください。
+This document provides a comprehensive guide to configuring `agent-cli`. For a quick reference, see `README.md`; for detailed startup options, see `doc/usage.md`.
 
-## 目次
+## Table of Contents
 
-1. [設定ファイルの場所と解決順序](#1-設定ファイルの場所と解決順序)
-2. [全体構造とセクションの役割](#2-全体構造とセクションの役割)
-3. [全項目リファレンス](#3-全項目リファレンス)
-4. [完全サンプル](#4-完全サンプル)
-5. [APIキー・秘密情報の管理](#5-apiキー秘密情報の管理)
-6. [複数プロファイル運用](#6-複数プロファイル運用)
-7. [シェルツールのチューニング](#7-シェルツールのチューニング)
-8. [UI 表示モード](#8-ui-表示モード)
-9. [よくある設定ミスと診断](#9-よくある設定ミスと診断)
-10. [設定変更の反映と再起動](#10-設定変更の反映と再起動)
+1. [Configuration File Location and Resolution Order](#1-configuration-file-location-and-resolution-order)
+2. [Overall Structure and Section Roles](#2-overall-structure-and-section-roles)
+3. [Full Item Reference](#3-full-item-reference)
+4. [Complete Examples](#4-complete-examples)
+5. [API Key and Secret Management](#5-api-key-and-secret-management)
+6. [Multiple Profile Usage](#6-multiple-profile-usage)
+7. [Shell Tool Tuning](#7-shell-tool-tuning)
+8. [UI Display Mode](#8-ui-display-mode)
+9. [Common Configuration Mistakes and Diagnostics](#9-common-configuration-mistakes-and-diagnostics)
+10. [Applying Configuration Changes and Restarting](#10-applying-configuration-changes-and-restarting)
 
-## 1. 設定ファイルの場所と解決順序
+## 1. Configuration File Location and Resolution Order
 
-`agent-cli` は以下の優先順位で設定ファイルパスを解決します。
+`agent-cli` resolves the configuration file path in the following priority order:
 
 ```text
-1. --config <path>             ←最優先（明示指定）
-2. 環境変数 AGENT_CLI_CONFIG   ←次点
-3. ~/.config/agent-cli/config.toml ←既定
+1. --config <path>             <- Highest priority (explicit specification)
+2. Environment variable AGENT_CLI_CONFIG   <- Next
+3. ~/.config/agent-cli/config.toml <- Default
 ```
 
-挙動：
+Behavior:
 
-- 1 または 2 で指定されたファイルが**存在しない場合はエラー終了**します。自動生成は行いません。
-- 3 が使われる場合、ファイルが存在しなければ既定値で **自動生成** します。
-- 解決済みパスは `agent-cli config path` で確認できます。
+- If the file specified by option 1 or 2 **does not exist**, the process exits with an error. No auto-generation is performed.
+- When option 3 is used and the file does not exist, it is **auto-generated** with default values.
+- The resolved path can be confirmed with `agent-cli config path`.
 
 ```bash
 agent-cli config path
-# 例: /home/alice/.config/agent-cli/config.toml
+# Example: /home/alice/.config/agent-cli/config.toml
 
 agent-cli --config ./project-a.toml config path
-# 例: /home/alice/work/project-a.toml
+# Example: /home/alice/work/project-a.toml
 ```
 
-## 2. 全体構造とセクションの役割
+## 2. Overall Structure and Section Roles
 
 ```toml
-[provider]                  # どのバックエンドを使うか
-[provider.claude]           # claude バックエンド固有設定
-[provider.codex]            # codex (OpenAI) バックエンド固有設定
-[provider.ollama]           # ollama バックエンド固有設定
-[provider."llama.cpp"]      # llama.cpp サーバー固有設定（キーはクオート必須）
+[provider]                  # Which backend to use
+[provider.claude]           # claude backend-specific settings
+[provider.codex]            # codex (OpenAI) backend-specific settings
+[provider.ollama]           # ollama backend-specific settings
+[provider."llama.cpp"]      # llama.cpp server-specific settings (key must be quoted)
 
-[runtime]                   # 実行時の挙動・パス
-[tools]                     # ツール全体設定
-[tools.shell]               # shell ツールのチューニング
+[runtime]                   # Runtime behavior and paths
+[tools]                     # Tool-wide settings
+[tools.shell]               # Shell tool tuning
 
-[ui]                        # 表示モード
+[ui]                        # Display mode
 ```
 
-## 3. 全項目リファレンス
+## 3. Full Item Reference
 
 ### `[provider]`
 
-| キー | 型 | 既定 | 必須 | 説明 |
+| Key | Type | Default | Required | Description |
 |------|----|------|------|------|
-| `kind` | string | `"claude"` | ✓ | 使用バックエンド：`"claude"`／`"codex"`／`"ollama"`／`"llama.cpp"` |
+| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"codex"` / `"ollama"` / `"llama.cpp"` |
 
-### `[provider.claude]`／`[provider.codex]`／`[provider.ollama]`／`[provider."llama.cpp"]`
+### `[provider.claude]` / `[provider.codex]` / `[provider.ollama]` / `[provider."llama.cpp"]`
 
-| キー | 型 | 既定 | 必須 | 説明 |
+| Key | Type | Default | Required | Description |
 |------|----|------|------|------|
-| `model` | string | バックエンド毎の既定 | ◯ | 使用するモデル名 |
-| `api_key_env` | string | 各バックエンドの既定 | ◯ | API キーを保持する環境変数名（値そのものではない） |
-| `base_url` | string | 各バックエンドの既定 | △ | エンドポイント。プロキシや互換サーバー利用時に上書き |
-| `thinking` | bool | `true`（claude のみ意味あり） | △ | thinking ブロックを有効化（`claude` のみ） |
+| `model` | string | Per-backend default | Yes | Model name to use |
+| `api_key_env` | string | Per-backend default | Yes | Environment variable name holding the API key (not the value itself) |
+| `base_url` | string | Per-backend default | Cond. | Endpoint URL. Override when using a proxy or compatible server |
+| `thinking` | bool | `true` (only meaningful for claude) | Cond. | Enable thinking blocks (`claude` only) |
 
-バックエンド毎の既定：
+Per-backend defaults:
 
-| kind | model 既定 | base_url 既定 | api_key_env 既定 |
+| kind | model default | base_url default | api_key_env default |
 |------|-----------|---------------|-------------------|
 | claude | `claude-opus-4-7` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
 | codex | `gpt-4.1` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
-| ollama | `glm-5.1:cloud` | `http://127.0.0.1:11434` | （不要） |
-| llama.cpp | `default` | `http://127.0.0.1:8080` | （任意） |
+| ollama | `glm-5.1:cloud` | `http://127.0.0.1:11434` | (not needed) |
+| llama.cpp | `default` | `http://127.0.0.1:8080` | (optional) |
 
 ### `[runtime]`
 
-| キー | 型 | 既定 | 説明 |
+| Key | Type | Default | Description |
 |------|----|------|------|
-| `auto_approve_tools` | bool | `false` | `true` ならツール実行時の y/N 承認をスキップ。実行時は REPL コマンド `/auto on`／`/auto off`／`/auto status` で同じスイッチを切替可能 |
-| `log_dir` | string | `~/.local/share/agent-cli/logs` | 会話ログの保存先 |
-| `registry_dir` | string | 空 | エージェントレジストリの場所。空時は `$XDG_RUNTIME_DIR/agent-cli` または `/tmp/agent-cli` を使用 |
-| `agents_dir` | string | `~/.config/agent-cli/agents` | ペルソナファイルの探索先（`<agents_dir>/<name>.md`）。詳細は [`doc/personas.md`](personas.md) |
-| `persona_file` | string | 空 | 明示指定するペルソナファイル。空時は `<agents_dir>/<name>.md` または組み込みへフォールバック。詳細は [`doc/personas.md`](personas.md) |
-| `max_tool_iterations` | u32 | `24` | 1 ターン内の tool_use 反復上限。最小 1（`0`／負値は内部で `1` へ丸め込み）、最大 `u32::MAX = 4,294,967,295`。無限ループ防止の防護機構。詳細は下記「`max_tool_iterations` のチューニング」を参照 |
+| `auto_approve_tools` | bool | `false` | When `true`, skips the y/N approval prompt for tool execution. At runtime, the same toggle can be switched via REPL commands `/auto on` / `/auto off` / `/auto status` |
+| `log_dir` | string | `~/.local/share/agent-cli/logs` | Directory where conversation logs are saved |
+| `registry_dir` | string | empty | Location of the agent registry. When empty, uses `$XDG_RUNTIME_DIR/agent-cli` or `/tmp/agent-cli` |
+| `agents_dir` | string | `~/.config/agent-cli/agents` | Directory to search for persona files (`<agents_dir>/<name>.md`). See [`doc/personas.md`](personas.md) for details |
+| `persona_file` | string | empty | Explicit persona file path. When empty, falls back to `<agents_dir>/<name>.md` or the built-in default. See [`doc/personas.md`](personas.md) for details |
+| `max_tool_iterations` | u32 | `24` | Upper limit for tool_use iterations within a single turn. Minimum is 1 (`0` or negative values are clamped to `1` internally), maximum is `u32::MAX = 4,294,967,295`. This is a safeguard to prevent infinite loops. See "Tuning `max_tool_iterations`" below for details |
 
-#### `max_tool_iterations` のチューニング
+#### Tuning `max_tool_iterations`
 
-AI が 1 回のユーザー入力に対して `tool_use → ツール結果 → tool_use → …` を繰り返すループの上限です。上限到達時は REPL に `[info] max tool-use iterations reached` を表示し、当該ターンを `Done` で終了します（エラーではなく情報通知）。
+This is the upper limit for the loop where the AI repeats `tool_use -> tool result -> tool_use -> ...` for a single user input. When the limit is reached, the REPL displays `[info] max tool-use iterations reached` and ends that turn as `Done` (this is an informational notification, not an error).
 
-**Q&A：**
+**Q&A:**
 
-| 質問 | 回答 |
+| Question | Answer |
 |------|------|
-| 設定ファイルで変更できますか？ | はい。`[runtime] max_tool_iterations` を編集して `agent-cli` を再起動。実行中の REPL では動的には変わりません。 |
-| 無制限の設定は可能ですか？ | いいえ（厳密には）。型 `u32` のため最大 `u32::MAX = 4,294,967,295` 回まで設定可能（実用上は無制限相当）。「真の無上限ループ」は API 課金・GPU 占有・stdout 占有の暴走防止のため意図的に提供しません。事実上の無制限が必要なら `max_tool_iterations = 4294967295` を指定してください。 |
+| Can I change this in the config file? | Yes. Edit `[runtime] max_tool_iterations` and restart `agent-cli`. It cannot be changed dynamically in a running REPL. |
+| Is an unlimited setting possible? | Not strictly. The type is `u32`, so the maximum is `u32::MAX = 4,294,967,295` iterations (practically unlimited). A "truly unlimited loop" is intentionally not provided to prevent runaway API costs, GPU occupation, and stdout blocking. If you need effectively unlimited, set `max_tool_iterations = 4294967295`. |
 
-**境界値挙動：**
+**Boundary value behavior:**
 
-- `0` または負値：実装側で `.max(1)` により `1` 反復として動作。
-- `1` 〜 `u32::MAX`：そのまま採用。
-- `u32::MAX` 超：TOML パース時にオーバーフローエラーで起動失敗。
+- `0` or negative values: Treated as `1` iteration via `.max(1)` in the implementation.
+- `1` to `u32::MAX`: Used as-is.
+- Values exceeding `u32::MAX`: Cause an overflow error during TOML parsing, and startup fails.
 
-**推奨レンジ（用途別）：**
+**Recommended ranges (by use case):**
 
-| 用途 | 推奨値 | 根拠 |
+| Use case | Recommended value | Rationale |
 |------|--------|------|
-| 単純対話・教育用 | `4-8` | ループ暴走時に早く打ち切れる |
-| 既定（design-then-debug 等） | `24`（既定値） | 設計成果物生成 → 検証 → lint 修正 → fs_write の典型ワークフローが収まる |
-| 多段オーケストレーター | `32-48` | 複数ツールを順次呼ぶ場合 |
-| 長尺自律実行（実験用途） | `64-256` | 大規模タスクを段階的に分解する場合 |
-| それ以上 | 非推奨 | 「ループに陥っていないか」を疑うべき範囲。`/cancel`／`Ctrl+C` で介入できる前提で運用 |
+| Simple conversation / education | `4-8` | Truncates runaway loops earlier |
+| Default (design-then-debug, etc.) | `24` (default) | Fits a typical workflow of design artifact generation -> verification -> lint fix -> fs_write |
+| Multi-step orchestrator | `32-48` | When calling multiple tools sequentially |
+| Long autonomous execution (experimental) | `64-256` | When decomposing large tasks step by step |
+| Beyond that | Not recommended | You should suspect the AI is stuck in a loop. Operate with the assumption that you can intervene via `/cancel` or `Ctrl+C` |
 
-設定例：
+Configuration example:
 
 ```toml
 [runtime]
-max_tool_iterations = 48   # 多段オーケストレーター用途
+max_tool_iterations = 48   # Multi-step orchestrator use case
 ```
 
 ### `[tools]`
 
-| キー | 型 | 既定 | 説明 |
+| Key | Type | Default | Description |
 |------|----|------|------|
-| `enabled` | string[] | `["shell","fs_read","fs_write","send_to"]` | 有効化するツール |
+| `enabled` | string[] | `["shell","fs_read","fs_write","send_to"]` | Tools to enable |
 
-ペルソナの `allowed_tools` / `denied_tools` がある場合、本リストとの **積／差** が最終的なツールセットになります。
+If the persona has `allowed_tools` / `denied_tools`, the **intersection / difference** with this list determines the final tool set.
 
 ### `[tools.shell]`
 
-| キー | 型 | 既定 | 説明 |
+| Key | Type | Default | Description |
 |------|----|------|------|
-| `timeout_secs` | int | `60` | 1 コマンド当たりのタイムアウト（秒） |
-| `max_output_kb` | int | `256` | stdout／stderr の最大保持サイズ（KB） |
+| `timeout_secs` | int | `60` | Timeout per command (seconds) |
+| `max_output_kb` | int | `256` | Maximum retained size for stdout/stderr (KB) |
 
 ### `[ui]`
 
-| キー | 型 | 既定 | 説明 |
+| Key | Type | Default | Description |
 |------|----|------|------|
-| `show_thinking` | string | `"collapsed"` | thinking 表示モード：`"collapsed"`（先頭 80 文字 + 1 行目のみに切り詰め）／`"expanded"`（全文）／`"hidden"`（非表示）。詳細は下記「UI 表示モード」 |
+| `show_thinking` | string | `"collapsed"` | Thinking display mode: `"collapsed"` (truncated to the first 80 characters + first line) / `"expanded"` (full text) / `"hidden"` (not displayed). See "UI Display Mode" below for details |
 
-## 4. 完全サンプル
+## 4. Complete Examples
 
-### 4.1 最小構成（claude）
+### 4.1 Minimal Configuration (claude)
 
 ```toml
 [provider]
@@ -159,7 +159,7 @@ kind = "claude"
 api_key_env = "ANTHROPIC_API_KEY"
 ```
 
-### 4.2 推奨構成（claude を主、ollama を副に検証用で確保）
+### 4.2 Recommended Configuration (claude as primary, ollama reserved for verification)
 
 ```toml
 [provider]
@@ -189,7 +189,7 @@ max_output_kb = 512
 show_thinking = "collapsed"
 ```
 
-### 4.3 全機能有効構成
+### 4.3 Full-featured Configuration
 
 ```toml
 [provider]
@@ -220,7 +220,7 @@ log_dir             = "~/.local/share/agent-cli/logs"
 registry_dir        = "/tmp/agent-cli"
 agents_dir          = "~/.config/agent-cli/agents"
 persona_file        = ""
-max_tool_iterations = 48                            # 多段オーケストレーター想定
+max_tool_iterations = 48                            # Multi-step orchestrator assumed
 
 [tools]
 enabled = ["shell", "fs_read", "fs_write", "send_to"]
@@ -233,11 +233,11 @@ max_output_kb = 256
 show_thinking = "expanded"
 ```
 
-## 5. APIキー・秘密情報の管理
+## 5. API Key and Secret Management
 
-`agent-cli` は **API キーの値を設定ファイルに書きません**。`api_key_env` で **環境変数名** を指定し、実際の値はその環境変数から取得します。
+`agent-cli` **never writes API key values in the configuration file**. `api_key_env` specifies the **environment variable name**, and the actual value is retrieved from that environment variable.
 
-### 5.1 シェルでの設定
+### 5.1 Setting in Shell
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
@@ -245,9 +245,9 @@ export OPENAI_API_KEY="sk-..."
 agent-cli run
 ```
 
-### 5.2 `direnv` の `.envrc`
+### 5.2 `direnv` `.envrc`
 
-プロジェクトディレクトリ専用の値を切り替える例：
+Example of switching values specific to a project directory:
 
 ```bash
 # .envrc
@@ -265,28 +265,28 @@ EnvironmentFile=%h/.config/agent-cli/secrets.env
 ExecStart=%h/.local/bin/agent-cli run --name %i
 ```
 
-`secrets.env` を `chmod 600` にして API キーを保管します。
+Store API keys in `secrets.env` with `chmod 600`.
 
-### 5.4 注意事項
+### 5.4 Notes
 
-- 平文でリポジトリに **コミットしない**。`.gitignore` で `.env`／`.envrc`／`secrets.*` を除外してください。
-- `agent-cli config show` は値を環境変数名（`api_key_env`）として出力するため、API キー自体は流出しません。
+- **Never commit** plaintext secrets to a repository. Add `.env`, `.envrc`, and `secrets.*` to `.gitignore`.
+- `agent-cli config show` outputs the environment variable name (`api_key_env`), so the API key itself is not leaked.
 
-## 6. 複数プロファイル運用
+## 6. Multiple Profile Usage
 
-`--config` を使ってプロジェクト毎・用途毎に設定を切り替えられます。
+You can switch configurations per project or per use case using `--config`.
 
 ```bash
-# claude プロファイル
+# claude profile
 agent-cli --config ~/profiles/claude.toml run --name alice
 
-# ollama プロファイル
+# ollama profile
 agent-cli --config ~/profiles/ollama.toml run --name bob
 ```
 
-### 6.1 別エージェントとして独立させる
+### 6.1 Running as Independent Agents
 
-`registry_dir` を別々に設定すれば、互いに `/list` で見えない独立した名前空間になります。
+By setting different `registry_dir` values, each profile operates in an independent namespace invisible to the other via `/list`.
 
 ```toml
 # claude.toml
@@ -298,78 +298,78 @@ registry_dir = "/tmp/agent-cli/claude"
 registry_dir = "/tmp/agent-cli/ollama"
 ```
 
-### 6.2 ピアとして相互通信させる
+### 6.2 Peer-to-Peer Communication
 
-`registry_dir` を共有すると、別プロファイルでも互いを `/send` で呼び出せます。
+By sharing `registry_dir`, agents with different profiles can call each other via `/send`.
 
 ```toml
-# どちらの設定にも以下を入れる
+# Add the following to both configurations
 [runtime]
 registry_dir = "/tmp/agent-cli/team"
 ```
 
-## 7. シェルツールのチューニング
+## 7. Shell Tool Tuning
 
-長時間ジョブを扱う／大量出力するコマンドを許可するには `[tools.shell]` を調整します。
+To allow long-running jobs or commands that produce large output, adjust `[tools.shell]`.
 
 ```toml
 [tools.shell]
-timeout_secs  = 600   # 10 分
+timeout_secs  = 600   # 10 minutes
 max_output_kb = 4096  # 4 MB
 ```
 
-注意：
+Notes:
 
-- `timeout_secs` を超えたプロセスは強制終了され、ツール結果は失敗扱いになります。
-- `max_output_kb` を超えた stdout/stderr は末尾に `...[truncated]` を付けて切り詰められます。
-- AI が誤って巨大コマンドを呼ばないよう、対話承認（`auto_approve_tools=false`）の併用を推奨します。
+- Processes exceeding `timeout_secs` are force-killed, and the tool result is treated as a failure.
+- stdout/stderr exceeding `max_output_kb` is truncated with `...[truncated]` appended to the end.
+- To prevent the AI from accidentally invoking huge commands, it is recommended to also use interactive approval (`auto_approve_tools=false`).
 
-## 8. UI 表示モード
+## 8. UI Display Mode
 
-`ui.show_thinking` で thinking ブロック（Claude の `thinking_delta`／Ollama の `message.thinking`）の表示量を制御します。`agent-cli` 起動時に解釈され、未知値（`"verbose"` 等）は既定の `"collapsed"` にフォールバックします。
+`ui.show_thinking` controls the display volume of thinking blocks (Claude's `thinking_delta` / Ollama's `message.thinking`). It is interpreted at `agent-cli` startup; unknown values (e.g., `"verbose"`) fall back to the default `"collapsed"`.
 
-| 値 | 挙動 |
+| Value | Behavior |
 |----|------|
-| `"collapsed"`（既定） | 各 thinking delta を「先頭 80 文字 + `...`」に切り詰め、改行があれば 1 行目のみ。`[thinking] <truncated>...` の形式で 1 行表示 |
-| `"expanded"` | 受信した thinking text を全文逐次表示（`[thinking] <text>`） |
-| `"hidden"` | thinking 行を一切表示しない（`AgentEvent::Thinking` を REPL 側で捨てる） |
+| `"collapsed"` (default) | Truncates each thinking delta to "first 80 characters + `...`"; if there is a newline, only the first line is shown. Displayed as a single line in the format `[thinking] <truncated>...` |
+| `"expanded"` | Displays the full received thinking text in real time (`[thinking] <text>`) |
+| `"hidden"` | Does not display thinking lines at all (discards `AgentEvent::Thinking` on the REPL side) |
 
-設定変更は `agent-cli` 再起動で反映されます。実行時切替は未対応。
+Configuration changes take effect after restarting `agent-cli`. Dynamic switching at runtime is not supported.
 
-## 9. よくある設定ミスと診断
+## 9. Common Configuration Mistakes and Diagnostics
 
-### 症状：起動直後にプロセスが終了する
+### Symptom: Process exits immediately after startup
 
-- 原因：`api_key_env` で指定した環境変数が未設定。
-- 診断：`agent-cli doctor` を実行。`api key env : ANTHROPIC_API_KEY ... NOT set` と表示されます。
-- 対処：環境変数を `export` するか、別の `provider.kind` に切り替え。
+- Cause: The environment variable specified by `api_key_env` is not set.
+- Diagnosis: Run `agent-cli doctor`. It will display `api key env : ANTHROPIC_API_KEY ... NOT set`.
+- Resolution: `export` the environment variable, or switch to a different `provider.kind`.
 
-### 症状：`agent-cli list` に他プロセスが現れない
+### Symptom: Other processes do not appear in `agent-cli list`
 
-- 原因：`registry_dir` がプロセス間で異なる、またはソケットが stale。
-- 診断：双方の `agent-cli config show` の `registry_dir` を比較。`ls /tmp/agent-cli/` で `.sock`／`.json` を確認。
-- 対処：`registry_dir` を共有する設定にして再起動。
+- Cause: `registry_dir` differs between processes, or the socket is stale.
+- Diagnosis: Compare the `registry_dir` in `agent-cli config show` from both sides. Check `.sock` / `.json` files with `ls /tmp/agent-cli/`.
+- Resolution: Restart with a shared `registry_dir` configuration.
 
-### 症状：`provider conn : FAIL` が `doctor` に出る
+### Symptom: `provider conn : FAIL` appears in `doctor`
 
-- 原因：API キーが間違っている／ローカルサーバーが停止している／`base_url` が違う。
-- 診断：手動で `curl -s $base_url/health` などを試す。
-- 対処：URL／キー／サーバー稼働を確認。
+- Cause: API key is incorrect / local server is stopped / `base_url` is wrong.
+- Diagnosis: Try `curl -s $base_url/health` manually.
+- Resolution: Verify the URL, key, and server status.
 
-### 症状：シェルツールが「timed out」
+### Symptom: Shell tool reports "timed out"
 
-- 原因：`timeout_secs` を超過。
-- 対処：`[tools.shell] timeout_secs` を増やすか、AI に短いコマンドを使うよう指示。
+- Cause: `timeout_secs` was exceeded.
+- Resolution: Increase `[tools.shell] timeout_secs`, or instruct the AI to use shorter commands.
 
-### 症状：`config file not found` で終了する
+### Symptom: Exits with `config file not found`
 
-- 原因：`--config` または `AGENT_CLI_CONFIG` で存在しないパスを指定している（明示パスは自動生成しない）。
-- 対処：パスを確認、または既定パス（自動生成対象）を使う。
+- Cause: A non-existent path was specified via `--config` or `AGENT_CLI_CONFIG` (explicit paths are not auto-generated).
+- Resolution: Verify the path, or use the default path (which is auto-generated).
 
-## 10. 設定変更の反映と再起動
+## 10. Applying Configuration Changes and Restarting
 
-- ほとんどの設定は **プロセス起動時に読み込まれる** ため、変更後は `agent-cli` を再起動してください。
-- 例外として、以下は実行中の REPL から動的に変更できます：
-  - **ペルソナファイル**：REPL 内 `/reload-persona` で再読込（システムプロンプトのみ更新、会話履歴は保持）
-  - **ツール承認スキップ**：REPL 内 `/auto on`／`/auto off`／`/auto status`（`auto_approve_tools` をその場で上書き）
-- `--provider`／`--model`／`--persona`／`--auto-approve-tools` は CLI オプションで上書き可能です（プロセス単位）。
+- Most settings are **loaded at process startup**, so restart `agent-cli` after making changes.
+- As exceptions, the following can be changed dynamically from a running REPL:
+  - **Persona file**: Reload with `/reload-persona` in the REPL (updates the system prompt only; conversation history is preserved).
+  - **Tool approval skip**: `/auto on` / `/auto off` / `/auto status` in the REPL (overrides `auto_approve_tools` on the spot).
+- `--provider` / `--model` / `--persona` / `--auto-approve-tools` can be overridden via CLI options (per process).

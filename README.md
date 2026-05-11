@@ -1,57 +1,63 @@
 # agent-cli
 
-`agent-cli`は、Claude Code相当のツール／thinking機能を備えたAIエージェントをRust製の単独バイナリで提供するCLIです。tmuxに依存せず、1プロセス＝1エージェントとして起動し、別プロセスのエージェントとローカルIPC（Unixドメインソケット）でプロンプトを送受信できます。
+`agent-cli` is a standalone Rust CLI that bundles a Claude Code-equivalent AI agent (tools / thinking / streaming REPL) into a single binary. It does not depend on tmux: each process owns exactly one agent and talks to other agents over local Unix-domain-socket IPC.
 
-> English version: [`README.en.md`](README.en.md)
+> For the previous Japanese version, see [`README.en.md`](README.en.md) (now outdated; main README is in English).
 
-## 特徴
+## Highlights
 
-- 単独起動：tmux不要。`agent-cli`をシェルから直接実行（`agent-cli run`の省略形）
-- Claude Code相当のREPL＋tools／thinkingを内蔵（自前実装）
-- 4バックエンド対応：`claude` / `codex` / `ollama` / `llama.cpp`
-- マルチエージェント協調：別プロセス間で`/send <peer> <text>`相互通信
-- ペルソナファイル（YAMLフロントマター＋Markdown）で役割・スキル・ツール権限を定義
-- シェル／ファイルR/W／ピア送信ツール内蔵。承認モードは`/auto on`で実行時切替可能
-- ストリーミング応答とREPLプロンプトを同期し、応答完了後に必ず次プロンプトを再描画
-- `/quit`／`/exit`／`Ctrl+D`／`Ctrl+C`／`SIGTERM`のいずれでも1秒以内に確実終了し、IPCソケット・レジストリメタを自動クリーンアップ
-- 自己診断`agent-cli doctor`／スモークテスト`agent-cli selftest`（5ステージ：Provider／shellツール／IPC／子プロセス起動／子プロセスAI応答）
+- Standalone — no tmux required. Just run `agent-cli` (the no-arg form is equivalent to `agent-cli run`).
+- Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch (does not call out to the `claude` CLI).
+- Four backends: `claude` / `codex` / `ollama` / `llama.cpp`.
+- Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
+- Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
+- Built-in tools: `shell` / `fs_read` / `fs_write` / `send_to`. Approval mode can be flipped at runtime with `/auto on`.
+- Streaming responses are synchronized with the REPL prompt so a fresh `> ` is always redrawn after the response completes.
+- Reliable shutdown — any of `/quit`, `/exit`, `Ctrl+D`, `Ctrl+C`, or `SIGTERM` exits within ~1 s and cleans up the IPC socket and registry metadata automatically.
+- Self-diagnostics with `agent-cli doctor` and a 5-stage smoke test with `agent-cli selftest` (Provider OK / shell tool / IPC / subprocess registration / subprocess AI response).
+- Configurable tool-use loop cap via `[runtime] max_tool_iterations` (default 24, max `u32::MAX`) — see "[info] max tool-use iterations reached" below.
+- Ollama `message.thinking` field is decoded as `[thinking]` for thinking-capable models such as `glm-5.1:cloud`.
 
-## 対応バックエンド
+## Supported backends
 
-| kind | API | 既定モデル |
-|------|-----|-----------|
-| claude | Anthropic Claude | `claude-opus-4-7` |
-| codex | OpenAI Chat Completions | `gpt-4.1` |
-| ollama | Ollama `/api/chat` | `glm-5.1:cloud` |
-| llama.cpp | OpenAI互換`/v1/chat/completions` | `default` |
+| kind | API | Default model |
+|------|-----|--------------|
+| claude | Anthropic Claude (Messages, SSE) | `claude-opus-4-7` |
+| codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
+| ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
+| llama.cpp | OpenAI-compatible `/v1/chat/completions` (SSE) | `default` |
 
-完成判定の検証必須対象は`claude`と`ollama (glm-5.1:cloud)`の2構成です。
+The mandatory verification targets are `claude` and `ollama` (with model `glm-5.1:cloud`).
 
-## インストール
+| Capability | claude | codex | ollama | llama.cpp |
+|------------|--------|-------|--------|-----------|
+| Streaming  | ✓ | ✓ | ✓ | ✓ |
+| Tool use   | ✓ | ✓ (function calling) | ✓ (model-dependent) | ✓ (server-build dependent) |
+| Thinking   | ✓ (`thinking_delta`) | ✗ | ✓ (model-dependent, `message.thinking`) | ✗ |
 
-### ワンライナー
+## Install
+
+### One-liner
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aquaxis/agent-cli/main/install.sh | sh
 ```
 
-### `install.sh`の動作
+### What `install.sh` does
 
-- 対象：Linux（x86_64／aarch64）
-- 既定インストール先：`$HOME/.local/bin/agent-cli`
-- カレントが`agent-cli`リポジトリ内であればローカルソースから、そうでなければ`AGENT_CLI_REPO`から`git clone`してビルドします
-- 既存バイナリは上書きします。設定ファイル（`~/.config/agent-cli/config.toml`）は触りません
+- Targets Linux (x86_64 / aarch64). Other platforms exit early with an error.
+- Default install prefix: `$HOME/.local/bin/agent-cli`.
+- If invoked from inside an `agent-cli` repository it builds local sources, otherwise it `git clone`s `AGENT_CLI_REPO` and builds.
+- Existing binaries are overwritten. Your `~/.config/agent-cli/config.toml` is left alone.
 
-環境変数で挙動をカスタマイズできます。
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AGENT_CLI_REPO` | GitHub source repo | Clone source |
+| `AGENT_CLI_REF` | `main` | Branch / tag / commit |
+| `AGENT_CLI_PREFIX` | `$HOME/.local` | Install prefix |
+| `AGENT_CLI_INSTALL_FORCE` | (unset) | Set to `1` to silence the overwrite notice |
 
-| 変数 | 既定 | 用途 |
-|------|------|------|
-| `AGENT_CLI_REPO` | GitHubのソースリポジトリ | クローン元 |
-| `AGENT_CLI_REF` | `main` | チェックアウトするref |
-| `AGENT_CLI_PREFIX` | `$HOME/.local` | インストールprefix |
-| `AGENT_CLI_INSTALL_FORCE` | （未設定） | `1`で上書き告知を抑制 |
-
-### 手動ビルド
+### Build from source
 
 ```bash
 git clone https://github.com/aquaxis/agent-cli.git
@@ -59,50 +65,50 @@ cd agent-cli
 cargo install --path . --root "$HOME/.local"
 ```
 
-## クイックスタート
+## Quick start
 
 ```bash
-# 1. 初回起動で既定の設定ファイルが生成される
+# 1. Default config is created on first run.
 agent-cli config path
 # => ~/.config/agent-cli/config.toml
 
-# 2. APIキーを環境変数に設定（claudeを使う場合）
-export ANTHROPIC_API_KEY=sk-...
+# 2. Set the API key for your backend (Claude example).
+export ANTHROPIC_API_KEY=sk-ant-...
 
-# 3. REPLを起動（引数なし `agent-cli` も `agent-cli run` と等価）
-agent-cli                       # 設定ファイルの provider.kind を使う
-# あるいは
-agent-cli run --provider claude # 上書き指定
+# 3. Start the REPL (the no-arg form is equivalent to `agent-cli run`).
+agent-cli                       # uses provider.kind from config
+# or
+agent-cli run --provider claude # override at the command line
 
-# 4. 別ターミナルでollamaバックエンドの2人目を起動
+# 4. In another terminal, start a second agent on Ollama.
 agent-cli run --provider ollama --model glm-5.1:cloud --name bob
 
-# 5. 1つ目のターミナルから2つ目へプロンプト送信
+# 5. From the first session, send a prompt across.
 > /list
 > /send bob "hello from claude side"
 
-# 6. REPLを抜ける
-> /quit       # または /exit、Ctrl+D、Ctrl+C のいずれでも可
+# 6. Exit the REPL.
+> /quit       # or /exit, Ctrl+D, Ctrl+C — all of them work
 ```
 
-## 設定方法
+## Configuration
 
-設定ファイルはTOMLで、解決優先順位は以下です。
+Config files are TOML. Resolution order:
 
-1. `--config <path>`で明示指定
-2. 環境変数`AGENT_CLI_CONFIG`
-3. 既定`~/.config/agent-cli/config.toml`
+1. `--config <path>` (explicit)
+2. `AGENT_CLI_CONFIG` environment variable
+3. Default `~/.config/agent-cli/config.toml`
 
-明示指定したパスが存在しない場合はエラー終了します。既定パスのみ未存在時に自動生成されます。
+Explicit paths must exist (no auto-creation). The default path auto-generates a sensible template on first run.
 
-最低限必要な編集は次のとおりです。
+Minimum edits to get going:
 
 ```toml
 [provider]
-kind = "claude"   # "claude" | "codex" | "ollama" | "llama.cpp"
+kind = "claude"  # or "codex" | "ollama" | "llama.cpp"
 
 [provider.claude]
-api_key_env = "ANTHROPIC_API_KEY"   # 環境変数名を指定（値そのものではない）
+api_key_env = "ANTHROPIC_API_KEY"  # name of the env var that holds the secret
 model       = "claude-opus-4-7"
 
 [provider.ollama]
@@ -110,157 +116,161 @@ base_url = "http://127.0.0.1:11434"
 model    = "glm-5.1:cloud"
 ```
 
-複数プロファイルを使い分けるには、`--config`で別ファイルを指定して並行起動してください。各エージェントは`[runtime] registry_dir`を共有すれば相互にピア検出が可能です。
+To run multiple profiles in parallel, point each instance at its own `--config` file. Share `[runtime] registry_dir` if you want them to discover each other as peers.
 
-実際にどの設定ファイルが採用されているかは `agent-cli config path` で確認できます。プロバイダ HTTP エラー時のメッセージにも `config` 行として解決済みパスが表示されるので、`~/.local/config/...` と `~/.config/...` の混同などを切り分けるときに役立ちます。
+`agent-cli config path` prints the resolved config file currently in effect. Provider HTTP error messages also include the resolved `config` line, so when in doubt you can disambiguate `~/.local/config/...` versus `~/.config/...` mistakes immediately.
 
-詳しくは[`doc/config.md`](doc/config.md)を、よくあるエラーへの対処は[`doc/troubleshooting.md`](doc/troubleshooting.md)を参照してください。
+See [`doc/config.md`](doc/config.md) for the full reference and [`doc/troubleshooting.md`](doc/troubleshooting.md) for common failure modes.
 
-## 主要コマンド
+## Subcommands
 
-| コマンド | 用途 |
-|---------|------|
-| `agent-cli run` | REPLを起動（エージェント1つ） |
-| `agent-cli list` | 稼働中のピア一覧 |
-| `agent-cli send <peer> <text>` | 指定ピアにプロンプト送信 |
-| `agent-cli providers` | 利用可能バックエンドの状態表示 |
-| `agent-cli doctor` | 設定／APIキー／疎通／レジストリ／bashの一括点検 |
-| `agent-cli selftest [--provider <name>]` | スモークテスト |
-| `agent-cli config show` | 設定表示 |
-| `agent-cli config edit` | エディターで設定を開く |
-| `agent-cli config path` | 設定ファイルのパス表示 |
+| Command | Purpose |
+|---------|---------|
+| `agent-cli run` | Start the REPL (one agent per process) |
+| `agent-cli list` | List running peers |
+| `agent-cli send <peer> <text>` | Send a one-shot prompt to a peer |
+| `agent-cli providers` | Show backend status |
+| `agent-cli doctor` | Sanity-check config / API keys / connectivity / registry / `bash` |
+| `agent-cli selftest [--provider <kind>]` | Smoke test in 5 stages |
+| `agent-cli config show` | Print current config |
+| `agent-cli config edit` | Open config in `$EDITOR` |
+| `agent-cli config path` | Print resolved config path |
 
-REPL内では以下の`/`コマンドが使えます。
+REPL commands inside `agent-cli run`:
 
-| コマンド | 用途 |
-|---------|------|
-| `/list` | 稼働中のピア一覧 |
-| `/send <peer> <text>` | 指定ピアへプロンプト送信 |
-| `/tools` | 有効なツール名一覧 |
-| `/persona` | 自身のペルソナ表示 |
-| `/reload-persona` | ペルソナ再読込（履歴は維持） |
-| `/peer <id_or_name>` | 指定ピアのペルソナ概要 |
-| `/history [n]` | 最近の入力履歴 |
-| `/clear`、`/reset` | 会話履歴を初期化（ペルソナは維持） |
-| `/cancel` | 進行中処理の中断要求 |
-| `/auto [on\|off\|status]` | ツール承認スキップの実行時切替 |
-| `/help` | 一覧表示 |
-| `/quit`、`/exit` | 終了（互いに完全エイリアス） |
+| Command | Purpose |
+|---------|---------|
+| `/list` | List running peers |
+| `/send <peer> <text>` | Send a prompt to a peer |
+| `/tools` | List tools enabled for this agent |
+| `/persona` | Show this agent's persona (role / skills / source path) |
+| `/reload-persona` | Re-resolve and reload the persona file (history is preserved) |
+| `/peer <id_or_name>` | Show a peer's persona summary |
+| `/history [n]` | Show last n (default 20) user inputs |
+| `/clear`, `/reset` | Clear conversation history (persona / system prompt are kept) |
+| `/cancel` | Request cancel of the in-flight AI response or tool call |
+| `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime |
+| `/help` | Show help |
+| `/quit`, `/exit` | Terminate (full aliases) |
 
-詳細は[`doc/usage.md`](doc/usage.md)を参照。
+User prompts are persisted to `<runtime.log_dir>/history.txt` (last 200 entries) and reloaded on next startup. See [`doc/usage.md`](doc/usage.md) for full details.
 
-### ツール承認をスキップする
+### Skipping tool approval
 
-シェル等のツール呼び出しは既定でy/N承認を求めます。承認スキップ（自動許可）に切り替える経路は3つあります。
+Tool invocations (shell, fs_*, send_to) request a y/N approval by default. There are three ways to skip approval:
 
-| 経路 | 例 |
-|------|-----|
-| 設定ファイル | `[runtime] auto_approve_tools = true` |
-| CLIフラグ | `agent-cli run --auto-approve-tools` |
-| REPLコマンド | `/auto on`（`/auto off`で承認モードへ復帰、`/auto status`で現在値表示） |
+| Method | Example |
+|--------|---------|
+| Config file | `[runtime] auto_approve_tools = true` |
+| CLI flag | `agent-cli run --auto-approve-tools` |
+| REPL command | `/auto on` (`/auto off` returns to approval mode, `/auto status` shows the current value) |
 
-承認モードのまま実行されたツール要求は`[tool approval] <tool> <args>` バナーと`approve? [y/N]: `を表示します。`y`／`yes`のみ承認、それ以外（空入力や別単語）は拒否扱いです。
+In approval mode, each tool request shows `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted; anything else (blank input, other words) counts as denial.
 
-### `[thinking]` 表示の抑制
+### Suppressing `[thinking]` output
 
-`glm-5.1:cloud` のような長尺 reasoning モデルは大量の thinking トークンを返すため、REPL が `[thinking] ...` で埋まることがあります。`[ui] show_thinking` で表示量を 3 段階で制御できます。
+Long-reasoning models such as `glm-5.1:cloud` emit large amounts of thinking text, which can fill the REPL with `[thinking] ...` lines. Use `[ui] show_thinking` to control the display volume:
 
 ```toml
 [ui]
-show_thinking = "hidden"     # 完全に抑制
-# show_thinking = "collapsed"  # 既定。先頭 80 文字 + "..." の 1 行
-# show_thinking = "expanded"   # 全文表示
+show_thinking = "hidden"     # suppress entirely
+# show_thinking = "collapsed"  # default: first 80 chars + "..." on one line
+# show_thinking = "expanded"   # full text
 ```
 
-| 値 | 挙動 |
-|----|------|
-| `"hidden"` | `[thinking]` を一切表示しない |
-| `"collapsed"`（既定） | 各 thinking delta を「先頭 80 文字 + `...`」に切り詰め、改行があれば 1 行目のみ |
-| `"expanded"` | 受信 text を全文表示 |
+| Value | Behavior |
+|-------|----------|
+| `"hidden"` | `[thinking]` is never printed |
+| `"collapsed"` (default) | Each thinking delta is truncated to "first 80 chars + `...`"; if multi-line, only the first line is shown |
+| `"expanded"` | Full text printed verbatim |
 
-設定変更は `agent-cli` 再起動で反映されます。詳細は [`doc/config.md`](doc/config.md) の「UI 表示モード」を参照。
+Changes take effect on next `agent-cli` start. See [`doc/config.md`](doc/config.md) "UI display modes" for details.
 
-### `[info] max tool-use iterations reached` の意味
+### `[info] max tool-use iterations reached`
 
-REPL でこのメッセージが出るのは、AI が 1 回のユーザー入力に対して **ツール実行（tool_use）を上限回連続して繰り返しても結論に到達できなかった** ときです（無限ループ防止のための防護機構）。
+This message appears in the REPL when the AI keeps emitting `tool_use` requests round after round and reaches the per-turn iteration cap without producing a final text answer. It is a guard against runaway loops.
 
-- これは **エラーではなく情報通知**（`[info]` プレフィックス）です。`[error]` ではないので、エラーログ／監視警報には残りません。
-- 直後にプロンプト `> ` が再描画され、次の入力を受け付けます。会話履歴は維持されます。
-- **設定ファイルで変更できますか？** はい。`~/.config/agent-cli/config.toml` の `[runtime] max_tool_iterations` で変更可能（既定 24）。変更は `agent-cli` 再起動で反映。
-- **無制限の設定は可能ですか？** 厳密な「無制限」は不可（API 課金・GPU 占有・stdout 占有の暴走防止のため意図的に制限）。型は `u32` のため最大 `u32::MAX = 4,294,967,295` まで設定可能で、実用上はこれで「無制限相当」です。
-- 推奨レンジ：単純対話 4-8、design-then-debug 系オーケストレーター 24-48、長尺自律実行 64-256。
-- 対処：プロンプトを分割する／意図を具体化する／不要ツールを `denied_tools` で除外する／`/clear` で履歴をリセットして再試行する／`max_tool_iterations` を引き上げる。詳細は [`doc/troubleshooting.md`](doc/troubleshooting.md) ／ [`doc/config.md`](doc/config.md) を参照。
+- **Not an error** — `[info]` prefix, not `[error]`. It is not written to error logs and does not trigger monitoring alerts.
+- The next `> ` prompt is redrawn immediately and conversation history is preserved.
+- **Can it be changed via config?** Yes. Edit `[runtime] max_tool_iterations` in `~/.config/agent-cli/config.toml` and restart `agent-cli` (default `24`).
+- **Can it be set to "unlimited"?** Strictly no (a true uncapped mode is intentionally not provided to prevent runaway billing / GPU / stdout). The type is `u32`, so the practical maximum is `u32::MAX = 4,294,967,295` — effectively unlimited for any real workflow.
+- Recommended ranges: simple chat 4–8, design-then-debug orchestrators 24–48, long-running autonomous experiments 64–256.
+- Workarounds: split the prompt, give a more concrete goal, use `denied_tools` in the persona to remove unrelated tools, run `/clear` and retry, or raise `max_tool_iterations`. See [`doc/troubleshooting.md`](doc/troubleshooting.md) and [`doc/config.md`](doc/config.md).
 
-### 終了方法
+### Termination
 
-以下のいずれでも確実に終了し、IPCソケット（`<registry_dir>/<agent-id>.sock`）とレジストリメタ（`<registry_dir>/<agent-id>.json`）を自動削除します。応答ストリーミング中／ツール実行中であっても1秒以内に終了します。
+Any of the following terminates the process within ~1 s and removes the IPC socket (`<registry_dir>/<agent-id>.sock`) and registry metadata (`<registry_dir>/<agent-id>.json`). It works even mid-stream or while a tool is running.
 
-| 経路 | 操作 |
-|------|------|
-| REPLコマンド | `/quit` または `/exit` |
-| EOF | `Ctrl+D`（標準入力の終端） |
-| シグナル | `Ctrl+C`（SIGINT）または `kill <pid>`（SIGTERM） |
+| Method | Action |
+|--------|--------|
+| REPL command | `/quit` or `/exit` |
+| EOF | `Ctrl+D` (stdin close) |
+| Signal | `Ctrl+C` (SIGINT) or `kill <pid>` (SIGTERM) |
 
-## 検証
+## Verification
 
 ```bash
-# 自動テスト（80件）
+# Automated test suite
 cargo test
 
-# フォーマット／リント
+# Format / lint
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 
-# 自己診断
+# Self-diagnostics
 agent-cli doctor
 
-# スモークテスト（5ステージ：Provider／shellツール／IPC／子プロセス起動／子プロセスAI応答）
+# Smoke test (5 stages: provider OK / shell / IPC / subprocess / subprocess AI response)
 agent-cli selftest --provider claude
 agent-cli selftest --provider ollama
 
-# 半自動受け入れシナリオ（環境変数の有無で SKIP/PASS/FAIL を集計）
+# Semi-automated acceptance scenarios (PASS / SKIP / FAIL aggregated by env-var presence)
 scripts/manual_acceptance.sh
 ```
 
-## ペルソナ
+Stage 1 of `selftest` requires a live backend. Stages 2–4 (shell tool, IPC roundtrip, subprocess IPC) run without external dependencies; Stage 5 needs a working provider plus child-process startup.
 
-エージェントの役割（`role`）／スキル／説明／使用ツール（`allowed_tools` / `denied_tools`）／モデル／温度を、Markdown（YAMLフロントマター＋本文）で定義できます。サンプルは`example/agents/`に同梱しています。
+## Personas
+
+A persona file (Markdown with YAML frontmatter) defines the agent's role, skills, description, allowed / denied tools, model, and temperature. Examples ship under [`example/agents/`](example/agents/).
 
 ```bash
 mkdir -p ~/.config/agent-cli/agents
 cp example/agents/reviewer.md ~/.config/agent-cli/agents/alice.md
 agent-cli run --name alice
-# → <agents_dir>/alice.md が自動的に読み込まれる
+# → <agents_dir>/alice.md is auto-loaded
 ```
 
-解決優先順位は **`--persona <path>` → `[runtime] persona_file` → `<agents_dir>/<name>.md` → 組み込み既定** の順。最小サンプル：
+Resolution order: **`--persona <path>` → `[runtime] persona_file` → `<agents_dir>/<name>.md` → built-in default.**
+
+Minimal example:
 
 ```markdown
 ---
 name: alice
-role: コードレビュアー
-skills: [Rust, セキュリティ]
+role: code reviewer
+skills: [Rust, security]
 allowed_tools: [shell, fs_read]
 denied_tools:  [fs_write]
 ---
 
-あなたは熟練のレビュアーです。最小差分で修正案を提示してください。
+You are a senior reviewer. Always propose minimal-diff fixes.
 ```
 
-詳細な記法・フロントマター全キー・運用シナリオは [`doc/personas.md`](doc/personas.md) を参照。
+Full frontmatter reference, validation rules, and operational scenarios are in [`doc/personas.md`](doc/personas.md).
 
-## ドキュメント目次
+## Documentation
 
-- [`doc/usage.md`](doc/usage.md) — CLI／REPL コマンド詳細
-- [`doc/config.md`](doc/config.md) — 設定リファレンス（最詳細）
-- [`doc/personas.md`](doc/personas.md) — ペルソナリファレンス（フロントマター全キー・運用シナリオ）
-- [`doc/tools.md`](doc/tools.md) — 内蔵ツール仕様
-- [`doc/architecture.md`](doc/architecture.md) — アーキテクチャ概要
-- [`doc/troubleshooting.md`](doc/troubleshooting.md) — 既知の失敗と対処
-- [`doc/providers/claude.md`](doc/providers/claude.md)／[`codex.md`](doc/providers/codex.md)／[`ollama.md`](doc/providers/ollama.md)／[`llamacpp.md`](doc/providers/llamacpp.md) — バックエンド別ガイド
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — 開発参加ガイド
-- [`CHANGELOG.md`](CHANGELOG.md) — 変更履歴
+- [`doc/usage.md`](doc/usage.md) — CLI and REPL command reference
+- [`doc/config.md`](doc/config.md) — full configuration reference (most detailed)
+- [`doc/personas.md`](doc/personas.md) — persona reference (all frontmatter keys, operational scenarios)
+- [`doc/tools.md`](doc/tools.md) — built-in tool specifications
+- [`doc/architecture.md`](doc/architecture.md) — architecture overview
+- [`doc/troubleshooting.md`](doc/troubleshooting.md) — known failures and fixes
+- [`doc/providers/claude.md`](doc/providers/claude.md) / [`codex.md`](doc/providers/codex.md) / [`ollama.md`](doc/providers/ollama.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development guide
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes
 
-## ライセンス
+## License
 
-MIT License. 詳細は [`LICENSE`](LICENSE) を参照。
+MIT License. See [`LICENSE`](LICENSE).

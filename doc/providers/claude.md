@@ -1,13 +1,13 @@
-# Claude バックエンド
+# Claude Backend
 
-Anthropic Claude API（Messages、SSE）を利用するバックエンドです。`agent-cli` のリファレンス実装で、thinking／tool_use／streaming すべてに対応します。
+This backend uses the Anthropic Claude API (Messages, SSE). It is the reference implementation for `agent-cli`, supporting thinking, tool_use, and streaming.
 
-## 前提条件
+## Prerequisites
 
-- Anthropic コンソールで API キーを発行
-- API キーを環境変数として保持（既定 `ANTHROPIC_API_KEY`）
+- Issue an API key from the Anthropic console
+- Set the API key as an environment variable (default: `ANTHROPIC_API_KEY`)
 
-## 設定
+## Configuration
 
 ```toml
 [provider]
@@ -16,62 +16,62 @@ kind = "claude"
 [provider.claude]
 api_key_env = "ANTHROPIC_API_KEY"
 model       = "claude-opus-4-7"
-base_url    = "https://api.anthropic.com"   # 通常はこのまま
-thinking    = true                           # thinking ブロックを有効化
+base_url    = "https://api.anthropic.com"   # usually leave as-is
+thinking    = true                           # enable thinking blocks
 ```
 
-## 推奨モデル
+## Recommended Models
 
-| 用途 | モデル |
-|------|--------|
-| 推論重視・コード生成全般 | `claude-opus-4-7` |
-| バランス型 | `claude-sonnet-4-6` |
-| 軽量・高速 | `claude-haiku-4-5-20251001` |
+| Use case | Model |
+|----------|-------|
+| Reasoning-focused / code generation | `claude-opus-4-7` |
+| Balanced | `claude-sonnet-4-6` |
+| Lightweight / fast | `claude-haiku-4-5-20251001` |
 
-実際に利用可能なモデルは Anthropic コンソールで確認してください。
+Check the Anthropic console for currently available models.
 
-## 対応機能
+## Supported Features
 
-| 機能 | 対応 | 備考 |
-|------|------|------|
+| Feature | Support | Notes |
+|---------|---------|-------|
 | Streaming | ✓ | SSE |
-| Tool use | ✓ | Anthropic ネイティブ tool_use ブロックをパース |
-| Thinking | ✓ | `[thinking]` ヘッダーで表示。`ui.show_thinking` で制御 |
+| Tool use | ✓ | Parses native Anthropic tool_use blocks |
+| Thinking | ✓ | Displayed with `[thinking]` header. Controlled via `ui.show_thinking` |
 
-## 動作確認
+## Verification
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-# doctor は config の provider.kind を使うため、claude を確認したい場合は
-# 設定ファイル側で kind = "claude" にしておくか、専用 config を渡す
-agent-cli doctor                 # 設定ファイルが claude のとき
+# doctor uses config's provider.kind; to check claude,
+# set kind = "claude" in the config file or pass a dedicated config
+agent-cli doctor                 # when config file has claude
 agent-cli --config ./claude.toml doctor
 
-# selftest は --provider で上書き可能
+# selftest can override with --provider
 agent-cli selftest --provider claude
 ```
 
-`doctor` は OK／FAIL 一括判定、`selftest` は 5 ステージ構成（Provider／shell ツール／IPC／子プロセス起動／子プロセス AI 応答）です。両方とも終了コード 0 ならバックエンドは健全です。
+`doctor` provides a pass/fail summary; `selftest` runs 5 stages (Provider / shell tool / IPC / subprocess startup / subprocess AI response). Both exit code 0 means the backend is healthy.
 
-## プロキシ／互換サーバー
+## Proxy / Compatible Server
 
-社内プロキシや Anthropic 互換ゲートウェイを使うには `base_url` を上書きしてください。
+To use a corporate proxy or Anthropic-compatible gateway, override `base_url`:
 
 ```toml
 [provider.claude]
 base_url = "https://proxy.example.com/anthropic"
 ```
 
-## 既知の制限
+## Known Limitations
 
-- 大量の tool_use を伴う長時間応答時、`reqwest` のタイムアウト（120 秒）を超えると失敗します。長時間ジョブはツール側でタイムアウトを管理してください。
-- `thinking_delta` の表示は逐次行で出力されるため、ターミナル幅次第で視認性が落ちます。既定の `[ui] show_thinking = "collapsed"`（先頭 80 文字 + 1 行目）が無難。完全に抑制したい場合は `"hidden"`、デバッグ等で全文必要なら `"expanded"`。詳細は [`doc/config.md`](../config.md) の「UI 表示モード」参照。
+- Long responses with many tool_use calls may exceed `reqwest`'s timeout (120 seconds). For long-running operations, manage timeouts on the tool side.
+- `thinking_delta` output is rendered line-by-line, which may affect readability depending on terminal width. The default `[ui] show_thinking = "collapsed"` (first 80 chars + first line) is generally the best choice. Use `"hidden"` to suppress entirely, or `"expanded"` for debugging. See [`doc/config.md`](../config.md) "UI display modes" for details.
 
-## トラブルシューティング
+## Troubleshooting
 
-| 症状 | 原因 | 対処 |
-|------|------|------|
-| `env var ANTHROPIC_API_KEY not set` | 環境変数未設定 | `export ANTHROPIC_API_KEY=...` |
-| `HTTP 401` | キー失効／誤り | 公式コンソールで再発行 |
-| `HTTP 429` | レート制限 | 利用ペース調整 |
-| 応答が空 | thinking 専用設定でモデルが thinking しか出さない | `thinking=false` で再試行 |
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `env var ANTHROPIC_API_KEY not set` | Environment variable not set | `export ANTHROPIC_API_KEY=...` |
+| `HTTP 401` | Key expired or incorrect | Re-issue from the official console |
+| `HTTP 429` | Rate limiting | Reduce request pace |
+| Empty response | Model set to thinking-only and producing only thinking output | Retry with `thinking=false` |

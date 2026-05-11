@@ -211,7 +211,7 @@ impl Provider for ClaudeProvider {
     }
 }
 
-/// Claude SSE フレーム処理の中間状態。
+/// Intermediate state for Claude SSE frame processing.
 #[derive(Default)]
 pub(crate) struct ClaudeParseState {
     pub current_tool: Option<(String, String, String)>, // (id, name, partial JSON)
@@ -222,7 +222,7 @@ pub(crate) struct ParseOutcome {
     pub done: bool,
 }
 
-/// 単一フレーム文字列を解釈し、イベント列と終了フラグを返す。`drain_frames` 後の各要素に適用する。
+/// Interpret a single frame string and return the event sequence and termination flag. Applied to each element after `drain_frames`.
 pub(crate) fn handle_frame(frame: &str, state: &mut ClaudeParseState) -> ParseOutcome {
     let mut events = Vec::new();
     if frame.trim() == "[DONE]" {
@@ -357,12 +357,12 @@ mod tests {
     #[test]
     fn parses_thinking_delta() {
         let evs = run_frames(&[
-            r#"{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"考え中"}}"#,
+            r#"{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"thinking..."}}"#,
             r#"{"type":"message_stop"}"#,
         ]);
         let has_thinking = evs
             .iter()
-            .any(|e| matches!(e, ProviderEvent::Thinking { text } if text == "考え中"));
+            .any(|e| matches!(e, ProviderEvent::Thinking { text } if text == "thinking..."));
         assert!(has_thinking);
     }
 

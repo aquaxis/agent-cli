@@ -1,51 +1,51 @@
-# ペルソナリファレンス（`personas.md`）
+# Persona Reference (`personas.md`)
 
-`agent-cli` は起動するエージェントごとに「ペルソナ」を割り当てます。ペルソナは Markdown ファイル（YAML フロントマター＋本文）として記述し、エージェントの **役割（role）／スキル／説明／使用ツール／モデル／温度** を一括で定義できます。本ドキュメントは設定方法・記述方法・実装上の挙動をまとめたリファレンスです。
+`agent-cli` assigns a "persona" to each agent it launches. A persona is described as a Markdown file (YAML frontmatter + body), allowing you to define the agent's **role, skills, description, allowed tools, model, and temperature** all in one place. This document is a reference for configuration, authoring, and runtime behavior.
 
-関連ドキュメント：
+Related documents:
 
-- [`doc/config.md`](config.md) — `agents_dir`／`persona_file` などの設定キー
-- [`doc/architecture.md`](architecture.md) — ペルソナ機構の全体像（§6）
-- [`doc/usage.md`](usage.md) — REPL コマンド `/persona`／`/reload-persona`／`/peer`
-
----
-
-## 1. 概要
-
-ペルソナは以下に影響します。
-
-| 影響先 | 内容 |
-|--------|------|
-| システムプロンプト | `role`／`skills`／`description`／本文を所定の見出しで連結し、AI への先頭指示として注入 |
-| ツールレジストリ | `allowed_tools` をホワイトリスト、`denied_tools` をブラックリストとして適用 |
-| Provider 設定 | `model`／`temperature` が指定されていれば、起動時に当該プロバイダのリクエスト body へ上書き |
-| REPL ヘッダー | `name`／`role`／`skills` が起動時バナーに表示 |
-| `agent-cli list` 出力 | `role`／`skills` が一覧の列に追加 |
-| レジストリメタファイル | `<registry_dir>/<agent-id>.json` の `persona` フィールドに `role`／`skills`／`description`／`source_path` が記録され、ピアから `/peer <id>` で参照可能 |
+- [`doc/config.md`](config.md) — Configuration keys such as `agents_dir` / `persona_file`
+- [`doc/architecture.md`](architecture.md) — Overall architecture of the persona mechanism (section 6)
+- [`doc/usage.md`](usage.md) — REPL commands `/persona` / `/reload-persona` / `/peer`
 
 ---
 
-## 2. 設定方法（解決順序）
+## 1. Overview
 
-ペルソナファイルの解決優先順位は次のとおり（上から順に試行、最初にヒットしたものを使用）。
+Personas affect the following:
+
+| Affected area | Details |
+|---------------|---------|
+| System prompt | `role` / `skills` / `description` / body are concatenated under prescribed headings and injected as the leading instruction to the AI |
+| Tool registry | `allowed_tools` is applied as a whitelist; `denied_tools` as a blacklist |
+| Provider settings | If `model` / `temperature` are specified, they override the corresponding provider's request body at startup |
+| REPL header | `name` / `role` / `skills` are displayed in the startup banner |
+| `agent-cli list` output | `role` / `skills` are added as columns in the listing |
+| Registry metadata file | `role` / `skills` / `description` / `source_path` are recorded in the `persona` field of `<registry_dir>/<agent-id>.json`, accessible via `/peer <id>` from other peers |
+
+---
+
+## 2. Configuration (Resolution Order)
+
+The persona file resolution priority is as follows (tried top to bottom; the first hit is used):
 
 ```text
-1. CLI オプション      `--persona <path>`
-2. 設定ファイル        `[runtime] persona_file = "<path>"`
-3. ファイル名規約      <agents_dir>/<name>.md  （--name に対応）
-4. 組み込み既定        「汎用アシスタント」
+1. CLI option        --persona <path>
+2. Config file       [runtime] persona_file = "<path>"
+3. Filename convention  <agents_dir>/<name>.md  (matches --name)
+4. Built-in default   "General-purpose assistant"
 ```
 
-### 2.1 CLI オプションで明示指定（最優先）
+### 2.1 Explicit CLI option (highest priority)
 
 ```bash
 agent-cli run --persona ./reviewer.md
 ```
 
-- パスは絶対／相対いずれも可
-- ファイルが存在しない場合は **エラー終了**（既定パス未存在時のフォールバックなし）
+- Absolute or relative paths are both accepted.
+- If the file does not exist, agent-cli **exits with an error** (no fallback to a default path).
 
-### 2.2 設定ファイルで指定
+### 2.2 Config file specification
 
 ```toml
 # ~/.config/agent-cli/config.toml
@@ -53,210 +53,210 @@ agent-cli run --persona ./reviewer.md
 persona_file = "~/.config/agent-cli/agents/alice.md"
 ```
 
-- `~`／環境変数／相対パス展開あり（`shellexpand` ベース）
-- ファイル未存在は同じくエラー終了
+- `~`, environment variables, and relative paths are expanded (via `shellexpand`).
+- If the file does not exist, agent-cli similarly exits with an error.
 
-### 2.3 名前規約（`<agents_dir>/<name>.md`）
+### 2.3 Name convention (`<agents_dir>/<name>.md`)
 
-最も運用しやすい方式。`agent-cli run --name <name>` を実行すると `<agents_dir>/<name>.md` を自動的に探します。
+This is the most operationally convenient approach. Running `agent-cli run --name <name>` automatically looks for `<agents_dir>/<name>.md`.
 
 ```bash
 mkdir -p ~/.config/agent-cli/agents
 cp example/agents/reviewer.md ~/.config/agent-cli/agents/alice.md
 
 agent-cli run --name alice
-# → ~/.config/agent-cli/agents/alice.md が読み込まれる
+# -> ~/.config/agent-cli/agents/alice.md is loaded
 ```
 
-`agents_dir` の既定は `~/.config/agent-cli/agents`。`[runtime] agents_dir` で変更可能：
+The default `agents_dir` is `~/.config/agent-cli/agents`. You can change it via `[runtime] agents_dir`:
 
 ```toml
 [runtime]
 agents_dir = "~/projects/agent-cli/personas"
 ```
 
-このパターンでは **未存在時は黙って組み込み既定にフォールバック** します（明示指定経路と異なる）。
+With this pattern, **if the file does not exist, agent-cli silently falls back to the built-in default** (unlike the explicit specification paths).
 
-### 2.4 組み込み既定
+### 2.4 Built-in default
 
-`--persona` も `persona_file` も `<agents_dir>/<name>.md` もヒットしなかった場合、以下のペルソナで起動します。
+When `--persona`, `persona_file`, and `<agents_dir>/<name>.md` all miss, agent-cli launches with the following persona:
 
 ```yaml
 name: default
-role: 汎用アシスタント
-skills: [対話, ツール実行]
-description: 組み込みの既定ペルソナ
+role: General-purpose assistant
+skills: [conversation, tool execution]
+description: Built-in default persona
 ```
 
-本文は「あなたは agent-cli 上で動作する汎用 AI アシスタントです」で始まる短い指示。設定不要で動かしたい人向けの安全側既定です。
+The body is a short instruction starting with "You are a general-purpose AI assistant running on agent-cli." This is a safe-side default for users who want to get started without any configuration.
 
 ---
 
-## 3. ペルソナファイルの形式
+## 3. Persona File Format
 
-### 3.1 ファイル全体構造
+### 3.1 Overall file structure
 
 ```markdown
 ---
-<YAML フロントマター>
+<YAML frontmatter>
 ---
 
-<Markdown 本文（自由記述）>
+<Markdown body (free-form)>
 ```
 
-要件：
+Requirements:
 
-- 先頭は `---` で始まる必要があります（BOM は無視されます）。
-- 終端 `---` が次行以降に必要。
-- フロントマターは YAML でパース。`role` のみ必須キー。
-- 本文は trim されてからシステムプロンプトに連結されます。空でも構いません。
+- The file must start with `---` (a leading BOM is ignored).
+- A closing `---` on the next line is required.
+- The frontmatter is parsed as YAML. `role` is the only required key.
+- The body is trimmed and then appended to the system prompt. It may be empty.
 
-### 3.2 フロントマターのキー一覧
+### 3.2 Frontmatter key reference
 
-| キー | 型 | 必須 | 既定 | 説明 |
-|------|----|------|------|------|
-| `name` | string | — | （`--name` 引数 or 表示用 `(unnamed)`） | 表示用エージェント名。CLI の `--name` が優先 |
-| `role` | string | **✓** | — | 役割（システムプロンプトの「# 役割」セクションに入る） |
-| `skills` | string[] | — | `[]` | スキル一覧。「# スキル」セクションで箇条書き |
-| `description` | string | — | — | 1〜2 行の補足説明。`/peer` 出力にも表示 |
-| `model` | string | — | — | このペルソナを起動した際にプロバイダのモデル名を上書き |
-| `temperature` | number | — | — | 同上、サンプリング温度（0.0〜2.0 程度の浮動小数点） |
-| `allowed_tools` | string[] | — | — | 利用可能ツールのホワイトリスト。指定するとこのリストのみ有効 |
-| `denied_tools` | string[] | — | — | 拒否ツールのブラックリスト。`tools.enabled` から差し引く |
+| Key | Type | Required | Default | Description |
+|-----|------|----------|---------|-------------|
+| `name` | string | — | (`--name` argument, or `(unnamed)` for display) | Display name for the agent. The CLI `--name` takes precedence |
+| `role` | string | **Yes** | — | Role (placed in the "# Role" section of the system prompt) |
+| `skills` | string[] | — | `[]` | Skill list. Rendered as bullet items under the "# Skills" section |
+| `description` | string | — | — | 1-2 line supplemental description. Also shown in `/peer` output |
+| `model` | string | — | — | Overrides the provider's model name when this persona is launched |
+| `temperature` | number | — | — | Same as above; sampling temperature (float, typically 0.0-2.0) |
+| `allowed_tools` | string[] | — | — | Whitelist of available tools. When specified, only these tools are active |
+| `denied_tools` | string[] | — | — | Blacklist of denied tools. Subtracted from `tools.enabled` |
 
-#### 検証エラー
+#### Validation errors
 
-- `role` が未指定／空文字列のとき：`error: \`role\` is required in persona frontmatter`
-- フロントマター冒頭の `---` がない／終端がない：`persona file must begin with YAML frontmatter (\`---\`)` または `missing closing \`---\` for YAML frontmatter`
-- YAML パースエラー：`invalid YAML frontmatter: <serde_yaml message>`
+- `role` missing or empty: `error: \`role\` is required in persona frontmatter`
+- Missing opening `---` or closing `---`: `persona file must begin with YAML frontmatter (\`---\`)` or `missing closing \`---\` for YAML frontmatter`
+- YAML parse error: `invalid YAML frontmatter: <serde_yaml message>`
 
-### 3.3 本文
+### 3.3 Body
 
-本文は Markdown として書きますが、`agent-cli` は内容を解釈せず、そのままシステムプロンプトの末尾に挿入します。書き方の自由度が高いぶん、AI に確実に守らせたい指示は箇条書きで簡潔に書くのがおすすめです。
+The body is written as Markdown, but `agent-cli` does not interpret its content -- it simply appends it to the end of the system prompt. Because you have full freedom in how you write it, it is recommended to keep instructions you want the AI to follow strictly as concise bullet points.
 
-例：
+Example:
 
 ```markdown
-あなたは熟練のレビュアーです。以下のルールを必ず守ってください。
+You are an experienced reviewer. Always follow these rules:
 
-- 所有権・ライフタイム上の問題を最優先で指摘する
-- パフォーマンスへの影響を定量的に述べる
-- 修正案を提示する際は最小差分を心がける
+- Prioritize ownership and lifetime issues above all else
+- Quantify performance impacts
+- When proposing fixes, aim for minimal diffs
 ```
 
 ---
 
-## 4. システムプロンプトの合成
+## 4. System Prompt Composition
 
-`Persona::to_system_prompt()` は次の順で 1 つの文字列に組み立て、AI へのシステムメッセージとして送信されます。
+`Persona::to_system_prompt()` assembles a single string in the following order and sends it as the system message to the AI:
 
 ```text
-<組み込み既定の前置き：
-  あなたは agent-cli 上で動作する汎用 AI アシスタントです。
-  ユーザーからの依頼に対し、必要に応じてツールを使い、簡潔かつ正確に応答してください。>
+<Built-in preamble:
+  You are a general-purpose AI assistant running on agent-cli.
+  Respond to user requests concisely and accurately, using tools as needed.>
 
-# 役割
+# Role
 <frontmatter.role>
 
-# スキル
+# Skills
 - <skills[0]>
 - <skills[1]>
 ...
 
-# 説明
+# Description
 <frontmatter.description>
 
-# 詳細
-<本文>
+# Details
+<body>
 ```
 
-- `skills` が空配列のとき「# スキル」セクションは出力されません。
-- `description` が空文字／未指定のとき「# 説明」は出力されません。
-- 本文が空のとき「# 詳細」は出力されません。
+- When `skills` is an empty array, the "# Skills" section is omitted.
+- When `description` is empty or unspecified, the "# Description" section is omitted.
+- When the body is empty, the "# Details" section is omitted.
 
-会話履歴の先頭 `Message::System` として保持され、`/reload-persona` で差し替え可能です。
+The prompt is stored as the leading `Message::System` in the conversation history and can be replaced via `/reload-persona`.
 
 ---
 
-## 5. ツール権限制御
+## 5. Tool Permission Control
 
-`allowed_tools`／`denied_tools` は `ToolRegistry::build` で次の順に適用されます。
+`allowed_tools` / `denied_tools` are applied during `ToolRegistry::build` in the following order:
 
 ```text
-[tools] enabled の集合
-  ↓ allowed_tools が指定されていれば、そのリストとの積集合を取る（ホワイトリスト）
-  ↓ 残りに対して denied_tools が指定されていれば、その要素を除外（ブラックリスト）
-= 当該エージェントで実際に有効なツール
+[tools] enabled set
+  -> If allowed_tools is specified, intersect with that list (whitelist)
+  -> If denied_tools is specified, remove those elements from the remainder (blacklist)
+= Actually enabled tools for this agent
 ```
 
-### 5.1 例
+### 5.1 Example
 
-設定ファイル：
+Config file:
 
 ```toml
 [tools]
 enabled = ["shell", "fs_read", "fs_write", "send_to"]
 ```
 
-| ペルソナ指定 | 有効ツール |
-|-------------|----------|
-| 何も指定しない | `shell, fs_read, fs_write, send_to` |
+| Persona specification | Enabled tools |
+|----------------------|--------------|
+| None specified | `shell, fs_read, fs_write, send_to` |
 | `allowed_tools: [shell, fs_read]` | `shell, fs_read` |
 | `denied_tools: [fs_write]` | `shell, fs_read, send_to` |
-| `allowed_tools: [shell, fs_write]` ＋ `denied_tools: [fs_write]` | `shell` |
-| `denied_tools: [send_to]` | このエージェントは他ピアへ `send_to` で送信できない（ただし受信は可） |
+| `allowed_tools: [shell, fs_write]` + `denied_tools: [fs_write]` | `shell` |
+| `denied_tools: [send_to]` | This agent cannot send messages to other peers via `send_to` (but can still receive) |
 
-REPL で確認：
+Verify in the REPL:
 
 ```text
 > /tools
 tools: shell, fs_read
 ```
 
-### 5.2 セキュリティ運用のヒント
+### 5.2 Security operations tips
 
-- 「読み取り専用」ロール（コードレビュアー等）には `denied_tools: [fs_write]` を付ける
-- 「ピアへ依頼するだけ」のディスパッチャ役には `allowed_tools: [send_to]` のみ
-- どのペルソナでも `auto_approve_tools=false`（既定）なら、ツール実行ごとに y/N 承認が REPL 入力ループから求められます（`doc/tools.md` 参照）
+- For "read-only" roles (code reviewers, etc.), add `denied_tools: [fs_write]`
+- For a dispatcher role that "only delegates to peers", use `allowed_tools: [send_to]` only
+- For any persona with `auto_approve_tools=false` (the default), each tool execution requires y/N approval from the REPL input loop (see `doc/tools.md`)
 
 ---
 
-## 6. モデル／温度の上書き
+## 6. Model / Temperature Override
 
-ペルソナの `model`／`temperature` は、起動時に **アクティブなプロバイダ（`provider.kind`）の設定** にだけ上書きが適用されます。
+The persona's `model` / `temperature` are only overridden on the **active provider** (`provider.kind`) configuration at startup.
 
 ```yaml
 ---
 name: alice
-role: 厳密なコードレビュアー
+role: Strict code reviewer
 model: claude-opus-4-7
 temperature: 0.1
 ---
 ```
 
-- 上記ペルソナで `agent-cli run --provider claude --name alice` を起動すると、`provider.claude.model` が `claude-opus-4-7`、`provider.claude.temperature` が `0.1` に上書きされる。
-- `--provider ollama` で起動した場合は `provider.ollama.model`／`provider.ollama.temperature` に同じ値が入る（モデル名がプロバイダ間で互換でない可能性に注意）。
-- CLI の `--model` を併用すると、CLI 上書き → ペルソナ上書きの順で適用されます（最終的にはペルソナが勝ちます）。
+- Launching with `agent-cli run --provider claude --name alice` using the above persona overrides `provider.claude.model` to `claude-opus-4-7` and `provider.claude.temperature` to `0.1`.
+- If launched with `--provider ollama`, the same values are written to `provider.ollama.model` / `provider.ollama.temperature` (note that model names may not be compatible across providers).
+- If the CLI `--model` is also used, the CLI override is applied first, then the persona override (the persona wins in the end).
 
-> 温度は Provider 実装側で適切な範囲にクランプ／無視されます。Anthropic Claude は `0.0..=1.0`、OpenAI／Ollama は `0.0..=2.0` 程度を想定。
+> Temperature is clamped or ignored to an appropriate range by each provider implementation. Anthropic Claude expects `0.0..=1.0`; OpenAI / Ollama expect approximately `0.0..=2.0`.
 
 ---
 
-## 7. 完全サンプル
+## 7. Complete Examples
 
-リポジトリ同梱の `example/agents/` には 3 つのサンプルがあり、`bundled_example_personas_parse` 単体テストで常に最新パーサで読めることを保証しています。
+The repository ships three examples under `example/agents/`, which are always verified to parse with the latest parser via the `bundled_example_personas_parse` unit test.
 
-### 7.1 `coder.md`（実装担当）
+### 7.1 `coder.md` (implementer)
 
 ```markdown
 ---
 name: coder
-role: Rust ソフトウェアエンジニア
+role: Rust software engineer
 skills:
   - Rust
-  - 非同期プログラミング (tokio)
-  - CLI 設計
-description: 安全で読みやすいコードを書くことに重点を置くエンジニア
+  - Async programming (tokio)
+  - CLI design
+description: An engineer focused on writing safe, readable code
 allowed_tools:
   - shell
   - fs_read
@@ -264,23 +264,23 @@ allowed_tools:
   - send_to
 ---
 
-あなたは agent-cli のコードを書くエンジニアです。
-- まず計画を立て、必要に応じて`shell`と`fs_read`でリポジトリを調査してください。
-- ファイルを編集する際は、最小差分・既存スタイル尊重を心がけてください。
-- 不明な仕様は推測せず、`send_to`で他エージェントに確認してください。
+You are the engineer who writes agent-cli code.
+- Start by making a plan; investigate the repository using `shell` and `fs_read` as needed.
+- When editing files, aim for minimal diffs and respect existing style.
+- Do not guess unclear specs; confirm with other agents via `send_to`.
 ```
 
-### 7.2 `reviewer.md`（読み取り専用レビュアー）
+### 7.2 `reviewer.md` (read-only reviewer)
 
 ```markdown
 ---
 name: reviewer
-role: コードレビュアー
+role: Code reviewer
 skills:
   - Rust
-  - 静的解析
-  - セキュリティレビュー
-description: 安全性とパフォーマンスを重視するレビュアー
+  - Static analysis
+  - Security review
+description: A reviewer focused on safety and performance
 allowed_tools:
   - shell
   - fs_read
@@ -288,32 +288,32 @@ denied_tools:
   - fs_write
 ---
 
-あなたは熟練のコードレビュアーです。常に以下を意識してレビューしてください。
+You are an experienced code reviewer. Always keep the following in mind:
 
-- 所有権・ライフタイム上の問題を最優先で指摘する
-- パフォーマンスへの影響を定量的に述べる
-- 修正案を提示する際は最小差分を心がける
+- Prioritize ownership and lifetime issues above all else
+- Quantify performance impacts
+- When proposing fixes, aim for minimal diffs
 ```
 
-### 7.3 `planner.md`（指示出し役）
+### 7.3 `planner.md` (dispatcher)
 
 ```markdown
 ---
 name: planner
-role: プランナー
+role: Planner
 skills:
-  - 計画立案
-  - 要件分析
-  - サブタスク分解
-description: 大規模タスクをサブタスクに分解して進捗を管理する
+  - Planning
+  - Requirements analysis
+  - Sub-task decomposition
+description: Decomposes large tasks into sub-tasks and manages progress
 ---
 
-あなたはプロジェクトのプランナーです。
-- ユーザの要望を箇条書きで分解し、優先順位を付けて整理してください。
-- 必要に応じて`send_to`で実装担当エージェントへタスクを割り振ってください。
+You are the project planner.
+- Decompose user requests into bullet-point sub-tasks and prioritize them.
+- Delegate tasks to implementer agents via `send_to` as needed.
 ```
 
-サンプルをそのままコピーして開始するのが最速：
+The fastest way to get started is to copy the examples as-is:
 
 ```bash
 mkdir -p ~/.config/agent-cli/agents
@@ -322,21 +322,21 @@ cp example/agents/{coder,reviewer,planner}.md ~/.config/agent-cli/agents/
 
 ---
 
-## 8. 運用シナリオ
+## 8. Operational Scenarios
 
-### 8.1 単独エージェント
+### 8.1 Single agent
 
 ```bash
 cp example/agents/coder.md ~/.config/agent-cli/agents/me.md
 agent-cli run --name me
 ```
 
-REPL ヘッダーに `role: Rust ソフトウェアエンジニア` などが表示されれば反映 OK。
+If the REPL header shows `role: Rust software engineer` or similar, the persona has been applied successfully.
 
-### 8.2 マルチエージェント協調（planner ＋ coder ＋ reviewer）
+### 8.2 Multi-agent coordination (planner + coder + reviewer)
 
 ```bash
-# 共有 registry を使う設定（3 ターミナルで共通）
+# Shared registry config (common across all 3 terminals)
 cat > /tmp/team.toml <<EOF
 [provider]
 kind = "claude"
@@ -347,69 +347,69 @@ registry_dir = "/tmp/agent-cli/team"
 agents_dir = "$HOME/.config/agent-cli/agents"
 EOF
 
-# ターミナル A
+# Terminal A
 agent-cli --config /tmp/team.toml run --name planner
 
-# ターミナル B
+# Terminal B
 agent-cli --config /tmp/team.toml run --name coder
 
-# ターミナル C
+# Terminal C
 agent-cli --config /tmp/team.toml run --name reviewer
 ```
 
-A から `/list` を打つと B／C が `role`／`skills` 付きで見え、`/peer coder` で coder の概要、`/send coder "<task>"` で実装依頼が飛びます。
+From terminal A, `/list` will show B and C with their `role` / `skills`, `/peer coder` will display the coder's summary, and `/send coder "<task>"` sends an implementation request.
 
-### 8.3 同名でロール違いを切り替えたい
+### 8.3 Switching roles under the same name
 
-`--persona` で都度上書きすればファイル名規約と独立に運用できます。
+You can override with `--persona` each time, independently of the filename convention.
 
 ```bash
-# 平日：レビュアー
+# Weekday: reviewer
 agent-cli --persona ~/personas/strict_reviewer.md
 
-# 週末：自由記述
+# Weekend: free-form chat
 agent-cli --persona ~/personas/casual_chat.md
 ```
 
-### 8.4 ホワイトリストで安全運用
+### 8.4 Safe operation with a whitelist
 
-CI 用ワーカーは破壊的操作を一切させたくない、というケース：
+For a CI worker that must never perform destructive operations:
 
 ```yaml
 ---
 name: ci-worker
-role: CI ヘルパー
+role: CI helper
 allowed_tools:
   - fs_read
 ---
 ```
 
-`tools.enabled` がもっと多くても、このエージェントには `fs_read` だけが見えます。
+Even if `tools.enabled` contains more entries, this agent will only see `fs_read`.
 
 ---
 
-## 9. REPL での操作
+## 9. REPL Operations
 
-| コマンド | 用途 |
-|---------|------|
-| `/persona` | 自身のペルソナ詳細（`name`／`role`／`skills`／`description`／`temperature`／`allowed_tools`／`denied_tools`／`source`） |
-| `/reload-persona` | 同じ解決経路で再読込し、システムプロンプトを差し替え（会話履歴は維持） |
-| `/peer <id_or_name>` | ピアのペルソナ概要（`role`／`skills`／`description`） |
-| `/tools` | 当該エージェントで実際に有効なツール一覧（ペルソナ反映後） |
+| Command | Purpose |
+|---------|---------|
+| `/persona` | Show your own persona details (`name` / `role` / `skills` / `description` / `temperature` / `allowed_tools` / `denied_tools` / `source`) |
+| `/reload-persona` | Reload via the same resolution path and replace the system prompt (conversation history is preserved) |
+| `/peer <id_or_name>` | Show a peer's persona summary (`role` / `skills` / `description`) |
+| `/tools` | List the actually enabled tools for this agent (after applying persona restrictions) |
 
-`/reload-persona` の挙動：
+`/reload-persona` behavior:
 
-1. 起動時と同じ優先順位で再解決
-2. システムプロンプト（`Message::System`）を新しい内容で差し替え
-3. 会話履歴の `User`／`Assistant`／`ToolResult` メッセージは保持
-4. ツールレジストリは現状再構築されません（`allowed_tools`／`denied_tools` の変更を反映するには再起動）
-5. `model`／`temperature` の上書きも再起動時のみ反映
+1. Re-resolves using the same priority as at startup
+2. Replaces the system prompt (`Message::System`) with the new content
+3. Preserves `User` / `Assistant` / `ToolResult` messages in the conversation history
+4. The tool registry is not rebuilt (to reflect changes to `allowed_tools` / `denied_tools`, restart agent-cli)
+5. `model` / `temperature` overrides are also only applied on restart
 
 ---
 
-## 10. レジストリへの反映
+## 10. Registry Reflection
 
-`<registry_dir>/<agent-id>.json` の `persona` フィールド：
+The `persona` field in `<registry_dir>/<agent-id>.json`:
 
 ```json
 {
@@ -419,71 +419,71 @@ allowed_tools:
   "model": "claude-opus-4-7",
   "socket": "/tmp/agent-cli/agent-01HX....sock",
   "persona": {
-    "role": "コードレビュアー",
-    "skills": ["Rust", "静的解析", "セキュリティレビュー"],
-    "description": "安全性とパフォーマンスを重視するレビュアー",
+    "role": "Code reviewer",
+    "skills": ["Rust", "Static analysis", "Security review"],
+    "description": "A reviewer focused on safety and performance",
     "source_path": "/home/.../agents/alice.md"
   }
 }
 ```
 
-これにより別プロセスから `/peer alice` を打つだけで、相手の役割・スキル・説明が確認できます。`/send` の宛先選定にも有用です。
+This allows another process to check a peer's role, skills, and description simply by running `/peer alice`. It is also useful for selecting `/send` destinations.
 
 ---
 
-## 11. トラブルシューティング
+## 11. Troubleshooting
 
 ### `persona file not found: <path>`
 
-- `--persona` または `[runtime] persona_file` で指定したパスが存在しません。
-- 既定パス（`<agents_dir>/<name>.md`）の場合は組み込み既定にフォールバックするため、このメッセージは出ません。
-- 解決：パスを `agent-cli config show` で確認、または `--persona` を相対パス → 絶対パスに直す。
+- The path specified by `--persona` or `[runtime] persona_file` does not exist.
+- When using the default path (`<agents_dir>/<name>.md`), agent-cli falls back to the built-in default, so this message will not appear.
+- Resolution: Verify the path with `agent-cli config show`, or convert a relative `--persona` path to an absolute path.
 
-### `\`role\` is required in persona frontmatter`
+### `` `role` is required in persona frontmatter ``
 
-- フロントマターに `role:` が無い、または空文字列。
-- 解決：必ず `role: <文字列>` を設定する。最低限の例：
+- The frontmatter is missing `role:`, or the value is an empty string.
+- Resolution: Always set `role: <string>`. Minimal example:
   ```yaml
   ---
-  role: 汎用アシスタント
+  role: General-purpose assistant
   ---
   ```
 
 ### `persona file must begin with YAML frontmatter (\`---\`)`
 
-- ファイルが `---` で始まっていない。本文だけのファイルは扱えません。
-- 解決：先頭に `---\nrole: ...\n---\n` を追加。
+- The file does not start with `---`. Files containing only a body are not supported.
+- Resolution: Add `---\nrole: ...\n---\n` at the top.
 
 ### `invalid YAML frontmatter: ...`
 
-- フロントマターが YAML として不正（インデント崩れ、未クォートのコロン、リストの `- ` 不足など）。
-- 解決：YAML として `python -c 'import yaml,sys;yaml.safe_load(sys.stdin)'` 等で先に検証。
+- The frontmatter is invalid YAML (broken indentation, unquoted colons, missing `- ` for lists, etc.).
+- Resolution: Validate the YAML first using something like `python -c 'import yaml,sys;yaml.safe_load(sys.stdin)'`.
 
-### `/reload-persona` してもツール権限が変わらない
+### `/reload-persona` does not change tool permissions
 
-- `allowed_tools`／`denied_tools` の差し替えは現状 `ToolRegistry` を再構築しないため、`agent-cli` を再起動してください。
-- システムプロンプトのみは即時反映されます。
+- `allowed_tools` / `denied_tools` replacement does not currently rebuild `ToolRegistry`, so restart agent-cli.
+- The system prompt is reflected immediately.
 
-### REPL ヘッダーに別の `role` が出る
+### REPL header shows a different `role`
 
-- 名前規約（`<agents_dir>/<name>.md`）が CLI の `--persona` で上書きされている可能性。`/persona` の `source` 行で実際に読み込まれたパスを確認できます。
+- The filename convention (`<agents_dir>/<name>.md`) may have been overridden by CLI `--persona`. Check the `source` line in `/persona` to see which file was actually loaded.
 
-### サンプルペルソナをカスタマイズしたい
+### I want to customize the example personas
 
-- `example/agents/*.md` をコピーして `~/.config/agent-cli/agents/` に配置すると、`--name` で読み込まれるようになります。元のサンプルは将来のアップデートで上書きされる可能性があるため、必ず別名コピーを推奨。
+- Copy `example/agents/*.md` to `~/.config/agent-cli/agents/` and they will be loaded by `--name`. Because the original examples may be overwritten by future updates, always copy them to a different name.
 
 ---
 
-## 12. 仕様サマリ（チートシート）
+## 12. Specification Summary (Cheat Sheet)
 
 ```text
-解決順序：       --persona > [runtime] persona_file > <agents_dir>/<name>.md > builtin
-必須キー：       role
-任意キー：       name / skills / description / model / temperature / allowed_tools / denied_tools
-ツール選定：     enabled ∩ allowed_tools \ denied_tools
-モデル上書き：   起動時のみ。/reload-persona では反映されない
-温度上書き：     起動時のみ。同上
-REPL：          /persona, /reload-persona, /peer <id>, /tools
-レジストリ：    <registry_dir>/<agent-id>.json の persona フィールドに反映
-バリデーション： cargo test bundled_example_personas_parse で example/agents/*.md を常時検証
+Resolution order: --persona > [runtime] persona_file > <agents_dir>/<name>.md > builtin
+Required key:     role
+Optional keys:    name / skills / description / model / temperature / allowed_tools / denied_tools
+Tool selection:   enabled ∩ allowed_tools \ denied_tools
+Model override:   Startup only. Not reflected by /reload-persona
+Temp. override:   Startup only. Same as above
+REPL:            /persona, /reload-persona, /peer <id>, /tools
+Registry:        Reflected in the persona field of <registry_dir>/<agent-id>.json
+Validation:       cargo test bundled_example_personas_parse continuously verifies example/agents/*.md
 ```

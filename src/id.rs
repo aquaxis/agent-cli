@@ -6,20 +6,20 @@ use ulid::Ulid;
 
 use crate::error::{AppError, Result};
 
-/// 単独プロセスとして動作するエージェントの一意識別子。
+/// Unique identifier for an agent running as a single process.
 ///
-/// 形式は `agent-<ULID>` で、プロセス起動時に自動採番される。レジストリ
-/// （`<registry_dir>/<agent-id>.{sock,json}`）の命名にも使われる。
+/// Format is `agent-<ULID>`, automatically assigned at process startup. Also used
+/// as the name in the registry (`<registry_dir>/<agent-id>.{sock,json}`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentId(pub String);
 
 impl AgentId {
-    /// 新しい一意な `AgentId` を生成する。
+    /// Generate a new unique `AgentId`.
     pub fn new() -> Self {
         AgentId(format!("agent-{}", Ulid::new()))
     }
 
-    /// 内部表現の `&str` を返す。
+    /// Return the inner `&str`.
     pub fn as_str(&self) -> &str {
         &self.0
     }

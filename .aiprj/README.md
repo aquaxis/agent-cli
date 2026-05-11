@@ -1,95 +1,95 @@
 # aiprj - AI Project Management Tool
 
-Claude Code 用のプロジェクト管理ツールです。AI が作業する際の行動規定とドキュメント構造（要件定義・設計・タスク）を、対象ディレクトリへワンコマンドで展開します。
+A project management tool for Claude Code. It deploys behavioral guidelines and document structures (requirements, design, tasks) for AI work into a target directory with a single command.
 
-## 概要
+## Overview
 
-aiprj は以下の機能を提供します：
+aiprj provides the following features:
 
-- AI の行動規定とガイドラインの定義
-- 要件定義書・設計仕様書・タスクリストのドキュメント構造
-- Claude Code 用のスラッシュコマンド（`/setup_ai` `/ai` `/update_ai` `/next_ai` `/close_ai`）
-- 作業ログの自動保存（`.aiprj/AI_LOG/yyyy-MM-dd_NNN.md`）
+- Definition of AI behavioral guidelines and rules
+- Document structure for requirements, design specifications, and task lists
+- Claude Code slash commands (`/setup_ai` `/ai` `/update_ai` `/next_ai` `/close_ai`)
+- Automatic work log storage (`.aiprj/AI_LOG/yyyy-MM-dd_NNN.md`)
 
-## セットアップ
+## Setup
 
-### カレントディレクトリにセットアップ
+### Setup in the current directory
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aquaxis/aiprj/main/install.sh | sh
 ```
 
-### 指定ディレクトリにセットアップ
+### Setup in a specified directory
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aquaxis/aiprj/main/install.sh | sh -s -- <ディレクトリ名>
+curl -fsSL https://raw.githubusercontent.com/aquaxis/aiprj/main/install.sh | sh -s -- <directory-name>
 ```
 
-### 手動セットアップ
+### Manual setup
 
 ```bash
 git clone https://github.com/aquaxis/aiprj.git
 cd aiprj
-./install.sh <セットアップ先ディレクトリ>
+./install.sh <setup-target-directory>
 ```
 
-セットアップにより以下のファイルが作成されます：
+Setup creates the following files:
 
-- `.aiprj/` — AI ルール、`instructions.md`、`README.md`
-- `.claude/` — Claude Code 用設定とスラッシュコマンド
-- `.mcp.json` — MCP サーバ設定
-- `.gitignore` — Git 除外設定（既存がある場合はテンプレートを先頭に追記）
+- `.aiprj/` — AI rules, `instructions.md`, `README.md`
+- `.claude/` — Claude Code settings and slash commands
+- `.mcp.json` — MCP server configuration
+- `.gitignore` — Git exclusion settings (prepends template if file exists)
 
-### Claude Code スラッシュコマンド
+### Claude Code Slash Commands
 
-| コマンド | 説明 |
-|---------|------|
-| `/setup_ai` | プロジェクトのドキュメント（要件定義・設計・タスク）を作成 |
-| `/ai` | `instructions.md` に基づいてタスクを実行 |
-| `/update_ai` | プロジェクトドキュメントを更新 |
-| `/next_ai` | 次のタスクに進む |
-| `/close_ai` | 作業ログを保存して終了 |
+| Command | Description |
+|---------|-------------|
+| `/setup_ai` | Create project documents (requirements, design, tasks) |
+| `/ai` | Execute tasks based on `instructions.md` |
+| `/update_ai` | Update project documents |
+| `/next_ai` | Move to the next task |
+| `/close_ai` | Save work log and finish |
 
-## プロジェクト構造
+## Project Structure
 
-セットアップ後、AI は以下のドキュメントを管理します：
+After setup, the AI manages the following documents:
 
-| ファイル | 内容 |
-|---------|------|
-| `.aiprj/AI_PRJ_REQUIREMENTS.md` | 要件定義書 |
-| `.aiprj/AI_PRJ_DESIGN.md` | 設計仕様書 |
-| `.aiprj/AI_PRJ_TASKS.md` | 実装タスク・作業指示リスト |
-| `.aiprj/AI_LOG/` | 作業ログ（`yyyy-MM-dd_NNN.md` 形式、連番、上書き禁止） |
+| File | Content |
+|------|---------|
+| `.aiprj/AI_PRJ_REQUIREMENTS.md` | Requirements definition |
+| `.aiprj/AI_PRJ_DESIGN.md` | Design specification |
+| `.aiprj/AI_PRJ_TASKS.md` | Implementation tasks and work instructions |
+| `.aiprj/AI_LOG/` | Work logs (`yyyy-MM-dd_NNN.md` format, sequential, no overwrites) |
 
-## AI 行動規定
+## AI Behavioral Guidelines
 
-AI は以下の規定に従って動作します：
+The AI operates according to the following guidelines:
 
-1. 作業開始前に必ず作業計画を作成する
-2. AI 行動規定の歪曲・解釈変更を禁止
-3. ユーザー指示以外の迂回・アプローチ変更を禁止
-4. ユーザー指示の最適化を禁止
-5. ユーザーの指示を完遂するまで停止しない
-6. 作業ログを `.aiprj/AI_LOG/` に `yyyy-MM-dd_NNN.md` 形式で保存（連番・上書き禁止）
-7. 作業ログに `.aiprj/instructions.md` の内容を含める
+1. Before commencing any task, formulate a comprehensive work plan
+2. Do not distort, alter, or reinterpret the AI Operation Guidelines
+3. Do not take detours or modify the approach beyond what the user has explicitly instructed
+4. Do not optimize, rewrite, or reinterpret user instructions
+5. Do not stop execution until the user's instructions are fully completed
+6. Store work logs in `.aiprj/AI_LOG/` using `yyyy-MM-dd_NNN.md` format (sequential, no overwrites)
+7. Include the full content of `.aiprj/instructions.md` in each work log
 
-## ファイル構成
+## File Structure
 
 ```
 aiprj/
-├── install.sh               # セットアップスクリプト
-├── .mcp.json                # MCP 設定
-├── .gitignore.aiprj         # gitignore テンプレート
+├── install.sh               # Setup script
+├── .mcp.json                # MCP configuration
+├── .gitignore.aiprj         # gitignore template
 ├── .aiprj/
-│   ├── instructions.md.org  # 指示書テンプレート
+│   ├── instructions.md.org  # Instruction template
 │   └── rules/
-│       ├── setup_project.md  # セットアップルール
-│       ├── exec_job.md       # タスク実行ルール
-│       ├── update_project.md # 更新ルール
-│       └── close_ai.md       # 終了ルール
+│       ├── setup_project.md  # Setup rules
+│       ├── exec_job.md       # Task execution rules
+│       ├── update_project.md # Update rules
+│       └── close_ai.md       # Closing rules
 └── .claude/
-    ├── settings.json        # Claude Code 設定
-    └── commands/            # スラッシュコマンド定義
+    ├── settings.json        # Claude Code settings
+    └── commands/            # Slash command definitions
         ├── setup_ai.md
         ├── ai.md
         ├── update_ai.md
@@ -97,13 +97,13 @@ aiprj/
         └── close_ai.md
 ```
 
-## 必要環境
+## Requirements
 
-- `curl`（セットアップ用）
-- `tar`（ワンライナー fallback 時）、または `git`
+- `curl` (for setup)
+- `tar` (fallback for one-liner) or `git`
 - Claude Code CLI
-- Node.js / `npx`（MCP 連携時）
+- Node.js / `npx` (for MCP integration)
 
-## ライセンス
+## License
 
 MIT License

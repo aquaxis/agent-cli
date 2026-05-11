@@ -1,8 +1,8 @@
 use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 
-/// SSE フレームを抽出するイテレータ風ヘルパー。
-/// サーバから送られたバイト列を行単位で連結し、空行で区切られた "data: ..." を取り出す。
+/// Iterator-style helper that extracts SSE frames.
+/// Accumulates bytes from the server line by line and yields "data: ..." blocks separated by blank lines.
 pub struct SseAccumulator {
     buf: String,
 }
@@ -16,7 +16,7 @@ impl SseAccumulator {
         self.buf.push_str(chunk);
     }
 
-    /// 完成したフレームを順に返す。各要素は `data:` 行を連結した文字列（プレフィックスは除去済み）。
+    /// Return completed frames in order. Each element is the concatenation of `data:` lines with the prefix stripped.
     pub fn drain_frames(&mut self) -> Vec<String> {
         let mut out = Vec::new();
         while let Some(idx) = self.buf.find("\n\n") {

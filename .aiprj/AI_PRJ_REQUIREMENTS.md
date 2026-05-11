@@ -1,403 +1,123 @@
-# 要件定義書（AI_PRJ_REQUIREMENTS）
+# Requirements Specification (AI_PRJ_REQUIREMENTS)
 
-## 1. プロジェクト概要
+## 1. Project Overview
 
-### 1.1 プロジェクト名
+### 1.1 Project Name
 
-agent-cli — Claude Code相当のAIエージェントを単独プロセスで提供するRust製CLI
+English Conversion and Full-Width to Half-Width Character Normalization for the agent-cli Repository
 
-### 1.2 背景
+### 1.2 Background
 
-従来は、tmuxを起動してそのペイン上でtools機能・thinking機能を持つClaude Codeを実行し、ペイン同士で相互にプロンプトを送り合いながらマルチエージェントとして稼働させていた。本プロジェクトでは、Claude Codeそのものを呼び出すのではなく、Claude Codeと同等の機能（tools／thinking／REPL／プロンプト送受信）を備えたAIエージェントを、Rust製の単独アプリケーションとして自前で実装する。
+The following instructions were received in `.aiprj/instructions.md` (as of 2026-05-11):
 
-### 1.3 目的
+> - Convert all Japanese text in files to English
+> - Convert full-width characters to half-width characters
 
-- tmux依存を排除し、`agent-cli`コマンド単体で起動できるアプリを提供する。
-- 1プロセスにつき1つのAIエージェントを起動し、Claude Code相当の対話・ツール実行・thinking可視化を実現する。
-- 複数の`agent-cli`プロセスを別々に起動した場合に、エージェント同士がプロンプトを送り合いながら協調動作できる仕組みを、プロセス間通信で提供する。
+Numerous files in the agent-cli repository (documentation, configuration, source code comments, etc.) contain Japanese text and full-width alphanumeric characters and symbols. Converting these to English text and half-width characters will improve readability and maintainability for international developers.
 
-### 1.4 非目標
+### 1.3 Objectives
 
-- Claude Code CLI本体（`claude`コマンド）をサブプロセスとして起動・制御することは目的としない。本アプリは独自実装でClaude Codeと同等機能を提供する。
-- プロセス内に複数のAIエージェントを同居させることは目的としない（1プロセス＝1エージェント）。
+- Eliminate Japanese text (hiragana, katakana, kanji, full-width symbols) from all files in the repository and replace it with equivalent English text.
+- Convert all full-width characters (alphanumeric characters and symbols) in all files in the repository to their corresponding half-width characters.
+- Maintain the structure, intent, and information content of the original documents after conversion.
 
-## 2. 用語定義
+### 1.4 Non-Objectives
 
-| 用語 | 定義 |
-|------|------|
-| アプリ | `agent-cli`バイナリ。1プロセスとして1つのAIエージェントを内包する。 |
-| エージェント | アプリが内包する単一のAI実行ユニット。1プロセスにつき1つ。 |
-| Tools機能 | AIモデルが外部関数（ファイル操作・シェル実行など）を呼び出す機能。 |
-| Thinking機能 | AIモデルが回答前に内省的な推論ステップを実行する機能。 |
-| ピア | 別プロセスとして起動している他の`agent-cli`エージェント。 |
-| エージェント間メッセージング | 自プロセスから別プロセスのエージェントへプロンプトを送信する仕組み。 |
+- No new features will be added and no existing feature specifications will be changed.
+- No logic changes will be made to source code (Rust, etc.). Only comments will be translated.
+- No changes will be made to external service or API calls.
+- The report `./report_cli.md` will not be reviewed or supplemented with additional research (translation only).
+- If `README.en.md` already exists as the English version, consistency with `README.md` will be verified after converting the Japanese text in `README.md` to English, but `README.en.md` itself will not be substantially modified.
 
-## 3. 機能要件
+## 2. Terminology
 
-### 3.1 アプリ起動（FR-01）
+| Term | Definition |
+|------|-----------|
+| Japanese text | Text containing hiragana, katakana, kanji, or full-width symbols |
+| Full-width characters | Alphanumeric characters and symbols belonging to full-width character sets such as JIS X 0208 (e.g., A->A, 1->1) |
+| Half-width characters | Alphanumeric characters and symbols belonging to the ASCII character set |
+| Conversion target files | Files in the repository that contain Japanese text or full-width characters |
+| English conversion | Translating Japanese text into equivalent English text |
+| Half-width conversion | Converting full-width alphanumeric characters and symbols to their corresponding half-width characters |
 
-- 本アプリはシェルから`agent-cli`単体で起動できる。
-- 引数なしの`agent-cli`実行は`agent-cli run`と等価とする（既定動作＝REPL起動）。サブコマンド省略時の挙動は将来にわたって維持する。`run`サブコマンド専用オプション（`--name`、`--provider`、`--model`、`--persona`、`--auto-approve-tools`）は、サブコマンド省略時（`agent-cli --persona <path>` 等）でも等価に解釈されなければならない（T-508で実装済）。
-- tmux上での起動を前提としない（tmux外で問題なく動作する）。
-- 起動時にREPL画面を表示し、対話を受け付ける。
+## 3. Functional Requirements
 
-### 3.2 単一エージェント実行（FR-02）
+### 3.1 English Conversion of Japanese Text (FR-01)
 
-- 1プロセスは1つのAIエージェントを内包する。
-- エージェントには一意の識別子（agent-id）を付与する。識別子は起動時に生成され、当該プロセスの生存期間中は不変。
-- ユーザー指定により表示用のエージェント名（例：`alice`）を併記できる。
+- Scan all files in the repository and identify files containing Japanese text.
+- Translate the Japanese text in each file into equivalent English while preserving context.
+- The translation should be natural English suitable for technical documentation, not machine translation.
+- Verify that the translated text conveys the same amount of information as the original text.
 
-### 3.3 Claude Code相当機能（FR-03）
+### 3.2 Half-Width Conversion of Full-Width Characters (FR-02)
 
-- AIモデルとの対話REPLを提供する。
-- ストリーミング応答を逐次表示する。
-- thinkingブロックを受信し、折りたたみ／展開で表示できる（バックエンドが対応する場合）。
-- AIモデルからのtool_use要求を解釈し、対応するツールを実行して結果を返す。
-- これら一連の機能は、Claude Code CLIを呼び出すのではなく自前で実装する。
+- Scan all files in the repository and identify files containing full-width alphanumeric characters and symbols.
+- Convert full-width alphanumeric characters (A-Z, a-z, 0-9) to their corresponding half-width alphanumeric characters (A-Z, a-z, 0-9).
+- Convert full-width symbols (_, -, (, ), etc.) to their corresponding half-width symbols (_, -, (, ), etc.).
+- Punctuation marks within Japanese text (.,) will be converted to English punctuation (., ) as part of the FR-01 translation.
 
-#### 3.3.2 REPL入出力サイクル（FR-03-2）
+### 3.3 Quality Assurance of Conversion (FR-03)
 
-REPL は「ユーザー入力 → AI 応答（ストリーミング）→ 次のユーザー入力」を破綻なく繰り返せること。具体的には以下を満たす。
+- Verify that translated files retain the same structure as the original files (headings, tables, lists, code blocks, etc.).
+- Verify that Markdown structural integrity (links, code blocks, tables, front matter, etc.) is maintained.
+- Ensure that translating string literals and comments in source code (Rust) does not affect program behavior.
+- When the same term is used across multiple files, use the same English translation consistently (terminological consistency).
 
-- ユーザーが入力を送信した直後は、AI 応答が完全に表示し終わるまで次の入力プロンプト（`> `）を再表示しない。応答途中でプロンプトを描画して入力を受け付けると、ストリーミング出力と入力エコーが混在し、ユーザーが入力可能か判断できない状態になる。
-- 視覚的なレイアウトとして、ユーザー入力行の Enter による改行に続いて AI 応答が同列の左端から始まり、応答末尾には必ず改行が 1 行入った状態で次の入力プロンプト（`> `）が再描画されること。具体的には以下のシーケンスを保証する：
-  ```
-  > <ユーザー入力>     ← 既に描画済みのプロンプト＋ Enter
-  <AI 応答テキスト>    ← Done までストリーミング表示
-                       ← Done で改行
-  >                    ← 次のプロンプト再描画
-  ```
-- ユーザー入力直後の同じ行・同じ位置に次の `> ` が描画される事象（応答前にプロンプトが先行表示される）は禁止する。
-- ピアからのプロンプト（IPC 経由）受信中に AI 応答が走っている場合も、両者の表示がインタリーブしても、応答完了後にプロンプトが必ず再表示されること。
-- 別ホストでの実機検証（FR-09-2）において「一度、応答があると次の入力が行えないときがある」「応答があるとプロンプトマーク `> ` の後にテキストが表示される」事象が報告されたため、本要件は明示の機能要件として扱い、回帰テストを追加する。前者は T-505 で実装され、別ホスト側で「たぶん、解決した」と暫定確認、後者は T-507 で再確認＋テストにより別ホスト側で「解決した」と確認済（2026-05-02、`.aiprj/instructions.md`）。
+### 3.4 Classification of Conversion Targets (FR-04)
 
-### 3.3.1 バックエンド選択（FR-03-1）
+Classify conversion target files into the following categories and apply conversion policies appropriate to each category.
 
-- 起動するエージェントが利用するAIバックエンドを、以下から選択できる。
-  - `claude`：Anthropic Claude API
-  - `codex`：OpenAI（Chat Completions／Responses API、コード生成系モデルを含む）
-  - `ollama`：ローカルOllamaサーバー（HTTP API）
-  - `llama.cpp`：ローカルllama.cppサーバー（OpenAI互換HTTP API、または直接バインディング）
-- 選択は以下のいずれかで指定できる。
-  - 設定ファイル`[provider] kind = "..."`
-  - 起動オプション`agent-cli run --provider <name>`
-- バックエンドごとに必要な認証情報・接続先・モデル名は、設定ファイルのバックエンド別セクションで指定する。
-- バックエンドにより未対応の機能（thinkingやtool_useなど）がある場合は、その機能を無効化または擬似実装で代替し、ユーザーに警告を出す。
+| Category | Target Files | Conversion Policy |
+|----------|-------------|-------------------|
+| Documentation | `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `doc/*.md`, `example/agents/*.md`, `report_cli.md` | Convert entire body text to English. Convert full-width characters to half-width. |
+| Source code | `src/**/*.rs` | Convert only comments and doc comments to English. Convert user-facing messages among string literals to English. Do not modify internal identifiers or function names. |
+| Project management | `.aiprj/AI_PRJ_REQUIREMENTS.md`, `.aiprj/AI_PRJ_DESIGN.md`, `.aiprj/AI_PRJ_TASKS.md` | Written in Japanese during this update phase (per the instruction "Output language: Japanese"). Subject to English conversion in the implementation phase. |
+| Project management (other) | `.aiprj/README.md`, `.aiprj/rules/*.md` | Subject to English conversion and half-width conversion. However, `.aiprj/instructions.md` is the source of the conversion instructions and is already in English, so no conversion is needed. |
 
-#### 3.3.1.1 バックエンド固有のストリーム形式への追従（FR-03-1-2）
+### 3.5 Exclusions (FR-05)
 
-各バックエンドが返すストリーム形式は実装ごと・モデルごとに進化する。`Provider::complete_stream` は新フィールドを既知の `ProviderEvent` バリアント（`Thinking`／`Text`／`ToolUse`／`Done`／`Error`）へ正規化する責務を負う。未知フィールドを「黙って無視する」のではなく、当該モデルがユーザー向けに意味のある情報（例：thinking トークン）を返している場合は対応する `ProviderEvent` として emit すること。
+- Files in the `.git/` directory are excluded from conversion.
+- Generated files in the `target/` directory are excluded from conversion.
+- Files in external dependency directories such as `node_modules/` are excluded from conversion.
+- Binary files and image files are excluded from conversion.
+- `.aiprj/instructions.md` is already in English and requires no conversion.
 
-- **Ollama `message.thinking` 対応**：Ollama `/api/chat` の NDJSON ストリームで `message.thinking` が返るモデル（例：`glm-5.1:cloud`）について、agent-cli の Ollama parser は当該フィールドを受領して `ProviderEvent::Thinking` として emit すること。`Capabilities::thinking` も当該条件下では `true` を返すこと（モデル単位での動的判定が困難な場合は `true` を既定とし、未対応モデルでは何も emit されないだけで害がない設計とする）。
-- 2026-05-03 にユーザーから「`glm-5.1:cloud` はストリーミング応答に `message.thinking` フィールドを持つ。agent-cli の parser がこれを decode できていない可能性」との指摘を受領（`.aiprj/instructions.md`）。実装確認の結果、`src/ai/ollama.rs::parse_ndjson_line` は `message.content` と `message.tool_calls` のみを extract し、`message.thinking` を黙って捨てている事実を確認。本要件は当該不具合の修正を規定する（T-511）。
-- 同様の追従を他バックエンドでも怠らないこと。Anthropic／OpenAI／llama.cpp の各 SSE 形式に新規フィールドが追加された場合も同じ原則で取り込む。
+## 4. Non-Functional Requirements
 
-##### `[ui] show_thinking` の強制適用
+### 4.1 Document Language (NFR-01)
 
-`Provider` が `ProviderEvent::Thinking` を emit した結果は、必ず `[ui] show_thinking` 設定を経由して REPL に表示されること。設定値の解釈は次のとおり：
+- All converted files will be written in English.
+- Full-width alphanumeric characters and symbols will be converted to half-width.
+- However, during this update phase, `.aiprj/AI_PRJ_REQUIREMENTS.md`, `.aiprj/AI_PRJ_DESIGN.md`, and `.aiprj/AI_PRJ_TASKS.md` will be written in Japanese (per the instruction "Output language: Japanese").
 
-| 値 | 挙動 |
-|----|------|
-| `"hidden"` | `Thinking` イベントを一切表示しない（`AgentEvent::Thinking` を捨てる） |
-| `"collapsed"`（既定） | 各 delta を「先頭 80 文字 + `...`」に切り詰めた 1 行で表示。改行を含む場合は最初の行のみ |
-| `"expanded"` | 受信した text を全文表示 |
-| 未知値 | 既定の `"collapsed"` にフォールバック（パースエラーで起動を止めない） |
+### 4.2 Consistency (NFR-02)
 
-設定変更は `agent-cli` 再起動で反映する。実行時切替（`/auto` のような REPL コマンド）は提供しない（混乱を避けるため）。
+- When the same term is used across multiple files, use the same English translation consistently (terminological consistency).
+- Section numbers and requirement IDs will maintain the original structure.
+- Maintain content consistency between `README.md` and `README.en.md`.
 
-2026-05-03 にユーザーから「`[thinking]` が表示されるようになった。抑制する設定を追加して下さい」との要望を受領（会話）。調査の結果、`[ui] show_thinking` は config 上は定義されていたが `display_event` で消費されていない不具合を確認。本要件は当該不具合の恒久的修正を規定する（T-512）。
+### 4.3 Safety (NFR-03)
 
-### 3.4 Tools機能（FR-04）
+- When translating source code, if changes to string literals affect test expected values or output verification, update the test code accordingly.
+- Sensitive information such as API keys must not be leaked during the translation and conversion process.
+- Execution commands within code blocks will not be translated and will be preserved as-is.
 
-- 最低限、以下のツールをAIから呼び出せる。
-  - シェルコマンド実行
-  - ファイル読み取り
-  - ファイル書き込み・編集
-  - ピアエージェント宛てメッセージ送信（FR-06と連動）
-- ツール実行は既定でユーザーに承認を求める（自動許可モードも提供）。
+## 5. Constraints
 
-#### 3.4.1 ツール承認の入出力統合（FR-04-1）
+- Write access in this repository is limited to `.aiprj/AI_PRJ_REQUIREMENTS.md`, `.aiprj/AI_PRJ_DESIGN.md`, `.aiprj/AI_PRJ_TASKS.md`, and log files under `.aiprj/AI_LOG/` (Article 3 of `.aiprj/rules/update_project.md`).
+- Actual file conversion will be performed in the implementation phase (work started in a separate session via `/ai`, etc.). This update phase only covers updating the requirements specification, design document, and task list.
+- Requirements, design, and tasks associated with the former `.aiprj/instructions.md` (other agent CLI investigation tasks) will be replaced by this update.
 
-ツール実行承認の y/N 入力経路は、REPL のメイン入力ループと同じ stdin 読取経路に一本化すること。`std::io::stdin().read_line()` 等の独立した読取は禁止する。
+## 6. Intended Users
 
-- 同一 stdin に対する複数の読取主体（agent タスクの `std::io::stdin` と `run_input_loop` の `tokio::io::stdin`）が並存すると、入力が取り違えられて承認 `y` が次のユーザー入力として消費される／ユーザー入力が承認応答として消費される、といった事象が発生する。本要件はこれを禁止する。
-- 設計上は以下を満たすこと：
-  - 承認要求は `mpsc::channel` 等で agent タスクから入力ループへ通知する。
-  - 入力ループは承認待機状態（`AwaitingApproval`）に遷移し、その状態で次の stdin 行を y/N として解釈する。
-  - 承認応答は `oneshot::channel` 等で agent タスクへ返却し、agent タスクはその完了をもってツール実行を継続する。
-  - 承認待機状態は通常の `Pending`／`Ready` と独立に表現し、承認応答後は `Pending`（AI 応答完了待ち）へ遷移する。
-- 別ホストでの実機検証（FR-09-2）において、承認プロンプトの `y` 入力が次のユーザー入力として誤って消費され、ツール実行が拒否扱いになる事象が報告された。本要件はその再発防止として明示する。当該事象は T-506 で承認チャネル経由に置き換えて修正済であり、別ホスト側でも `[tool approval] ... approve? [y/N]: y` → `[tool-result ok] shell: ...` → 正常な AI 応答という完全な動作ログをユーザーが添付し、解決を確認した（2026-05-02、`.aiprj/instructions.md`）。
+- Developers of the agent-cli project: International developers who use the English-converted documentation and code.
+- Contributors: The barrier to entry is lowered by converting documents such as `CONTRIBUTING.md` to English.
 
-#### 3.4.2 承認スキップの導線（FR-04-2）
+## 7. Acceptance Criteria
 
-ユーザーがツール承認プロンプトをスキップする手段を、以下の 3 経路で提供する：
-
-- 設定ファイル：`[runtime] auto_approve_tools = true`
-- CLI フラグ：`agent-cli run --auto-approve-tools`
-- REPL コマンド：`/auto on`（有効化）、`/auto off`（無効化）、`/auto`／`/auto status`（現在値表示）
-
-REPL の `/help` 出力に上記 3 経路を必ず明記すること。`/auto` の状態変更は実行中のセッションに即座に反映されること。
-
-別ホストでの実機検証（FR-09-2）において、ユーザーから「ツールの実行許可を解除する設定方法はあるか」と質問された。本要件は導線の発見性向上を目的とする。T-506 で `/auto` REPL コマンドの追加と `/help` 出力への 3 経路明記が完了済であり、ユーザーが新バイナリで `/help` を実行すれば直ちに答えが見える状態になっている（別ホスト側での確認待ち）。
-
-#### 3.4.3 ツール実行イテレーション上限の通知と可変化（FR-04-3）
-
-`agent-cli` の会話ループは、1 ユーザープロンプトあたりのツール実行（tool_use）反復回数に上限を設けている。これは、AI がツール結果を踏まえて続報を返し、その続報がさらにツール呼び出しを含むケースで処理が無限ループへ陥らないための防護機構である。
-
-- **上限値は設定ファイルで可変**：`[runtime] max_tool_iterations`（既定 24、最小 1、整数）で指定する。`u32` 型で受け取り、`0` を含む不正値は実装側で `.max(1)` により 1 へ丸め込む。
-- 既定値の 24 は、design-then-debug 系のワークフロー（AI が設計成果物を生成 → 検証ツールを呼ぶ → lint フィードバックで修正 → 最終ファイル書き出し）が 1 ターン内に収まるように設定された値である。歴史的には 8 がハードコードされていたが、複数ツールを順次呼ぶオーケストレーター用途で不足することが判明したため引き上げられた。
-- 上限に達した場合、REPL に情報イベントとして `[info] max tool-use iterations reached` を表示し、当該ターンを `Done` で終了する。
-- 本メッセージはエラーではなく、「AI がツール実行で結論に到達できないまま規定回数に達した（未収束）」ことを示す情報通知である。続けて新しいユーザー入力を投入すれば会話を継続できる。
-- ユーザー向けドキュメント（`README.md`、`doc/config.md`、`doc/troubleshooting.md`）に本メッセージの意味、`[runtime] max_tool_iterations` 設定キーの存在、推奨される対処（プロンプトを分割／意図を具体化／不要ツールを `denied_tools` で除外／設定値を引き上げる）を必ず記載すること。
-- アーキテクチャ説明（`doc/architecture.md`）の会話ループ節および REPL 出力例（`doc/usage.md`）にも本メッセージと上限の可変性を明示する。
-- 2026-05-03 に `.aiprj/instructions.md` 経由でユーザーから「`[info] max tool-use iterations reached` はどういう意味か」と質問された（T-510）。同日、続けて「上限を可変に設定できるようにしてほしい」との要求を受領し、`config.runtime.max_tool_iterations`（既定 24）として実装済（`src/agent.rs` 行 178-182、`src/config.rs` 行 109-120）。本要件はその恒久仕様を規定する。
-
-##### Q&A：可変設定と無制限指定
-
-ユーザーから 2026-05-03 に追加で寄せられた 2 つの質問への明示回答を、本要件の不可分な一部として規定する。
-
-| 質問 | 回答 | 根拠／補足 |
-|------|------|------------|
-| 設定ファイルで変更できますか？ | **はい。** `~/.config/agent-cli/config.toml`（または `--config` ／ `AGENT_CLI_CONFIG` で指定したファイル）の `[runtime] max_tool_iterations` で変更可能。 | 変更は次回 `agent-cli` 起動時に反映。実行中の REPL では動的には変わらない（再起動が必要）。 |
-| 無制限の設定は可能ですか？ | **厳密な「無制限」は不可。実用上は `u32::MAX = 4,294,967,295` 回まで設定可能。** | 型は `u32`。意図的に `0` または「無上限」モードは提供しない（API 課金・ローカル GPU 占有・stdout 占有といった実害が出るため）。事実上の「無制限」が必要なら `max_tool_iterations = 4294967295` で u32 上限まで動作する。 |
-
-- `0` または負値が設定された場合：実装側で `.max(1)` により `1` 反復として扱う（境界値仕様）。
-- `u32::MAX` を超える値：TOML パース時にオーバーフローエラーで起動失敗（型ガード）。
-- 推奨レンジ：単純対話は `4-8`、design-then-debug 系オーケストレーターは `16-48`、長尺の自律実行は `64-256`。これを超える指定は「AI がループに陥っていないか」を疑うべき範囲であり、`/cancel`／`Ctrl+C` で介入できる設計を併用する前提とする。
-- ユーザー向けドキュメント（`doc/config.md`）に上記 Q&A、`u32` 型・既定 24・最小 1（`.max(1)` 丸め込み）・上限 `u32::MAX`・「無制限」が不可な設計理由・推奨レンジを必ず記載すること。
-
-### 3.5 ピア検出・一覧（FR-05）
-
-- ローカルマシン上で動作中の他`agent-cli`プロセスを検出し、一覧表示できる。
-- 検出は所定のレジストリディレクトリ（例：`$XDG_RUNTIME_DIR/agent-cli/`または`/tmp/agent-cli/`）配下のソケットファイル走査によって行う。
-- 一覧にはagent-id、表示名、起動時刻、PIDを含める。
-
-### 3.6 エージェント間メッセージング（FR-06）
-
-- ピアのagent-idまたは表示名を指定して、プロンプトテキストを送信できる。
-- 通信路はローカルホスト内のIPC（Unixドメインソケット）に限定する。
-- 受信側エージェントは、受信プロンプトをユーザー入力相当として扱いAIモデルへ渡す。応答はストリーミングで自プロセスに表示する。
-- 受信プロンプトには送信元agent-idを必ず付与し、会話履歴上で識別可能とする。
-- ユーザーは`agent-cli send`サブコマンド、またはREPL内コマンド（`/send <peer> <text>`）で送信できる。
-
-### 3.7 設定機能（FR-07）
-
-- APIキー、モデル名、許可ツール、レジストリパス、ログ出力先などを設定ファイルで指定できる。
-- 設定ファイルの既定パスは`~/.config/agent-cli/config.toml`とする。
-- 起動時に`--config <path>`オプション（共通グローバルオプション）で任意の設定ファイルを指定できる。指定された場合は既定パスより優先する。
-- `--config`で指定されたファイルが存在しない場合はエラーとして終了する（既定パスの場合のみ自動生成する）。
-- 同一ホスト上で複数の`agent-cli`プロセスを異なる設定（バックエンド、モデル、レジストリディレクトリ等）で起動できることを想定する。
-
-### 3.8 ログ機能（FR-08）
-
-- 会話履歴・ツール実行ログ・受信プロンプトをファイルに保存する。
-- 保存先は設定で変更可能。
-
-### 3.9 検証機能（FR-09）
-
-- アプリ完成後にテストを実施し、正常に実行できることを検証できる手段を提供する。
-- 自動テスト：`cargo test`で単体テストおよび結合テストが実行できること。
-- 自己診断：`agent-cli doctor`サブコマンドにより、設定ファイル、APIキー、各バックエンドへの疎通、レジストリディレクトリの書き込み可否、シェルツールの起動可否を一括で点検できる。
-- スモークテスト：`agent-cli selftest`サブコマンドにより、選択中のバックエンドに対して短いプロンプトを投げ、応答とツール実行が正常に動作することを確認する。
-- 検証手順は`README.md`に記載し、誰でも同じ手順で再現できること。
-
-#### 3.9.1 動作検証の対象バックエンド（FR-09-1）
-
-- 動作検証は以下の2構成で実施することを必須とする。
-  - **claude**：Anthropic Claude API（Claude Code相当機能の基準実装）。
-  - **ollama**：ローカル／クラウドのOllamaサーバー、モデルは`glm-5.1:cloud`を使用する。
-- `codex`／`llama.cpp`バックエンドは実装するが、本プロジェクトの完成判定における検証必須対象外とする。任意検証として記録は残す。
-- 各検証構成について、以下を網羅する。
-  - `agent-cli doctor`がOK終了する。
-  - `agent-cli selftest --provider <name>`がOK終了する。
-  - REPL起動 → 短い対話 → シェルツール実行 → 応答完了 → `/quit`／`Ctrl+D`での即時終了までの一連が成立する。
-  - 同バックエンド同士、および異バックエンド間（claude × ollama）の2プロセスで`/send`によるメッセージ授受が成立する。
-- 検証時に使用したバックエンド・モデル・コミットハッシュ・実行日時・結果は作業ログ（`.aiprj/AI_LOG/`）に記録する。
-
-#### 3.9.2 別ホストでのワンライナー導入検証（FR-09-2）
-
-- 開発機とは別の Linux ホスト（クリーンな環境）で `install.sh` をワンライナー（`curl -fsSL ... | sh`）で導入した直後に、以下の最小シナリオが成立することを必須とする。
-  - `agent-cli --help` が表示される。
-  - `agent-cli doctor` が終了コード0で完了する（必要な APIキー設定がある場合は当該キーを設定したうえで）。
-  - 引数なしの `agent-cli` 実行で REPL に入れる（`agent-cli run` と等価）。
-  - REPL で「ユーザー入力 → AI 応答（短い応答が返るプロンプト）→ 次のユーザー入力」を 2 往復以上問題なく繰り返せる（FR-03-2 を満たす）。
-  - シェルツールが要求された場合、承認プロンプトに対する `y` 入力が確実に承認として処理され、ツール実行→結果反映→AI 応答の流れが成立する（FR-04-1 を満たす）。
-  - `/auto on` で承認スキップに切り替えられ、以降のツール実行が承認なしで進む（FR-04-2 を満たす）。
-  - REPL で `/quit` で正常終了できる。
-  - REPL で `Ctrl+D`（標準入力 EOF）で正常終了できる。
-  - 終了後、`<registry_dir>/<agent-id>.sock` および `<registry_dir>/<agent-id>.json` が残存していないこと。
-- 検証で発見された不具合は、本ドキュメントの該当 FR と `AI_PRJ_TASKS.md` に反映する。
-
-#### 3.9.3 プロバイダエラー応答の診断情報（FR-09-3）
-
-`Provider`から返された4xx／5xx応答を表示する際、ユーザーが原因を素早く切り分けられるよう、補助的な診断情報を付与すること。
-
-- エラー透過表示は維持しつつ、以下の追加情報を併記する：
-  - 解決済み設定ファイルパス（`--config` / `AGENT_CLI_CONFIG` / 既定パスのいずれが採用されたか）。
-  - 当該バックエンドの `api_key_env` 名と、その環境変数が現在指している値の先頭4文字＋`...`＋末尾4文字（マスク表示）。
-  - `request_id` 等のプロバイダ固有トレース識別子（応答ヘッダーまたは本文から抽出可能な範囲で）。
-- 4xx応答本文を解析し、以下のような特定パターンには具体的な対処手順を併記する：
-  - Anthropic `invalid_request_error` で本文に `credit balance is too low` を含む場合：Anthropic Plans & Billing への案内、別アカウントキーへの切替手順（`api_key_env` の指す環境変数を切り替える、または別の設定ファイルを `--config` で指定する）。
-  - `invalid_api_key`／`authentication_error`／`401` 系：APIキー再発行・環境変数見直しの案内。
-  - `429`／レート制限系：再試行の指針。
-- `agent-cli doctor`は既存の到達確認に加え、上記特定パターンの簡易検出（短い `messages` 呼び出しでクレジット／認証エラーを区別する）を行うことを目標とする。
-- 2026-05-03に「`kind = "claude"` で実行 → `HTTP 400 Bad Request` `Your credit balance is too low to access the Anthropic API.`」の報告（`.aiprj/instructions.md`）があった。当該事象は Anthropic アカウント側のクレジット不足が直接原因と考えられるが、ユーザーが「ANTHROPIC_API_KEYは適切に設定している」と認識していた点から、現状のエラー表示では「どの設定ファイル／どのキーを使っているか」「課金面の問題かキー誤りか」を即座に切り分けにくい。本要件はこの切り分け導線の改善を目的とする（T-509）。
-
-### 3.10 エージェントペルソナファイル（FR-10）
-
-エージェントは、自身の役割（role）・スキル（skills）・振る舞い指針などを記載した「エージェントペルソナファイル」を読み込み、システムプロンプトとして反映できる。
-
-- **ファイル形式**：Markdown。先頭にYAMLフロントマターを置き、本文に詳細な指示を記述できる。
-  - フロントマター必須キー：`name`（表示名）、`role`（役割）、`skills`（配列）。
-  - フロントマター任意キー：`model`、`temperature`、`allowed_tools`、`denied_tools`、`description`。
-  - 本文：自由記述。本文全体がシステムプロンプトの一部として与えられる。
-- **指定方法**（優先順位の高い順）：
-  1. CLIオプション`--persona <path>`で明示指定。`agent-cli --persona <path>`（サブコマンド省略）および`agent-cli run --persona <path>`の両形式で解釈されること（FR-01の等価性、T-508で実装済）。
-  2. 設定ファイル`[runtime] persona_file = "<path>"`での指定。
-  3. 既定の解決：`~/.config/agent-cli/agents/<name>.md`（`--name`に対応）。
-  4. 指定なし／ファイルなしの場合は組み込みの汎用ペルソナを使用する。
-- **挙動**：
-  - 起動時に読み込み、フロントマターの`name`／`role`／`skills`をログ・REPLヘッダー・`agent-cli list`の出力に反映する。
-  - 本文はシステムプロンプトの先頭に挿入する（既存のシステム指示と結合）。
-  - `allowed_tools`／`denied_tools`が指定されている場合は、ツールレジストリの該当ツールを有効化／無効化する。
-  - フロントマターの不足・型エラーは起動時にエラーまたは警告として通知する。
-- **ピア通信での参照**：
-  - `agent-cli list`／レジストリメタファイルにペルソナの`name`／`role`／`skills`を含める。これにより他エージェントが「役割で相手を選ぶ」ことができる。
-  - REPLコマンド`/peer <id>`で対象ペルソナの概要を確認できる。
-- **REPLでの再読込**：
-  - `/reload-persona`でペルソナファイルを再読込し、システムプロンプトに反映する（会話履歴は維持）。
-- **サンプル**：実装時に`example/agents/coder.md`／`example/agents/reviewer.md`／`example/agents/planner.md`等の見本を同梱する。
-
-### 3.11 インストールスクリプト（FR-11）
-
-`agent-cli`をワンライナーで導入できる`install.sh`をリポジトリ直下に同梱する。
-
-- ワンライナー例：
-
-  ```bash
-  curl -fsSL https://raw.githubusercontent.com/aquaxis/agent-cli/main/install.sh | sh
-  ```
-
-- 動作要件：
-  - 対象はLinux（x86_64／aarch64）。それ以外は明示的にエラーで終了する。
-  - `cargo`が利用可能であれば、ソースから`cargo install --path .`相当の方法でビルドする。
-  - `cargo`が利用不可で`rustup`もない場合は、`rustup`の導入を提案して終了する（自動導入はユーザーの明示同意を要する）。
-- インストール先：
-  - 既定は`$HOME/.local/bin/agent-cli`。`PATH`に含まれていない場合は警告を出す。
-  - 環境変数`AGENT_CLI_PREFIX`で上書き可能（例：`AGENT_CLI_PREFIX=/usr/local`）。
-- 取得方法の優先順位：
-  1. スクリプト実行時のカレントが`agent-cli`リポジトリ内であればローカルソースからビルド。
-  2. それ以外は`AGENT_CLI_REPO`（既定はGitHubのソースリポジトリ）と`AGENT_CLI_REF`（既定`main`）から取得してビルド。
-- 冪等性：再実行で既存バイナリを上書きしてよい。設定ファイル（`~/.config/agent-cli/config.toml`）は触らない。
-- 失敗時は終了コード非0で原因を表示する。
-- スクリプトは`sh`互換（`bash`必須としない）で記述する。
-
-### 3.12 ドキュメント整備（FR-12）
-
-`README.md`をはじめとするユーザー向け／開発者向けドキュメントを、実装フェーズで以下の水準まで充実させる。
-
-- **`README.md`（ルート）**：プロジェクト概要、特徴、対応バックエンド、インストール、クイックスタート（5分で動かせる手順）、主要コマンド早見表、ライセンス、リンク集。
-  - 「設定方法」セクションを設け、初回起動時の自動生成ファイルの場所と中身、最低限編集すべき項目（`provider.kind`／APIキー環境変数）、`--config`／`AGENT_CLI_CONFIG`の使い分け、複数プロファイル運用例を**コピペで動く例とともに**詳細に解説する。
-  - 設定ファイル全項目の詳細は`doc/config.md`へのリンクで誘導するが、READMEだけでもひととおり運用開始できる粒度の情報を載せる。
-- **使い方ドキュメント（`doc/usage.md`）**：REPLコマンド一覧、`run`／`list`／`send`／`providers`／`doctor`／`selftest`／`config`の詳細、よくあるユースケース（単独対話／2プロセス協調／ローカルLLM接続）。
-- **設定リファレンス（`doc/config.md`）**：以下を網羅した詳細な解説。
-  - 設定ファイル全体構造の図示と、各セクション（`provider`／`provider.<kind>`／`runtime`／`tools`／`tools.shell`／`ui`）の役割。
-  - 全項目について、キー名・型・既定値・許容値・必須／任意・サンプル値・項目間の依存関係を表形式で記載。
-  - `--config`オプションと`AGENT_CLI_CONFIG`環境変数の挙動、解決優先順位、未存在時のエラー仕様、`agent-cli config path`での確認方法。
-  - 既定値で生成されるファイルの完全な雛形と、最小構成・推奨構成・全機能有効構成の3パターンの完全サンプル。
-  - APIキー設定の手順（環境変数の設定方法、`api_key_env`の指定、`.envrc`／`systemd`環境ファイル等での管理例）。秘密情報を平文保存しない運用上の注意。
-  - `registry_dir`を変えて複数の独立した名前空間を作る手順、共有してピア検出させる手順、それぞれの利点。
-  - `tools.shell`の`timeout_secs`／`max_output_kb`チューニング指針と、長時間ジョブやサイズの大きい出力を扱う際の注意。
-  - `ui.show_thinking`の3モード（`collapsed`／`expanded`／`hidden`）の表示差。
-  - 設定変更後の反映手順（再起動の要否）、設定誤りに対する診断（`agent-cli doctor`の活用）、よくある設定ミスと対処。
-- **バックエンドガイド（`doc/providers/`）**：`claude.md`、`codex.md`、`ollama.md`、`llamacpp.md`の4本。各バックエンドについて以下を詳細に解説する。
-  - 前提条件（アカウント作成、APIキー発行、ローカルサーバーのインストール手順）。
-  - 認証情報の設定方法（環境変数、`config.toml`での参照、推奨される秘密情報管理）。
-  - 推奨モデル名と用途別の選び方（コーディング用、対話用、軽量用）。
-  - `base_url`の指定方法と、社内プロキシ／OpenAI互換ローカルサーバーへの向け方。
-  - 対応機能マトリクス（thinking／tool_use／streaming）と、未対応機能の代替挙動。
-  - 動作確認手順（`agent-cli doctor`／`agent-cli selftest --provider <name>`の使い方と読み方）。
-  - 既知の制限・トラブルシューティング・よくあるエラーメッセージと対処。
-- **ツールリファレンス（`doc/tools.md`）**：`shell`／`fs_read`／`fs_write`／`send_to`の引数スキーマ、戻り値、制限、承認フロー。
-- **アーキテクチャ概要（`doc/architecture.md`）**：システム構成図、IPC仕様、レジストリ仕様、Provider抽象、データフロー。`AI_PRJ_DESIGN.md`の要約版でユーザーにも読める粒度。
-- **トラブルシューティング（`doc/troubleshooting.md`）**：よくある失敗（APIキー未設定、Ollama未起動、ソケット権限、レジストリのstale掃除）の症状・原因・対処。
-- **コントリビューションガイド（`CONTRIBUTING.md`）**：開発環境構築、`cargo fmt`／`cargo clippy`／`cargo test`の運用、新バックエンド／新ツール追加の手順、PR作法。
-- **変更履歴（`CHANGELOG.md`）**：[Keep a Changelog](https://keepachangelog.com/) 形式、SemVer準拠で版ごとに整理。
-- **ライセンス（`LICENSE`）**：採用ライセンス（MIT等）の全文。
-- **インラインドキュメント**：公開API（`Provider`／`Tool`／`Config`等）には`///`によるrustdocコメントを付与し、`cargo doc`で参照できる状態にする。
-- **多言語**：少なくとも日本語版と英語版（`README.md`／`README.ja.md`）を提供する。日本語ドキュメントはJTFスタイルに準拠する。
-- 全ドキュメントの内容は実装と乖離しないよう、機能追加・変更時に同じPRで更新する運用とする。
-
-### 3.13 アプリ終了（FR-13）
-
-REPL中のユーザーは、以下のいずれの方法でも`agent-cli`プロセスを確実に終了できる。
-
-- **REPLコマンド `/quit` および `/exit`**：いずれも完全に等価で、受信した時点で入力ループを抜け、進行中のAI応答／ツール実行を中断したうえで終了する。エイリアス関係は明示的に保証し、`/help` にも併記すること。
-- **標準入力のEOF（端末で`Ctrl+D`）**：標準入力の終端を検出した時点で終了する。
-- **`Ctrl+C`（SIGINT）／`SIGTERM`**：シグナルを受領した時点で進行中の処理を中断し、終了する。
-
-終了時に保証すべき事項：
-
-- IPCソケット（`<registry_dir>/<agent-id>.sock`）とレジストリメタファイル（`<registry_dir>/<agent-id>.json`）を必ず削除すること（残存するとピア一覧で`stale`扱いとなり混乱の原因になる）。
-- ログファイルをflushして閉じること。
-- 上記いずれの経路でも、合理的な時間（おおむね1秒以内）でシェルへ制御を返し、フリーズしないこと。
-- 正常経路は終了コード`0`、異常経路は非0で終了する。
-
-なお、別ホストでのワンライナー導入直後の検証（FR-11）において、`/quit`および`Ctrl+D`のいずれでも終了しない事象が報告されたため、本要件は明示の機能要件として扱い、実装と検証で必ず満たすこと。当該事象は T-504 で修正され、別ホスト側でも解決を確認済み（2026-05-02、`.aiprj/instructions.md` でユーザーが「解決した」と記載）。
-
-## 4. 非機能要件
-
-### 4.1 言語・実装（NFR-01）
-
-- 実装言語はRust（安定版）。
-- 単一バイナリで配布できること。
-
-### 4.2 動作環境（NFR-02）
-
-- Linuxのみを対象とする（macOS／Windowsはサポート対象外）。
-- 64bit x86_64およびaarch64のLinuxディストリビューションで動作することを想定する。
-- tmuxは不要（あってもなくても動作する）。
-
-### 4.3 パフォーマンス（NFR-03）
-
-- ストリーミング表示の体感遅延は数十ms程度に抑える。
-- ピア間メッセージはローカルIPCで数十ms以内に到達する。
-
-### 4.4 セキュリティ（NFR-04）
-
-- APIキーを平文で標準出力・ログへ出さない。
-- ツール実行は既定で承認を求める。
-- IPCソケットは所有者のみアクセス可能なパーミッション（0600）で作成する。
-- 外部公開ポートは開かない（ローカルIPCのみ）。
-
-### 4.5 拡張性（NFR-05）
-
-- ツールはコード上で容易に追加できる構造とする。
-- AIプロバイダーはトレイトを介して差し替え可能とし、新規バックエンド（例：vLLM、Geminiなど）の追加コストを低く保つ。
-
-## 5. 制約条件
-
-- 本リポジトリでの書き込み許可は、`AI_PRJ_REQUIREMENTS.md`／`AI_PRJ_DESIGN.md`／`AI_PRJ_TASKS.md`／`.aiprj/AI_LOG/`配下のログファイルに限定される（`.aiprj/rules/setup_project.md`の規定による）。
-- 実装フェーズ（Rustソース等の作成）は別セッションで`/ai`等のコマンドにより開始される。
-
-## 6. 想定ユーザー
-
-- AIエージェントをCLIで活用したい開発者。
-- Claude Code相当の機能を自前バイナリで持ちたいユーザー。
-- 複数プロセスを並列起動して協調動作させたい研究・実験用途のユーザー。
-
-## 7. 受け入れ基準
-
-- 本ドキュメント、`AI_PRJ_DESIGN.md`、`AI_PRJ_TASKS.md`が整備され、実装着手に必要な情報が揃っていること。
-- 「単独起動・Claude Code相当・1プロセス1エージェント・プロセス間メッセージング・バックエンド選択（claude／codex／ollama／llama.cpp）・シェルツール実行・完成後の検証手段・エージェントペルソナファイル・ドキュメント整備」の各点が、各ドキュメントに明確に反映されていること。
-- 完成判定として、`cargo test`がすべて成功し、かつ`agent-cli doctor`／`agent-cli selftest`が`claude`および`ollama（glm-5.1:cloud）`の両構成で正常終了すること、および手動受け入れシナリオ（claude／ollama単独起動・claude×ollamaの2プロセス間メッセージ授受・シェルツール実行）が成立することを必須とする。
-- FR-12で挙げた各ドキュメント（`README.md`、`doc/`配下、`CONTRIBUTING.md`、`CHANGELOG.md`、`LICENSE`、rustdoc）が揃い、READMEのクイックスタート手順だけでセットアップから検証完了まで再現できること。
-- FR-10のペルソナファイル機構が動作し、サンプルペルソナで起動した際に役割・スキルがログ／REPLヘッダー／`list`出力に反映されることを確認できること。
-- FR-11の`install.sh`がリポジトリ直下に存在し、ワンライナー（`curl ... | sh`）で正常にインストールできること。さらに FR-09-2 の別ホスト検証シナリオが成立すること。
-- FR-13のアプリ終了経路（`/quit`／`/exit`／`Ctrl+D`／`Ctrl+C`／`SIGTERM`）がいずれも確実に動作し、IPCソケット・レジストリメタが残存しないこと。
-- FR-03-2 の REPL 入出力サイクル（ユーザー入力 → AI 応答 → 次のユーザー入力）が破綻なく循環すること。
-- FR-04-1 のツール承認入出力統合により、承認 y/N が REPL の通常入力と取り違えられないこと。
-- FR-04-2 の `/auto` REPL コマンドが提供され、`/help` に承認スキップ手段が明記されていること。
-- FR-04-3 のツール実行イテレーション上限到達時に `[info] max tool-use iterations reached` が `AgentEvent::Info` として発行され、`AgentEvent::Error` 扱いにならないこと。上限値が `[runtime] max_tool_iterations`（既定 24、最小 1、最大 `u32::MAX`）で可変設定でき、当該設定キーと既定値・最小値・最大値・「真の無制限指定は提供しない」設計理由・推奨レンジが `doc/config.md` に記載されていること。`0`／負値が `.max(1)` で `1` に丸め込まれる境界値挙動も明記されていること。当該メッセージの意味と対処が `README.md`／`doc/troubleshooting.md`／`doc/architecture.md`／`doc/usage.md` から確認できること。
-- FR-03-1-2 の Ollama バックエンドが `message.thinking` フィールドを `ProviderEvent::Thinking` として emit すること。`Capabilities::thinking` がユーザーから観測可能な範囲で正しく反映されること。`doc/providers/ollama.md` に `glm-5.1:cloud` 等の thinking 対応モデルでの動作が記載されていること。さらに `[ui] show_thinking` の 3 値（`"hidden"`／`"collapsed"`／`"expanded"`）が REPL の thinking 表示を実際に制御していること。`"collapsed"` での切り詰めアルゴリズム（先頭 80 文字 + 1 行目）が `doc/config.md` の「UI 表示モード」節に記載されていること。
-- FR-09-3 のプロバイダエラー診断情報が、4xx／5xx応答時に解決済み設定ファイルパス・`api_key_env` 名・APIキーのマスク表示・特定パターン（クレジット不足／認証エラー／レート制限）への対処ヒントを併記すること。
+- This document, `AI_PRJ_DESIGN.md`, and `AI_PRJ_TASKS.md` have been updated with content consistent with the conversion task in the current `.aiprj/instructions.md` (Article 1).
+- There are no contradictions among the three documents (Article 2). Specifically:
+  - The functional requirements in Section 3 of this document correspond to the conversion policies in Section 2 of `AI_PRJ_DESIGN.md`.
+  - For each requirement in Section 3 of this document, a corresponding task is assigned in `AI_PRJ_TASKS.md`.
+- All files in the repository containing Japanese text have been identified and assigned to conversion tasks.
+- As the completion criterion for the implementation phase, all Japanese text in conversion target files has been replaced with English, and all full-width characters have been converted to half-width.

@@ -19,13 +19,13 @@ impl IpcServer {
         if let Some(parent) = socket_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        // 既存ソケット（stale）の掃除
+        // Clean up stale existing socket
         if socket_path.exists() {
             let _ = tokio::fs::remove_file(&socket_path).await;
         }
         let listener = UnixListener::bind(&socket_path)
             .map_err(|e| AppError::ipc(format!("bind {} failed: {e}", socket_path.display())))?;
-        // パーミッション 0600
+        // Set permissions to 0600
         let perms = std::fs::Permissions::from_mode(0o600);
         std::fs::set_permissions(&socket_path, perms)?;
 
@@ -57,20 +57,21 @@ impl IpcServer {
         })
     }
 
-    /// 受信チャネルを所有権ごと取り出す。`bind` 直後に一度だけ呼べる。
+    /// Take ownership of the receive channel. Can only be called once, immediately after `bind`.
     pub fn take_rx(&mut self) -> Option<mpsc::Receiver<IpcMessage>> {
         self.rx.take()
     }
 
-    /// ソケットファイルを削除する。`Drop` でも自動的に行われるが、明示削除したい場合用。
+    /// Delete the socket file. Also done automatically by `Drop`, but available for explicit cleanup.
     pub fn cleanup(path: &Path) {
         let _ = std::fs::remove_file(path);
     }
 }
 
 impl Drop for IpcServer {
-    /// accept ループを停止し、Unix ソケットファイルを削除する。
-    /// FR-13「アプリ終了」の保証として、`run` 完了経路（正常終了／パニック）いずれでも socket が残らないことを担保する。
+    /// Stop the accept loop and delete the Unix socket file.
+    /// As a guarantee of FR-13 "App termination", ensures the socket file
+    /// is removed regardless of how `run` completes (normal exit or panic).
     fn drop(&mut self) {
         self.task.abort();
         let _ = std::fs::remove_file(&self.socket_path);
@@ -154,7 +155,7 @@ mod tests {
             let _server = IpcServer::bind(path.clone()).await.unwrap();
             assert!(path.exists(), "socket should exist while server is alive");
         }
-        // 短い待ち：Drop は同期的だが、念のため
+        // Brief wait: Drop is synchronous, but just in case
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(
             !path.exists(),

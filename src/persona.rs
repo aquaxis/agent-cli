@@ -38,17 +38,17 @@ pub struct PersonaSummary {
     pub source_path: Option<PathBuf>,
 }
 
-const BUILTIN_BODY: &str = "あなたは agent-cli 上で動作する汎用 AI アシスタントです。\n\
-ユーザーからの依頼に対し、必要に応じてツールを使い、簡潔かつ正確に応答してください。";
+const BUILTIN_BODY: &str = "You are a general-purpose AI assistant running on agent-cli.\n\
+Respond to user requests concisely and accurately, using tools as needed.";
 
 impl Persona {
     pub fn builtin_default() -> Self {
         Persona {
             frontmatter: PersonaFrontmatter {
                 name: Some("default".into()),
-                role: "汎用アシスタント".into(),
-                skills: vec!["対話".into(), "ツール実行".into()],
-                description: Some("組み込みの既定ペルソナ".into()),
+                role: "General-purpose assistant".into(),
+                skills: vec!["Conversation".into(), "Tool execution".into()],
+                description: Some("Built-in default persona".into()),
                 model: None,
                 temperature: None,
                 allowed_tools: None,
@@ -84,23 +84,23 @@ impl Persona {
     pub fn to_system_prompt(&self) -> String {
         let mut s = String::new();
         s.push_str(BUILTIN_BODY);
-        s.push_str("\n\n# 役割\n");
+        s.push_str("\n\n# Role\n");
         s.push_str(&self.frontmatter.role);
         if !self.frontmatter.skills.is_empty() {
-            s.push_str("\n\n# スキル\n");
+            s.push_str("\n\n# Skills\n");
             for sk in &self.frontmatter.skills {
                 s.push_str(&format!("- {sk}\n"));
             }
         }
         if let Some(desc) = &self.frontmatter.description {
             if !desc.trim().is_empty() {
-                s.push_str("\n# 説明\n");
+                s.push_str("\n# Description\n");
                 s.push_str(desc);
                 s.push('\n');
             }
         }
         if !self.body.trim().is_empty() {
-            s.push_str("\n# 詳細\n");
+            s.push_str("\n# Details\n");
             s.push_str(&self.body);
         }
         s
@@ -195,13 +195,13 @@ mod tests {
         let path = dir.path().join("alice.md");
         std::fs::write(
             &path,
-            "---\nname: alice\nrole: コードレビュアー\nskills:\n  - Rust\n  - 静的解析\n---\nあなたは熟練のレビュアーです。",
+            "---\nname: alice\nrole: Code reviewer\nskills:\n  - Rust\n  - Static analysis\n---\nYou are a senior reviewer.",
         )
         .unwrap();
         let p = Persona::load(&path).unwrap();
-        assert_eq!(p.frontmatter.role, "コードレビュアー");
+        assert_eq!(p.frontmatter.role, "Code reviewer");
         assert_eq!(p.frontmatter.skills.len(), 2);
-        assert!(p.body.contains("熟練"));
+        assert!(p.body.contains("senior"));
     }
 
     #[test]
@@ -218,11 +218,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let r = resolve(None, "", dir.path(), Some("none")).unwrap();
         assert!(r.builtin_used);
-        assert_eq!(r.persona.frontmatter.role, "汎用アシスタント");
+        assert_eq!(r.persona.frontmatter.role, "General-purpose assistant");
     }
 
-    /// ドキュメント整合性チェック（T-602-10）：
-    /// 同梱しているサンプルペルソナがすべて `Persona::load` で読み込めること。
+    /// Document consistency check (T-602-10):
+    /// All bundled sample personas must be loadable via `Persona::load`.
     #[test]
     fn bundled_example_personas_parse() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

@@ -183,8 +183,8 @@ pub async fn doctor(cfg: &Config, source: &ConfigSource) -> Result<()> {
     }
 
     // Provider connectivity (best-effort).
-    // クラウドルーティングモデル（例: ollama の `*:cloud` タグ）はコールドスタートで
-    // 数十秒かかることがあるため、selftest Stage 1 と同じ 60 秒を上限にする。
+    // Cloud routing models (e.g. ollama's `*:cloud` tag) can take tens of seconds on cold start,
+    // so we use the same 60-second timeout as selftest Stage 1.
     println!("[doctor] provider conn   :");
     let provider = match ai::build(cfg, source) {
         Ok(p) => p,
@@ -217,8 +217,8 @@ pub async fn doctor(cfg: &Config, source: &ConfigSource) -> Result<()> {
     finish(all_ok)
 }
 
-/// `AppError::Provider` の多行詳細をインデント付きで標準出力へ整形表示する（FR-09-3）。
-/// `ProviderError::Display` が改行を含む文字列を返すため、それを行ごとにプレフィックスを付与する。
+/// Print multi-line details of `AppError::Provider` to stdout with indentation (FR-09-3).
+/// Since `ProviderError::Display` returns a string containing newlines, each line gets a prefix.
 fn print_provider_error(indent: &str, e: &AppError) {
     let s = e.to_string();
     let mut iter = s.lines();
@@ -405,7 +405,7 @@ async fn stage_subprocess_ipc() -> Result<()> {
     std::fs::create_dir_all(&registry_dir)?;
     std::fs::create_dir_all(&log_dir)?;
     std::fs::create_dir_all(&agents_dir)?;
-    // 子は外部APIを呼ばないように、到達不可な base_url を持つ ollama を使う。
+    // Use ollama with an unreachable base_url so the child does not call external APIs.
     let toml = format!(
         r#"[provider]
 kind = "ollama"
@@ -442,7 +442,7 @@ enabled = []
         .spawn()
         .map_err(|e| AppError::Other(format!("spawn child: {e}")))?;
 
-    // 子の登録待ち（最大 5 秒）
+    // Wait for child to register (up to 5 seconds)
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     let entry = loop {
         let entries = registry::list_entries(&registry_dir).unwrap_or_default();
@@ -480,13 +480,13 @@ enabled = []
     )
     .await;
 
-    // 子の終了：stdin を閉じれば EOF で REPL が break する。
-    // FR-13「アプリ終了」の回帰検証として、子が自発的に終了することを確認する。
+    // Child termination: closing stdin causes EOF, which breaks the REPL loop.
+    // Regression test for FR-13 "App termination": verify the child exits on its own.
     drop(child.stdin.take());
     let exited_naturally = tokio::time::timeout(Duration::from_secs(3), child.wait())
         .await
         .is_ok();
-    // 念のため kill（既に終了していても無害）
+    // Kill just in case (harmless if already exited)
     let _ = child.kill().await;
 
     let ping_resp = ping_resp.map_err(|e| AppError::Other(format!("ipc send (Ping): {e}")))?;
@@ -509,7 +509,7 @@ enabled = []
             "child agent did not exit on stdin EOF within 3s (FR-13)".into(),
         ));
     }
-    // 終了後、ソケットとレジストリメタが残っていないことを確認
+    // Verify socket and registry meta are cleaned up after exit
     if entry.socket.exists() {
         return Err(AppError::Other(format!(
             "socket file remained after exit: {}",
@@ -538,8 +538,8 @@ async fn stage_subprocess_ai_response(cfg: &Config) -> Result<()> {
     let exe = std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
     let dir = TempDir::new().map_err(|e| AppError::Other(e.to_string()))?;
 
-    // 元の cfg をコピーし、registry_dir / log_dir / agents_dir のみテンポラリへ差し替え。
-    // provider 設定（base_url、model、APIキー env）はそのまま使い、子で実 LLM を呼ばせる。
+    // Copy the original cfg, replacing only registry_dir / log_dir / agents_dir with temp paths.
+    // Provider settings (base_url, model, API key env) are kept as-is so the child calls the real LLM.
     let mut child_cfg = cfg.clone();
     let registry_dir = dir.path().join("reg");
     let log_dir = dir.path().join("log");
@@ -552,7 +552,7 @@ async fn stage_subprocess_ai_response(cfg: &Config) -> Result<()> {
     child_cfg.runtime.agents_dir = agents_dir.display().to_string();
     child_cfg.runtime.persona_file = String::new();
     child_cfg.runtime.auto_approve_tools = true;
-    // ツールは不要（peer prompt に対して AI が text で答えるだけで成功判定）
+    // Tools are unnecessary (the AI just needs to respond to the peer prompt with text)
     child_cfg.tools.enabled = Vec::new();
 
     let cfg_path = dir.path().join("child.toml");
@@ -573,7 +573,7 @@ async fn stage_subprocess_ai_response(cfg: &Config) -> Result<()> {
         .spawn()
         .map_err(|e| AppError::Other(format!("spawn child: {e}")))?;
 
-    // 子の登録待ち
+    // Wait for child to register
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let entry = loop {
         let entries = registry::list_entries(&registry_dir).unwrap_or_default();
@@ -598,7 +598,7 @@ async fn stage_subprocess_ai_response(cfg: &Config) -> Result<()> {
         }
     };
 
-    // Prompt 送信（短く確実に応答が得られそうな指示）
+    // Send prompt (a short instruction likely to produce a response)
     let prompt_msg = IpcMessage::Prompt {
         from: crate::id::AgentId::new(),
         from_name: Some("selftest-driver".into()),
@@ -606,11 +606,11 @@ async fn stage_subprocess_ai_response(cfg: &Config) -> Result<()> {
     };
     let send_resp = client::send(&entry.socket, &prompt_msg).await;
 
-    // 子のログディレクトリで assistant エントリを待つ（最大 90 秒）
+    // Wait for an assistant entry in the child's log directory (up to 90 seconds)
     let agent_log_dir = log_dir.join(entry.id.as_str());
     let observed = wait_for_assistant_log(&agent_log_dir, Duration::from_secs(90)).await;
 
-    // 終了処理
+    // Cleanup
     drop(child.stdin.take());
     let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
     let _ = child.kill().await;
@@ -637,8 +637,8 @@ async fn stage_subprocess_ai_response(cfg: &Config) -> Result<()> {
     }
 }
 
-/// 指定された agent ログディレクトリを監視し、`kind=assistant` の JSON Lines を見つけたら
-/// その text を返す。タイムアウトで `None`。
+/// Watch the specified agent log directory and return the text of the first JSON Lines
+/// entry with `kind=assistant`. Returns `None` on timeout.
 async fn wait_for_assistant_log(dir: &std::path::Path, timeout: Duration) -> Option<String> {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {

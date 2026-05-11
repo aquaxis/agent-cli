@@ -1,18 +1,18 @@
-# llama.cpp バックエンド
+# llama.cpp Backend
 
-[llama.cpp](https://github.com/ggerganov/llama.cpp) サーバーが提供する OpenAI 互換 API（`/v1/chat/completions`）を利用するバックエンドです。
+This backend uses the OpenAI-compatible API (`/v1/chat/completions`) provided by a [llama.cpp](https://github.com/ggerganov/llama.cpp) server.
 
-## 前提条件
+## Prerequisites
 
-- llama.cpp サーバーをビルド／起動
+- Build and start a llama.cpp server:
   ```bash
   ./llama-server --port 8080 -m /path/to/model.gguf --jinja
   ```
-- OpenAI 互換のオプション（`--jinja` 等、ツール対応用ビルドフラグ）が有効になっていること
+- OpenAI-compatible options (`--jinja` etc., build flags for tool support) must be enabled
 
-## 設定
+## Configuration
 
-設定ファイルでは TOML キー名のドット (`.`) のため `"llama.cpp"` をクオートしてください。
+In the config file, quote `"llama.cpp"` because the TOML key contains a dot (`.`).
 
 ```toml
 [provider]
@@ -21,40 +21,40 @@ kind = "llama.cpp"
 [provider."llama.cpp"]
 model    = "default"
 base_url = "http://127.0.0.1:8080"
-api_key_env = "LLAMACPP_API_KEY"   # 任意。Bearer 認証付きビルド時のみ
+api_key_env = "LLAMACPP_API_KEY"   # optional; only for Bearer-auth builds
 ```
 
-## 対応機能
+## Supported Features
 
-| 機能 | 対応 | 備考 |
-|------|------|------|
-| Streaming | ✓ | SSE（OpenAI 互換） |
-| Tool use | △ | サーバービルド／モデル次第。動かない場合は無効化されます |
-| Thinking | ✗ | 非対応 |
+| Feature | Support | Notes |
+|---------|---------|-------|
+| Streaming | ✓ | SSE (OpenAI-compatible) |
+| Tool use | △ | Depends on server build / model. Disabled if not working |
+| Thinking | ✗ | Not supported |
 
-## 動作確認
+## Verification
 
 ```bash
 ./llama-server --port 8080 -m model.gguf &
-# doctor は config の provider.kind を使う
+# doctor uses config's provider.kind
 agent-cli --config ./llamacpp.toml doctor
-# selftest は --provider で上書き可能
+# selftest can override with --provider
 agent-cli selftest --provider llama.cpp
 ```
 
-## 推奨モデル
+## Recommended Models
 
-llama.cpp 上で動作する任意の OpenAI 互換チャットモデル（`llama3`／`qwen2.5`／`gpt-oss` など）。tool calling が必要なら、対応する Jinja テンプレート同梱モデルを選んでください。
+Any OpenAI-compatible chat model that runs on llama.cpp (e.g. `llama3`, `qwen2.5`, `gpt-oss`). For tool calling, choose a model with an included Jinja template.
 
-## 既知の制限
+## Known Limitations
 
-- 同じ OpenAI 互換 API でも、tool_calls 形式やロール表現が微妙に違うサーバーが存在します。動かない場合は `[tools] enabled` を空にして tool 抜きで試行し、応答だけ確認してください。
-- `--jinja` 付きで起動していないとツール呼び出しが正しく動きません。
+- Even with the same OpenAI-compatible API, different servers may have slight differences in `tool_calls` format or role representation. If tools don't work, try setting `[tools] enabled` to empty and verify text-only responses first.
+- Tool calling requires `--jinja` at server startup to work correctly.
 
-## トラブルシューティング
+## Troubleshooting
 
-| 症状 | 原因 | 対処 |
-|------|------|------|
-| `connection refused` | サーバー未起動 | `./llama-server ...` |
-| 応答が空文字だけ | テンプレート未対応 | `--jinja` 有効でビルド／起動 |
-| ツールが呼ばれない | モデルが function calling 非対応 | 別モデル、または tool 抜き運用 |
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `connection refused` | Server not running | `./llama-server ...` |
+| Response is empty string only | Template not supported | Build / start with `--jinja` enabled |
+| Tools not called | Model does not support function calling | Use a different model, or operate without tools |

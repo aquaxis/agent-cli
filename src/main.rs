@@ -20,10 +20,10 @@ use crate::error::Result;
 #[tokio::main]
 async fn main() {
     init_tracing();
-    // FR-13「アプリ終了」：run() が Ok を返した時点で全 Drop は実行済みのため、
-    // tokio runtime の停止を待たずに即座にプロセス終了する。
-    // （`tokio::io::stdin()` の内部ブロッキングスレッドが残ると runtime drop で
-    // EOF まで待たされ、SIGINT/SIGTERM 経路で終了が遅延するため。）
+    // FR-13 "App termination": When run() returns Ok, all Drops have already executed,
+    // so we exit immediately without waiting for the tokio runtime to shut down.
+    // (If the `tokio::io::stdin()` internal blocking thread remains, runtime drop
+    // waits until EOF, delaying termination via SIGINT/SIGTERM.)
     match run().await {
         Ok(()) => std::process::exit(0),
         Err(e) => {

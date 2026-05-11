@@ -1,57 +1,57 @@
 # Changelog
 
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 形式、[Semantic Versioning](https://semver.org/lang/ja/) に準拠する。
+This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
 ### Added
 
-- `[ui] show_thinking` 設定が REPL の thinking 表示を実際に制御するようになった（FR-03-1-2 付随、T-512）。これまで設定は定義されていたものの `display_event` で消費されていなかった。3 値を実装：`"hidden"`（一切表示しない）／`"collapsed"`（既定。各 delta を「先頭 80 文字 + 1 行目」に切り詰め）／`"expanded"`（全文表示。従来挙動）。未知値は `"collapsed"` にフォールバック。`glm-5.1:cloud` のような長尺 reasoning モデルで画面が thinking で埋め尽くされる場合は `"hidden"` を推奨。
-- Ollama parser が `message.thinking` フィールドを `ProviderEvent::Thinking` として emit するようになった（FR-03-1-2、T-511）。`glm-5.1:cloud` 等の thinking 対応モデルで REPL に `[thinking] ...` が表示される。emit 順は `Thinking` → `Text` → `ToolUse`（Anthropic 仕様と整合）。`Capabilities::thinking` も `true` に変更。
-- `[runtime] max_tool_iterations` 設定キーを追加（FR-04-3、T-510／T-510-2）。1 ターン内の tool_use 反復上限を可変設定できる。最小 1（`0`／負値は内部で `1` へ丸め込み）、最大 `u32::MAX = 4,294,967,295`。設定方法・推奨レンジ・境界値挙動は `doc/config.md` の `[runtime]` 節を参照。
+- The `[ui] show_thinking` setting now actually controls thinking display in the REPL (FR-03-1-2 follow-up, T-512). Previously the setting was defined but not consumed by `display_event`. Three values are implemented: `"hidden"` (suppress entirely) / `"collapsed"` (default: truncate each delta to "first 80 chars + first line") / `"expanded"` (full text, previous behavior). Unknown values fall back to `"collapsed"`. Recommended `"hidden"` for long-reasoning models like `glm-5.1:cloud` that fill the screen with thinking output.
+- The Ollama parser now emits `message.thinking` fields as `ProviderEvent::Thinking` (FR-03-1-2, T-511). Thinking-capable models like `glm-5.1:cloud` display `[thinking] ...` in the REPL. Emission order is `Thinking` → `Text` → `ToolUse` (consistent with Anthropic convention). `Capabilities::thinking` is now set to `true`.
+- Added `[runtime] max_tool_iterations` config key (FR-04-3, T-510/T-510-2). Configurable per-turn tool_use iteration cap. Minimum 1 (`0` and negative values are clamped to `1` internally), maximum `u32::MAX = 4,294,967,295`. See `doc/config.md` section `[runtime]` for configuration method, recommended ranges, and boundary behavior.
 
 ### Changed
 
-- tool_use ループの上限を 8（ハードコード）から `[runtime] max_tool_iterations`（既定 24）に変更（FR-04-3）。design-then-debug 系オーケストレーター（AI が設計成果物を生成 → 検証ツール → lint 修正 → 最終 fs_write）が 1 ターン内に収まるよう既定値を引き上げた。
+- Tool-use loop cap changed from 8 (hardcoded) to `[runtime] max_tool_iterations` (default 24) (FR-04-3). The default was raised so that design-then-debug orchestrators (AI generates design artifacts → verification tool → lint fix → final fs_write) fit within a single turn.
 
 ### Added
 
-- 初版リリースに向けた骨格実装：
-  - 単独起動の Rust 製 CLI（`agent-cli`）
-  - REPL ＋ tools 機能 ＋ thinking 表示（Claude Code 相当）
-  - 4 バックエンド：`claude` / `codex` / `ollama` / `llama.cpp`
-    - 各バックエンドのストリームパースを純関数として切り出し、モック入力で単体テスト
-    - ペルソナの `model` / `temperature` をリクエスト body に反映
-  - 内蔵ツール：`shell` / `fs_read` / `fs_write` / `send_to`
-  - エージェント間メッセージング（Unix ドメインソケット、JSON Lines）
-  - レジストリ（`<registry_dir>/<agent-id>.{sock,json}`、PID 生存確認、stale 掃除）
-  - エージェントペルソナファイル（YAML フロントマター ＋ Markdown 本文）
-    - 解決順序：`--persona` → `[runtime] persona_file` → `<agents_dir>/<name>.md` → 組み込み既定
-    - REPL コマンド：`/persona` / `/reload-persona` / `/peer <id>` / `/tools`
-  - 設定ファイル `~/.config/agent-cli/config.toml`、`--config` / `AGENT_CLI_CONFIG` で個別指定
-  - 自己診断 `agent-cli doctor`
-  - スモークテスト `agent-cli selftest`（5 ステージ）
-    - Stage 1：Provider "OK" 往復
-    - Stage 2：シェルツール直接実行
-    - Stage 3：IPC ラウンドトリップ
-    - Stage 4：子プロセスを起動してレジストリ登録 + Ping/Pong + Prompt/Ack
-    - Stage 5：子プロセスへの peer prompt → AI 応答 → 会話ログ書き込み確認
-  - ワンライナー対応 `install.sh`
-  - サンプルペルソナ：`example/agents/{coder,reviewer,planner}.md`
-  - ドキュメント：`README.md` / `README.en.md` / `doc/` 配下 / `CONTRIBUTING.md` / `CHANGELOG.md` / `LICENSE`
-  - GitHub Actions CI（`.github/workflows/ci.yml`）：fmt / clippy / build / test / doc / selftest を自動化
-  - 入力履歴の永続化（`<log_dir>/history.txt`、最終 200 件）と REPL `/history [n]` コマンド
-  - `agent-cli list` のカラム整列出力
-  - 受け入れシナリオ半自動実行スクリプト `scripts/manual_acceptance.sh`
-    - 必須 A（claude）／B（ollama）、任意 D1（codex）／D2（llama.cpp）に対応
-    - API キー／ローカルサーバー有無で SKIP を自動判定
+- Initial release skeleton implementation:
+  - Standalone Rust CLI (`agent-cli`)
+  - REPL + tools + thinking display (Claude Code-equivalent)
+  - Four backends: `claude` / `codex` / `ollama` / `llama.cpp`
+    - Each backend's stream parser extracted as a pure function, unit-tested with mock input
+    - Persona `model` / `temperature` reflected in request body
+  - Built-in tools: `shell` / `fs_read` / `fs_write` / `send_to`
+  - Inter-agent messaging (Unix domain sockets, JSON Lines)
+  - Registry (`<registry_dir>/<agent-id>.{sock,json}`, PID liveness check, stale cleanup)
+  - Agent persona files (YAML frontmatter + Markdown body)
+    - Resolution order: `--persona` → `[runtime] persona_file` → `<agents_dir>/<name>.md` → built-in default
+    - REPL commands: `/persona` / `/reload-persona` / `/peer <id>` / `/tools`
+  - Config file `~/.config/agent-cli/config.toml`, individual override via `--config` / `AGENT_CLI_CONFIG`
+  - Self-diagnostics `agent-cli doctor`
+  - Smoke test `agent-cli selftest` (5 stages)
+    - Stage 1: Provider "OK" round-trip
+    - Stage 2: Shell tool direct execution
+    - Stage 3: IPC round-trip
+    - Stage 4: Subprocess startup with registry registration + Ping/Pong + Prompt/Ack
+    - Stage 5: Peer prompt to subprocess → AI response → conversation log write confirmation
+  - One-liner installer `install.sh`
+  - Sample personas: `example/agents/{coder,reviewer,planner}.md`
+  - Documentation: `README.md` / `README.en.md` / `doc/` directory / `CONTRIBUTING.md` / `CHANGELOG.md` / `LICENSE`
+  - GitHub Actions CI (`.github/workflows/ci.yml`): fmt / clippy / build / test / doc / selftest
+  - Input history persistence (`<log_dir>/history.txt`, last 200 entries) and REPL `/history [n]` command
+  - `agent-cli list` column-aligned output
+  - Semi-automated acceptance test script `scripts/manual_acceptance.sh`
+    - Supports mandatory A (claude) / B (ollama) and optional D1 (codex) / D2 (llama.cpp)
+    - Auto-determines SKIP based on API key / local server availability
 
 ### Verification
 
-- `cargo build` 警告ゼロ
-- `cargo clippy --all-targets -- -D warnings` 通過
-- `cargo fmt --all -- --check` 通過
-- `cargo test` 全 74 テスト成功（Provider パーサ、Agent ループ E2E、IPC、ペルソナ、ドキュメント整合性、CLI 整合性、Ollama thinking、`max_tool_iterations` 境界値）
-- `cargo doc --no-deps` 警告ゼロ
+- `cargo build` with zero warnings
+- `cargo clippy --all-targets -- -D warnings` passes
+- `cargo fmt --all -- --check` passes
+- `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
+- `cargo doc --no-deps` with zero warnings
 
 [Unreleased]: https://github.com/aquaxis/agent-cli/compare/HEAD...HEAD

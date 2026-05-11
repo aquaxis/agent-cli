@@ -13,4 +13,4 @@ description: Task-specific instructions for this update session.
 ---
 
 Task: Reload `.aiprj/instructions.md` and update `.aiprj/AI_PRJ_REQUIREMENTS.md`, `.aiprj/AI_PRJ_DESIGN.md`, and `.aiprj/AI_PRJ_TASKS.md` to match its current contents.
-Output language: Japanese (日本語).
+Output language: English.

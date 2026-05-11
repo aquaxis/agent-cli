@@ -1,14 +1,14 @@
-# Ollama バックエンド
+# Ollama Backend
 
-[Ollama](https://ollama.com) のローカル／クラウドサーバーを利用するバックエンドです。`agent-cli` の **必須検証対象**（`claude` と並ぶ完成判定の必須構成）です。
+This backend uses a local or cloud [Ollama](https://ollama.com) server. It is one of agent-cli's **mandatory verification targets** (alongside `claude`).
 
-## 前提条件
+## Prerequisites
 
-- Ollama のインストール（公式 README 参照）
-- ローカルなら `ollama serve` でサーバーを起動
-- クラウドモデルを使う場合は対応バックエンドを起動
+- Install Ollama (see the official README)
+- For local use, start the server with `ollama serve`
+- For cloud models, ensure the corresponding backend is running
 
-## 設定
+## Configuration
 
 ```toml
 [provider]
@@ -19,70 +19,70 @@ model    = "glm-5.1:cloud"
 base_url = "http://127.0.0.1:11434"
 ```
 
-API キーは不要です（`api_key_env` を指定しても無視されます）。
+No API key is required (setting `api_key_env` has no effect).
 
-## 推奨モデル
+## Recommended Models
 
-完成判定の必須対象は **`glm-5.1:cloud`** です。それ以外でも `ollama list` で見えるモデルなら同じ書式で指定可能。
+The mandatory verification target is **`glm-5.1:cloud`**. Any model visible in `ollama list` can be specified using the same format.
 
 ```bash
-ollama pull glm-5.1:cloud      # クラウド版
-ollama pull llama3.1:8b        # ローカル版例
+ollama pull glm-5.1:cloud      # cloud version
+ollama pull llama3.1:8b        # local model example
 ```
 
-## 対応機能
+## Supported Features
 
-| 機能 | 対応 | 備考 |
-|------|------|------|
+| Feature | Support | Notes |
+|---------|---------|-------|
 | Streaming | ✓ | NDJSON |
-| Tool use | ✓ (モデル依存) | `tools` 対応モデルでのみ動作 |
-| Thinking | ✓ (モデル依存) | NDJSON `message.thinking` を `[thinking]` として表示。`glm-5.1:cloud` 等で動作 |
+| Tool use | ✓ (model-dependent) | Only works with `tools`-capable models |
+| Thinking | ✓ (model-dependent) | Renders NDJSON `message.thinking` as `[thinking]`. Works with `glm-5.1:cloud` etc. |
 
-`Capabilities` は静的に `tool_use=true` ／ `thinking=true` を返しますが、サーバー／モデルが対応していない場合はツール呼び出し／thinking 出力が行われない（または無視される）ことがあります。
+`Capabilities` statically returns `tool_use=true` / `thinking=true`, but if the server or model does not support these features, tool calls or thinking output may not be produced (or may be silently ignored).
 
-### Thinking 表示の制御
+### Controlling Thinking Display
 
-`glm-5.1:cloud` 等の thinking 対応モデルが `message.thinking` フィールドを返すと、agent-cli は `ProviderEvent::Thinking` として REPL に `[thinking]` プレフィックス付きで表示します（emit 順は `Thinking` → `Text` → `ToolUse`、Anthropic 仕様と整合）。表示モードは `[ui] show_thinking` で制御できます：
+When a thinking-capable model like `glm-5.1:cloud` returns the `message.thinking` field, agent-cli renders it as `ProviderEvent::Thinking` with a `[thinking]` prefix in the REPL (emission order: `Thinking` → `Text` → `ToolUse`, consistent with Anthropic convention). Display mode is controlled via `[ui] show_thinking`:
 
-| 設定 | 挙動 |
-|------|------|
-| `"collapsed"`（既定） | 各 thinking delta を「先頭 80 文字 + `...`」に切り詰めた 1 行で表示 |
-| `"expanded"` | thinking 全文を逐次表示 |
-| `"hidden"` | thinking を一切表示しない |
+| Setting | Behavior |
+|---------|----------|
+| `"collapsed"` (default) | Truncate each thinking delta to "first 80 chars + `...`" on one line |
+| `"expanded"` | Print full thinking text as it arrives |
+| `"hidden"` | Suppress thinking output entirely |
 
-ノイズが多い場合は `[ui] show_thinking = "hidden"` を推奨します。詳細は [`doc/config.md`](../config.md) の「UI 表示モード」節を参照。
+If thinking output is noisy, set `[ui] show_thinking = "hidden"`. See [`doc/config.md`](../config.md) "UI display modes" for details.
 
-## 動作確認
+## Verification
 
 ```bash
 ollama serve &
-# doctor は config の provider.kind を使う
+# doctor uses config's provider.kind
 agent-cli --config ./ollama.toml doctor
-# selftest は --provider で上書き可能
+# selftest can override with --provider
 agent-cli selftest --provider ollama
 ```
 
-`doctor` の `provider conn` ステップで `OK (stream initiated)` になれば疎通は良好です。クラウドルーティングモデル（`*:cloud` タグ）はコールドスタート遅延に備え、疎通タイムアウトは 60 秒に設定されています。
+If `doctor`'s `provider conn` step shows `OK (stream initiated)`, connectivity is healthy. Cloud-routed models (`*:cloud` tags) may have cold-start delays; the connectivity timeout is set to 60 seconds.
 
-## プロキシ・別ホスト
+## Proxy / Remote Host
 
-別ホストで Ollama を動かしている場合：
+If Ollama runs on a different host:
 
 ```toml
 [provider.ollama]
 base_url = "http://gpu-server.local:11434"
 ```
 
-## 既知の制限
+## Known Limitations
 
-- `tool_calls` 周りはモデルにより JSON フォーマットが揺れることがあり、エラー時はツール無しで再試行を推奨。
-- 大規模モデルではタイムアウト（180 秒）を超える可能性があります。長文生成は `[tools.shell] timeout_secs` も含めて見直してください。
+- `tool_calls` JSON formats may vary between models. If errors occur, retry without tools.
+- Large models may exceed the 180-second timeout. For long-generation scenarios, also review `[tools.shell] timeout_secs`.
 
-## トラブルシューティング
+## Troubleshooting
 
-| 症状 | 原因 | 対処 |
-|------|------|------|
-| `connection refused` | サーバー未起動 | `ollama serve` |
-| `model 'X' not found` | モデル未取得 | `ollama pull X` |
-| ツールが呼ばれない | モデルが tools 非対応 | tools 対応モデルへ変更 |
-| 応答が遅い | モデルが大きい／GPU 非利用 | より軽量なモデル、または GPU 環境へ移行 |
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `connection refused` | Server not running | `ollama serve` |
+| `model 'X' not found` | Model not pulled | `ollama pull X` |
+| Tools not called | Model does not support tools | Switch to a tools-capable model |
+| Slow response | Model is large / no GPU | Use a lighter model or switch to a GPU environment |

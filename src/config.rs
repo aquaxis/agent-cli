@@ -8,7 +8,7 @@ use crate::error::{AppError, Result};
 const DEFAULT_CONFIG: &str = r#"# agent-cli configuration
 
 [provider]
-# 使用するバックエンド: "claude" | "codex" | "ollama" | "llama.cpp"
+# Backend to use: "claude" | "codex" | "ollama" | "llama.cpp"
 kind = "claude"
 
 [provider.claude]
@@ -209,20 +209,20 @@ fn default_show_thinking() -> String {
     "collapsed".to_string()
 }
 
-/// `[ui] show_thinking` の表示モード（FR-03-1-2／設計書 4.3C）。
+/// Display mode for `[ui] show_thinking` (FR-03-1-2 / design doc 4.3C).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShowThinkingMode {
-    /// 一切表示しない。
+    /// Do not show thinking at all.
     Hidden,
-    /// 各 delta の先頭 80 文字までを表示し、残りは `...` で省略。
+    /// Show up to the first 80 characters of each delta, truncating the rest with `...`.
     Collapsed,
-    /// 受け取ったまま全文表示。
+    /// Show the full text as received.
     Expanded,
 }
 
 impl UiConfig {
-    /// `show_thinking` 文字列を `ShowThinkingMode` へ正規化する。未知値は既定の
-    /// `Collapsed` にフォールバック（パースエラーで起動を止めない）。
+    /// Normalize the `show_thinking` string into a `ShowThinkingMode`. Unknown values
+    /// fall back to the default `Collapsed` (does not prevent startup on parse errors).
     pub fn show_thinking_mode(&self) -> ShowThinkingMode {
         match self.show_thinking.as_str() {
             "hidden" => ShowThinkingMode::Hidden,
@@ -263,7 +263,7 @@ pub fn load(source: &ConfigSource) -> Result<Config> {
         if source.from_explicit {
             return Err(AppError::ConfigNotFound(source.path.clone()));
         }
-        // Default path → 自動生成
+        // Default path -> auto-generate
         if let Some(parent) = source.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -281,11 +281,12 @@ pub fn expand_path(p: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(expanded.into_owned()))
 }
 
-/// API キー値をマスク表示用に整形する（FR-09-3）。
+/// Format an API key value for masked display (FR-09-3).
 ///
-/// 8 文字以上のキーは「先頭 4 文字 + `...` + 末尾 4 文字」、それより短いキーは
-/// 値の長さ自体を漏らさないよう一律 `***` を返す。空文字列は空文字列を返す
-/// （呼び出し側が「未設定」と区別したい場合は事前に `Option` で判定すること）。
+/// Keys of 8 or more characters are shown as "first 4 chars + `...` + last 4 chars".
+/// Shorter keys return `***` to avoid leaking the value length.
+/// Empty strings return an empty string (callers should check `Option` first to
+/// distinguish "not set").
 pub fn mask_api_key(key: &str) -> String {
     if key.is_empty() {
         return String::new();
@@ -384,9 +385,10 @@ mod tests {
         assert_eq!(cfg.tools.shell.timeout_secs, 60);
     }
 
-    /// FR-04-3 境界値（上限）：`max_tool_iterations` に `u32::MAX` を指定した TOML が
-    /// パース可能で、値がそのまま保持される。実際にループを 42 億回回すテストはしない
-    /// （パース成功までで「真の無制限指定は不可だが事実上の無制限相当が可能」を保証）。
+    /// FR-04-3 boundary (upper limit): TOML with `max_tool_iterations` set to `u32::MAX`
+    /// parses successfully and the value is preserved. We don't actually loop 4 billion
+    /// times (parse success alone guarantees that true unlimited is disallowed but
+    /// practically unlimited is achievable).
     #[test]
     fn max_tool_iterations_accepts_u32_max() {
         let toml_src = r#"
@@ -401,8 +403,8 @@ max_tool_iterations = 4294967295
         assert_eq!(cfg.runtime.max_tool_iterations, u32::MAX);
     }
 
-    /// FR-03-1-2／設計書 4.3C：`[ui] show_thinking` の文字列パース。
-    /// 既知 3 値（`hidden`／`collapsed`／`expanded`）と未知値のフォールバックを検証。
+    /// FR-03-1-2 / design doc 4.3C: `[ui] show_thinking` string parsing.
+    /// Verify the 3 known values (`hidden`/`collapsed`/`expanded`) and unknown-value fallback.
     #[test]
     fn show_thinking_mode_parses_known_values() {
         for (raw, expected) in [
@@ -423,15 +425,15 @@ max_tool_iterations = 4294967295
             show_thinking: "verbose".into(),
         };
         assert_eq!(ui.show_thinking_mode(), ShowThinkingMode::Collapsed);
-        // 未指定時（既定値）も Collapsed 相当。
+        // Unspecified (default) also equals Collapsed.
         assert_eq!(
             UiConfig::default().show_thinking_mode(),
             ShowThinkingMode::Collapsed
         );
     }
 
-    /// `max_tool_iterations` の既定値は 24（2026-05-03 に 8 から引き上げ）。
-    /// `[runtime]` セクションを省略した場合の既定値も同じになる。
+    /// Default value of `max_tool_iterations` is 24 (raised from 8 on 2026-05-03).
+    /// Omitting the `[runtime]` section also yields the same default.
     #[test]
     fn max_tool_iterations_default_is_24() {
         let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
@@ -460,15 +462,15 @@ api_key_env = "ANTHROPIC_API_KEY"
 
     #[test]
     fn mask_api_key_handles_edge_cases() {
-        // 空文字列：そのまま空（未設定の判別は呼び出し側で）
+        // Empty string: returns empty as-is (caller distinguishes "not set" via Option)
         assert_eq!(mask_api_key(""), "");
-        // 短いキー：長さも漏らさず一律 ***
+        // Short key: always returns *** to avoid leaking length
         assert_eq!(mask_api_key("abc"), "***");
         assert_eq!(mask_api_key("1234567"), "***");
-        // 8 文字以上：先頭4 + ... + 末尾4
+        // 8+ characters: first 4 + ... + last 4
         assert_eq!(mask_api_key("12345678"), "1234...5678");
         assert_eq!(mask_api_key("sk-ant-api03-XYZ-abcdef"), "sk-a...cdef");
-        // Anthropic キー長（108 文字程度）でも動作
+        // Also works with typical Anthropic key length (~108 chars)
         let long: String = "sk-ant-"
             .chars()
             .chain(std::iter::repeat_n('x', 100))
@@ -489,8 +491,8 @@ api_key_env = "ANTHROPIC_API_KEY"
         assert_eq!(entry.temperature, Some(0.4));
     }
 
-    /// ドキュメント整合性チェック（T-602-10）：
-    /// `doc/config.md` に記載した完全サンプル 3 種が `Config` として正しくパースできること。
+    /// Documentation consistency check (T-602-10):
+    /// Verify that the 3 complete sample configs from `doc/config.md` parse as `Config`.
     #[test]
     fn doc_config_md_full_samples_parse() {
         let minimal = r#"
@@ -581,7 +583,7 @@ show_thinking = "expanded"
         }
     }
 
-    /// `tools.enabled` の名前が実装ツールと一致していること（typo 防止）。
+    /// Verify `tools.enabled` names match the implemented tools (prevent typos).
     #[test]
     fn enabled_tool_names_match_implementation() {
         let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();

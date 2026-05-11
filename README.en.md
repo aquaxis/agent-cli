@@ -2,7 +2,7 @@
 
 `agent-cli` is a standalone Rust CLI that bundles a Claude Code-equivalent AI agent (tools / thinking / streaming REPL) into a single binary. It does not depend on tmux: each process owns exactly one agent and talks to other agents over local Unix-domain-socket IPC.
 
-> 日本語版: [`README.md`](README.md)
+> Japanese version: [`README.ja.md`](README.ja.md)
 
 ## Highlights
 

@@ -21,7 +21,7 @@ use crate::log::ConversationLog;
 use crate::persona::{self, Persona, PersonaResolution};
 use crate::tools::ToolRegistry;
 
-/// REPL コマンドハンドラから参照する共有状態。
+/// Shared state referenced by REPL command handlers.
 pub(crate) struct ReplState {
     registry_dir: PathBuf,
     agents_dir: PathBuf,
@@ -32,7 +32,7 @@ pub(crate) struct ReplState {
     tool_names: Vec<String>,
     history_path: PathBuf,
     history: RwLock<Vec<String>>,
-    /// `/auto on|off|status` で切替するため `Arc<AtomicBool>` を共有（FR-04-2／設計書 4.3A）。
+    /// Shared via `Arc<AtomicBool>` for `/auto on|off|status` runtime toggle (FR-04-2 / design doc 4.3A).
     auto_approve: Arc<AtomicBool>,
 }
 
@@ -86,13 +86,13 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         tracing::info!("using builtin default persona");
     }
 
-    // ペルソナ由来の model / temperature を Provider 設定へ反映
+    // Reflect persona-derived model / temperature into Provider settings
     config.apply_persona_overrides(
         resolution.persona.frontmatter.model.as_deref(),
         resolution.persona.frontmatter.temperature,
     );
 
-    // Provider 構築（接続前検証）
+    // Build provider (pre-connection validation)
     let provider = ai::build(&config, &source)?;
     let caps = provider.capabilities();
 
@@ -117,7 +117,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let registry_handle = RegistryHandle::register(&registry_dir, &entry).await?;
     let registry_handle = Arc::new(registry_handle);
 
-    // ログ
+    // Logging
     let log = ConversationLog::open(&config.log_dir()?, &id).await?;
 
     // Tools
@@ -131,7 +131,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         config.runtime.auto_approve_tools || args.auto_approve_tools,
     ));
 
-    // 承認チャネル（FR-04-1／設計書 4.3A）。agent タスクが入力ループへ y/N を求める経路。
+    // Approval channel (FR-04-1 / design doc 4.3A). Route for agent task to request y/N from input loop.
     let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(8);
 
     let initial_persona = resolution.persona.clone();
@@ -167,12 +167,12 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
 
-    // shutdown 連携チャネル（FR-13／設計書 4.9）。`/quit`／EOF／SIGINT／SIGTERM の
-    // いずれを契機としても、`shutdown_tx.send(true)` が全タスクに伝播する。
+    // Shutdown coordination channel (FR-13 / design doc 4.9). Regardless of whether
+    // triggered by `/quit`, EOF, SIGINT, or SIGTERM, `shutdown_tx.send(true)` propagates to all tasks.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // AI 応答完了通知チャネル（FR-03-2／設計書 4.2A）。display_task が `Done` を
-    // 観測した際に発火し、入力ループの `Pending` 状態を解除する。
+    // AI response completion notification channel (FR-03-2 / design doc 4.2A). Fired when
+    // display_task observes `Done`, releasing the input loop from `Pending` state.
     let (agent_idle_tx, agent_idle_rx) = mpsc::channel::<()>(8);
 
     print_header(
@@ -184,10 +184,10 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         caps,
     );
 
-    // Agent タスク
+    // Agent task
     let agent_handle = tokio::spawn(async move { agent.run(input_rx, event_tx).await });
 
-    // SIGINT / SIGTERM ハンドラ
+    // SIGINT / SIGTERM handler
     let signal_task = {
         let shutdown_tx = shutdown_tx.clone();
         tokio::spawn(async move {
@@ -197,7 +197,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         })
     };
 
-    // IPC 受信を AgentInput に流す（shutdown 監視つき）
+    // Forward IPC messages to AgentInput (with shutdown monitoring)
     let input_tx_for_ipc = input_tx.clone();
     let ipc_task = {
         let mut shutdown_rx = shutdown_rx.clone();
@@ -229,7 +229,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         })
     };
 
-    // 標準入力の読み取り（refactor 済み：run_input_loop で testable）
+    // Read from stdin (refactored: testable via run_input_loop)
     let input_tx_for_stdin = input_tx.clone();
     let state_for_stdin = state.clone();
     let stdin_task = {
@@ -250,9 +250,9 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         })
     };
 
-    // イベント表示。`Done` または `Error` を観測したら入力ループへ idle 通知（FR-03-2）。
-    // `Error` も idle として扱うのは、Provider 構築直後の失敗で `Done` が来ないケースに
-    // 入力ループが永久に Pending で固まるのを防ぐ防衛策。
+    // Display events. On `Done` or `Error`, notify the input loop of idle state (FR-03-2).
+    // Treating `Error` as idle is a defensive measure to prevent the input loop from
+    // getting stuck in Pending forever if Provider construction fails without a `Done`.
     let show_thinking = config.ui.show_thinking_mode();
     let display_task = tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
@@ -264,7 +264,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         }
     });
 
-    // shutdown 通知を受けるまでブロック（複数経路の合流点）
+    // Block until shutdown notification (convergence point for multiple routes)
     {
         let mut shutdown_rx = shutdown_rx.clone();
         loop {
@@ -276,7 +276,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
             }
         }
     }
-    // 入力経路を停止
+    // Stop input routes
     stdin_task.abort();
     let _ = stdin_task.await;
     ipc_task.abort();
@@ -284,11 +284,11 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     signal_task.abort();
     let _ = signal_task.await;
 
-    // 残った input senders を解放 → input_rx が None を返し、agent ループが終了する
+    // Release remaining input senders -> input_rx returns None, agent loop exits
     drop(input_tx);
 
-    // agent タスクの終了を待つ。in-flight の Provider ストリームがある場合に備えて
-    // 短いタイムアウトを設け、超過時は abort する（FR-13: 1 秒以内目標）。
+    // Wait for the agent task to finish. In case of an in-flight Provider stream,
+    // set a short timeout and abort if exceeded (FR-13: target under 1 second).
     let agent_abort = agent_handle.abort_handle();
     let abort_timer = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(500)).await;
@@ -297,23 +297,23 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let _ = agent_handle.await;
     abort_timer.abort();
     let _ = abort_timer.await;
-    // event_tx は agent のクロージャ終了で drop され、display_task が抜ける
+    // event_tx is dropped when the agent closure ends, causing display_task to exit
     let _ = display_task.await;
 
-    // IPC サーバーと registry handle は Drop で自動クリーンアップされるが、
-    // 二重実行は無害なので明示的にも実行しておく。
+    // IPC server and registry handle are auto-cleaned on Drop, but explicit cleanup
+    // is harmless and ensures thoroughness.
     drop(ipc_server);
     registry_handle.cleanup();
     IpcServer::cleanup(&socket_path);
     Ok(())
 }
 
-/// 入力ループの状態（FR-03-2／FR-04-1／設計書 4.2A／4.3A）。
+/// Input loop state (FR-03-2 / FR-04-1 / design doc 4.2A / 4.3A).
 ///
-/// - `Ready`：プロンプト描画と stdin 読取を行う。
-/// - `Pending`：直前のユーザー入力に対する AI 応答を待っており、通常入力の stdin 読取は抑止。
-/// - `AwaitingApproval(resp_tx)`：agent からツール実行承認を求められている状態。
-///   次の stdin 行を y/N と解釈し、`resp_tx` で agent へ返却する。
+/// - `Ready`: Render prompt and read from stdin.
+/// - `Pending`: Waiting for AI response to the previous user input; normal stdin reads are suppressed.
+/// - `AwaitingApproval(resp_tx)`: Agent is requesting tool execution approval.
+///   The next stdin line is interpreted as y/N and returned to the agent via `resp_tx`.
 enum PromptState {
     Ready,
     Pending,
@@ -332,20 +332,20 @@ impl PromptState {
     }
 }
 
-/// 標準入力（または任意の `AsyncRead`）からの行入力を `AgentInput` に変換するメインループ。
+/// Main loop that converts line input from stdin (or any `AsyncRead`) into `AgentInput`.
 ///
-/// 役割：
-/// - FR-13「アプリ終了」の入力側エンドポイント：
-///   - `/quit` を受領した場合は `shutdown_tx` に `true` を送信して終了。
-///   - `lines.next_line()` が `Ok(None)` を返した（EOF=`Ctrl+D`）場合も同様。
-///   - `shutdown_rx` の通知を受けた場合（SIGINT などの外部経路）も即座に終了。
-/// - FR-03-2「REPL入出力サイクル」のプロンプト同期：
-///   - ユーザー入力送信後は `Pending` 状態となり、`agent_idle_rx` から AI 応答完了通知
-///     （`Done` イベント検出）を受けるまで stdin を読まない。これによりストリーミング
-///     出力と入力エコーの混在を防ぐ。
+/// Responsibilities:
+/// - FR-13 "App termination" input-side endpoint:
+///   - When `/quit` is received, sends `true` to `shutdown_tx` and terminates.
+///   - When `lines.next_line()` returns `Ok(None)` (EOF = Ctrl+D), same behavior.
+///   - When `shutdown_rx` notification arrives (external route such as SIGINT), also terminates immediately.
+/// - FR-03-2 "REPL I/O cycle" prompt synchronization:
+///   - After sending user input, enters `Pending` state and does not read stdin until
+///     receiving an AI response completion notification (`Done` event) from `agent_idle_rx`.
+///     This prevents mixing streaming output with input echo.
 ///
-/// `interactive` が `true` のときのみプロンプト（`> `）を描画する。
-/// 単体テストでは `interactive = false` で標準出力を汚さない。
+/// Only draws a prompt (`> `) when `interactive` is `true`.
+/// Unit tests use `interactive = false` to avoid polluting stdout.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_input_loop<R>(
     reader: R,
@@ -362,7 +362,7 @@ pub(crate) async fn run_input_loop<R>(
     let buffered = BufReader::new(reader);
     let mut lines = buffered.lines();
     let mut prompt_state = PromptState::Ready;
-    // 承認チャネルが閉じたら `None` にして以後 `pending()` 待ちに切替（busy loop 回避）
+    // Once the approval channel closes, set to `None` and switch to `pending()` wait (avoid busy loop)
     let mut approval_rx: Option<mpsc::Receiver<ApprovalRequest>> = Some(approval_rx);
     loop {
         if interactive && prompt_state.is_ready() {
@@ -375,17 +375,17 @@ pub(crate) async fn run_input_loop<R>(
                     break;
                 }
             }
-            // Pending 状態のときだけ AI 応答完了通知を待つ（stdin は休止）
+            // Only wait for AI response completion when in Pending state (stdin is paused)
             res = agent_idle_rx.recv(), if prompt_state.is_pending() => {
                 match res {
                     Some(()) => {
                         prompt_state = PromptState::Ready;
-                        // 次のループ先頭でプロンプトが再描画される
+                        // Prompt will be redrawn at the top of the next loop iteration
                     }
-                    None => break, // display_task 終了 → これ以上待っても来ない
+                    None => break, // display_task terminated -> no more events coming
                 }
             }
-            // 承認リクエスト到着（AwaitingApproval 中ではないとき限定）。FR-04-1
+            // Approval request arrived (only when not AwaitingApproval). FR-04-1
             req = async {
                 match approval_rx.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -403,29 +403,29 @@ pub(crate) async fn run_input_loop<R>(
                         prompt_state = PromptState::AwaitingApproval(req.response);
                     }
                     None => {
-                        // 承認チャネルが閉じた → 以後待たない
+                        // Approval channel closed -> don't wait anymore
                         approval_rx = None;
                     }
                 }
             }
-            // Ready または AwaitingApproval のときに stdin から読み込む
+            // Read from stdin when Ready or AwaitingApproval
             next = lines.next_line(), if prompt_state.is_ready() || prompt_state.is_awaiting_approval() => {
                 match next {
                     Ok(Some(line)) => {
                         let trimmed = line.trim_end_matches('\r').trim().to_string();
 
-                        // AwaitingApproval なら入力を y/N として解釈し agent へ返答
+                        // If AwaitingApproval, interpret input as y/N and send response to agent
                         if prompt_state.is_awaiting_approval() {
                             let approved = matches!(
                                 trimmed.to_ascii_lowercase().as_str(),
                                 "y" | "yes"
                             );
-                            // 状態を Pending に遷移させながら oneshot を取り出して送信
+                            // Transition to Pending while extracting and sending the oneshot
                             let prev = std::mem::replace(&mut prompt_state, PromptState::Pending);
                             if let PromptState::AwaitingApproval(resp_tx) = prev {
                                 let _ = resp_tx.send(approved);
                             }
-                            // tool 実行→続報→Done を待つ。古い idle 通知が残っていれば drain
+                            // Wait for tool execution -> follow-up -> Done. Drain stale idle notifications.
                             while agent_idle_rx.try_recv().is_ok() {}
                             continue;
                         }
@@ -439,7 +439,7 @@ pub(crate) async fn run_input_loop<R>(
                         if trimmed.is_empty() {
                             continue;
                         }
-                        // 履歴へ保存（永続＋メモリ）
+                        // Save to history (persistent + in-memory)
                         append_history(&state.history_path, &trimmed);
                         {
                             let mut h = state.history.write().await;
@@ -452,7 +452,7 @@ pub(crate) async fn run_input_loop<R>(
                         if input_tx.send(AgentInput::UserPrompt(trimmed)).await.is_err() {
                             break;
                         }
-                        // 過去の peer prompt 等で残った idle 通知を捨ててから Pending へ
+                        // Discard stale idle notifications from past peer prompts, then enter Pending
                         while agent_idle_rx.try_recv().is_ok() {}
                         prompt_state = PromptState::Pending;
                     }
@@ -462,8 +462,8 @@ pub(crate) async fn run_input_loop<R>(
             }
         }
     }
-    // shutdown 経路で AwaitingApproval を抜ける場合、agent の oneshot::Receiver を
-    // ぶら下げないよう false（拒否）を送って解放する（設計書 4.3A）。
+    // When exiting AwaitingApproval via the shutdown route, send false (deny) to the
+    // agent's oneshot::Receiver to avoid leaving it dangling (design doc 4.3A).
     if let PromptState::AwaitingApproval(resp_tx) =
         std::mem::replace(&mut prompt_state, PromptState::Ready)
     {
@@ -472,7 +472,7 @@ pub(crate) async fn run_input_loop<R>(
     let _ = shutdown_tx.send(true);
 }
 
-/// SIGINT（`Ctrl+C`）または SIGTERM を待つ。Linux 以外の環境では `ctrl_c` のみ。
+/// Wait for SIGINT (Ctrl+C) or SIGTERM. On non-Linux, only `ctrl_c` is available.
 async fn wait_for_termination_signal() {
     #[cfg(unix)]
     {
@@ -530,7 +530,7 @@ fn print_header(
     println!("type /help for commands. /quit, /exit, or ^D to terminate.");
 }
 
-/// `/auto [on|off|status]` ハンドラ（FR-04-2／設計書 4.3A）。
+/// `/auto [on|off|status]` handler (FR-04-2 / design doc 4.3A).
 fn handle_auto_command(arg: &str, state: &Arc<ReplState>) {
     let arg = arg.trim().to_ascii_lowercase();
     match arg.as_str() {
@@ -596,9 +596,9 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode) {
     }
 }
 
-/// `[ui] show_thinking = "collapsed"` 時に thinking delta を 1 行・80 文字以内へ
-/// 切り詰める（FR-03-1-2／設計書 4.3C）。長尺 reasoning を返すモデル
-/// （`glm-5.1:cloud` 等）でも 1 ターンの REPL 出力が画面を埋め尽くさないようにする。
+/// Truncate thinking delta to 1 line / 80 characters when `[ui] show_thinking = "collapsed"`
+/// (FR-03-1-2 / design doc 4.3C). Prevents models that return long reasoning
+/// (e.g. `glm-5.1:cloud`) from flooding the REPL output in a single turn.
 fn collapse_thinking_text(text: &str) -> String {
     const MAX: usize = 80;
     let first_line = text.lines().next().unwrap_or("").trim();
@@ -649,7 +649,7 @@ async fn handle_repl_command(
         }
         "auto" => handle_auto_command(arg, state),
         "clear" | "reset" => {
-            // 会話履歴を初期化（システムプロンプトのみ残す）。
+            // Clear conversation history (keep only system prompt).
             if input_tx.send(AgentInput::ClearHistory).await.is_err() {
                 eprintln!("[error] failed to send clear request");
             }
@@ -657,7 +657,7 @@ async fn handle_repl_command(
         "history" => {
             let n: usize = arg.parse().unwrap_or(20);
             let h = state.persona.read().await;
-            let _ = h; // 無関係
+            let _ = h; // unused
             let hist = state.history.read().await;
             let total = hist.len();
             let start = total.saturating_sub(n);
@@ -838,16 +838,16 @@ fn peer_summary(arg: &str, registry_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
-    //! FR-13「アプリ終了」の入力ループ部分（`/quit` と Ctrl+D=EOF）を回帰テストする。
+    //! Regression tests for FR-13 "App termination" input loop (`/quit` and Ctrl+D=EOF).
     use super::*;
     use crate::persona::Persona;
     use std::time::Duration;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
 
-    /// FR-03-1-2／設計書 4.3C：`collapse_thinking_text` の挙動。
-    /// `[ui] show_thinking = "collapsed"` で thinking delta を 80 文字 + 改行で
-    /// 1 行に切り詰めることを保証。
+    /// FR-03-1-2 / design doc 4.3C: `collapse_thinking_text` behavior.
+    /// Ensures that `[ui] show_thinking = "collapsed"` truncates thinking delta
+    /// to 80 characters + newline in a single line.
     #[test]
     fn collapse_thinking_text_keeps_short_single_line_intact() {
         assert_eq!(collapse_thinking_text("hello"), "hello");
@@ -858,7 +858,7 @@ mod tests {
         let long: String = std::iter::repeat_n('a', 200).collect();
         let collapsed = collapse_thinking_text(&long);
         assert!(collapsed.ends_with("..."));
-        // 末尾 "..." を除いた本文は 80 文字。
+        // Body text excluding trailing "..." is 80 characters.
         assert_eq!(collapsed.chars().count(), 83);
     }
 
@@ -890,7 +890,7 @@ mod tests {
         })
     }
 
-    /// テスト用ヘルパー：未使用の approval チャネルを返す。
+    /// Test helper: returns an unused approval channel.
     fn dummy_approval_rx() -> mpsc::Receiver<ApprovalRequest> {
         let (_tx, rx) = mpsc::channel::<ApprovalRequest>(4);
         rx
@@ -898,7 +898,7 @@ mod tests {
 
     #[tokio::test]
     async fn input_loop_terminates_on_eof() {
-        // 空 stdin（即 EOF）→ run_input_loop は break して shutdown_tx.send(true) を発行する。
+        // Empty stdin (immediate EOF) -> run_input_loop breaks and sends shutdown_tx.send(true).
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
@@ -906,7 +906,7 @@ mod tests {
         let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
         let shutdown_observer = shutdown_rx.clone();
 
-        // EOF を即起こす reader
+        // Reader that immediately produces EOF
         let reader = tokio::io::empty();
 
         let handle = tokio::spawn(async move {
@@ -925,7 +925,7 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(result.is_ok(), "input loop should terminate on EOF");
-        // ループ終了後、shutdown_tx.send(true) が発行されている
+        // After loop exits, shutdown_tx.send(true) should have been sent
         assert!(
             *shutdown_observer.borrow(),
             "EOF should propagate as shutdown=true"
@@ -934,7 +934,7 @@ mod tests {
 
     #[tokio::test]
     async fn input_loop_terminates_on_quit_command() {
-        // /quit を投入 → break して shutdown_tx.send(true) を発行する。
+        // Feed /quit -> break and send shutdown_tx.send(true).
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
@@ -944,7 +944,7 @@ mod tests {
 
         let (mut writer, reader) = tokio::io::duplex(64);
         writer.write_all(b"/quit\n").await.unwrap();
-        // writer は drop しない（テストでは /quit 経由の終了を確認する）
+        // Don't drop writer (test confirms termination via /quit)
 
         let handle = tokio::spawn(async move {
             run_input_loop(
@@ -970,14 +970,14 @@ mod tests {
 
     #[tokio::test]
     async fn input_loop_responds_to_external_shutdown() {
-        // 外部（SIGINT 想定）から shutdown を受領 → ループは break する。
+        // External shutdown (SIGINT assumed) -> loop breaks.
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
 
-        // EOF を起こさず、入力もない reader（duplex の writer 側を保持）
+        // Reader that neither produces EOF nor input (keep duplex writer side alive)
         let (_writer, reader) = tokio::io::duplex(64);
 
         let shutdown_tx_clone = shutdown_tx.clone();
@@ -995,7 +995,7 @@ mod tests {
             .await;
         });
 
-        // 100ms 後に外部から shutdown 通知
+        // Send external shutdown notification after 100ms
         tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown_tx_clone.send(true).unwrap();
 
@@ -1008,8 +1008,8 @@ mod tests {
 
     #[tokio::test]
     async fn input_loop_waits_for_agent_idle_between_user_prompts() {
-        // FR-03-2 / 設計書 4.2A：
-        // ユーザー入力 1 件目を送信 → Pending → idle 受領まで 2 件目は agent へ届かない。
+        // FR-03-2 / design doc 4.2A:
+        // Send 1st user input -> Pending -> 2nd input does not reach agent until idle is received.
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
@@ -1017,7 +1017,7 @@ mod tests {
         let (idle_tx, idle_rx) = mpsc::channel::<()>(8);
 
         let (mut writer, reader) = tokio::io::duplex(1024);
-        // 2 件まとめて投入
+        // Submit 2 entries at once
         writer.write_all(b"first\nsecond\n").await.unwrap();
 
         let handle = tokio::spawn(async move {
@@ -1034,7 +1034,7 @@ mod tests {
             .await;
         });
 
-        // 1 件目は速やかに到達する
+        // First entry arrives quickly
         let msg1 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
             .expect("first prompt timeout")
@@ -1044,14 +1044,14 @@ mod tests {
             other => panic!("expected UserPrompt(\"first\"), got {:?}", other),
         }
 
-        // 2 件目は idle 通知が来るまで届かない（Pending 状態が stdin を抑止）
+        // Second entry does not arrive until idle notification (Pending state suppresses stdin)
         let blocked = tokio::time::timeout(Duration::from_millis(300), input_rx.recv()).await;
         assert!(
             blocked.is_err(),
             "second prompt should not arrive while input loop is Pending"
         );
 
-        // idle を発行 → 入力ループは Ready に復帰し、2 件目を読み込む
+        // Issue idle -> input loop returns to Ready and reads the 2nd entry
         idle_tx.send(()).await.unwrap();
 
         let msg2 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
@@ -1063,22 +1063,23 @@ mod tests {
             other => panic!("expected UserPrompt(\"second\"), got {:?}", other),
         }
 
-        // 後始末
+        // Cleanup
         drop(writer);
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
     #[tokio::test]
     async fn stale_idle_signal_is_drained_before_pending() {
-        // peer prompt 等で agent が独立して Done を出した結果として idle が溜まっていても、
-        // 次のユーザー入力直後にそれを誤って消費して Pending を即解除しないこと。
+        // Even if idle signals accumulate from agent independently emitting Done (e.g. peer prompt),
+        // they should not be mistakenly consumed right after the next user input, which would
+        // immediately release Pending state.
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (idle_tx, idle_rx) = mpsc::channel::<()>(8);
 
-        // 古い idle 通知を仕込んでおく
+        // Pre-load stale idle notifications
         idle_tx.send(()).await.unwrap();
         idle_tx.send(()).await.unwrap();
 
@@ -1099,7 +1100,7 @@ mod tests {
             .await;
         });
 
-        // 入力 1 件は届く
+        // 1 input entry arrives
         let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
             .expect("prompt timeout")
@@ -1109,7 +1110,7 @@ mod tests {
             other => panic!("unexpected: {:?}", other),
         }
 
-        // 古い idle はドレインされたので、これ以上は来ない（Pending 中、stdin は未読）
+        // Stale idle has been drained, so no more idle signals arrive (Pending, stdin unread)
         writer.write_all(b"should-not-pass\n").await.unwrap();
         let blocked = tokio::time::timeout(Duration::from_millis(300), input_rx.recv()).await;
         assert!(
@@ -1117,7 +1118,7 @@ mod tests {
             "stale idle signals should have been drained, leaving the loop Pending"
         );
 
-        // 新しく idle を出せば 2 件目が解放される
+        // Issuing a new idle releases the 2nd entry
         idle_tx.send(()).await.unwrap();
         let msg2 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
@@ -1132,7 +1133,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
-    /// FR-13／T-507：`/exit` で `/quit` 同等の終了が起きる。
+    /// FR-13 / T-507: `/exit` triggers termination equivalent to `/quit`.
     #[tokio::test]
     async fn input_loop_terminates_on_exit_command() {
         let tmp = TempDir::new().unwrap();
@@ -1167,8 +1168,8 @@ mod tests {
         );
     }
 
-    /// FR-04-1／T-506：承認リクエスト到着 → "y" 入力 → oneshot に true が届き Pending へ遷移、
-    /// その間ユーザー入力は agent へ流出しない。
+    /// FR-04-1 / T-506: Approval request arrives -> "y" input -> oneshot receives true and transitions to Pending;
+    /// user input does not leak to agent during this time.
     #[tokio::test]
     async fn approval_y_resolves_true_and_blocks_user_prompt() {
         let tmp = TempDir::new().unwrap();
@@ -1179,7 +1180,7 @@ mod tests {
         let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(4);
 
         let (mut writer, reader) = tokio::io::duplex(1024);
-        // 後から y を投入する
+        // Will submit "y" later
 
         let handle = tokio::spawn(async move {
             run_input_loop(
@@ -1195,7 +1196,7 @@ mod tests {
             .await;
         });
 
-        // 承認リクエスト送信
+        // Send approval request
         let (resp_tx, resp_rx) = oneshot::channel::<bool>();
         approval_tx
             .send(ApprovalRequest {
@@ -1206,25 +1207,25 @@ mod tests {
             .await
             .unwrap();
 
-        // 状態が AwaitingApproval に遷移するまで少し待つ
+        // Wait briefly for state to transition to AwaitingApproval
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // この時点でユーザーが「これは普通の入力だ」と思って打ったテキストは
-        // y/N 解釈になるべきで、UserPrompt として agent に届いてはならない。
+        // At this point, text the user thinks is normal input should be
+        // interpreted as y/N, not forwarded to the agent as UserPrompt.
         writer.write_all(b"some text\n").await.unwrap();
         let leaked = tokio::time::timeout(Duration::from_millis(200), input_rx.recv()).await;
         assert!(
             leaked.is_err(),
             "approval-mode input must not reach agent as UserPrompt"
         );
-        // 上で投入した "some text" は y/yes に該当しないので oneshot は false を受領済み
+        // "some text" submitted above does not match y/yes, so oneshot has already received false
         let approved = tokio::time::timeout(Duration::from_secs(2), resp_rx)
             .await
             .expect("oneshot timeout")
             .expect("oneshot dropped");
         assert!(!approved, "non-y input should resolve to false");
 
-        // 続けて承認リクエスト → 今度は y を投入 → true で解決
+        // Another approval request -> this time submit "y" -> resolves to true
         let (resp_tx2, resp_rx2) = oneshot::channel::<bool>();
         approval_tx
             .send(ApprovalRequest {
@@ -1242,7 +1243,7 @@ mod tests {
             .expect("oneshot2 dropped");
         assert!(approved2, "'y' should resolve to true");
 
-        // 承認後、Pending → idle で Ready に戻り通常入力を受け付ける
+        // After approval, Pending -> idle returns to Ready and accepts normal input
         idle_tx.send(()).await.unwrap();
         writer.write_all(b"after\n").await.unwrap();
         let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
@@ -1259,7 +1260,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
-    /// FR-04-1：shutdown 経路で AwaitingApproval を抜ける際、oneshot に false（拒否）が届く。
+    /// FR-04-1: When exiting AwaitingApproval via the shutdown route, oneshot receives false (denied).
     #[tokio::test]
     async fn shutdown_during_awaiting_approval_replies_false() {
         let tmp = TempDir::new().unwrap();
@@ -1286,7 +1287,7 @@ mod tests {
             .await;
         });
 
-        // 承認リクエストを送って AwaitingApproval に遷移させる
+        // Send an approval request to transition to AwaitingApproval
         let (resp_tx, resp_rx) = oneshot::channel::<bool>();
         approval_tx
             .send(ApprovalRequest {
@@ -1298,10 +1299,10 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // shutdown を発火
+        // Fire shutdown
         shutdown_clone.send(true).unwrap();
 
-        // oneshot が false で解決される（agent 側がぶら下がらない）
+        // oneshot resolves to false (agent side does not dangle)
         let resp = tokio::time::timeout(Duration::from_secs(2), resp_rx)
             .await
             .expect("oneshot timeout");

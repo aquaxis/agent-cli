@@ -26,4 +26,4 @@ description: Task-specific instructions for this session.
 ---
 
 Task: Execute the instructions listed in `.aiprj/instructions.md`.
-Output language: Japanese (日本語).
+Output language: English.

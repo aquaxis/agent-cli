@@ -13,7 +13,7 @@ use crate::ai::{
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 
-/// llama.cpp サーバ（OpenAI 互換 /v1/chat/completions）に接続するプロバイダ。
+/// Provider that connects to a llama.cpp server (OpenAI-compatible /v1/chat/completions).
 pub struct LlamaCppProvider {
     pub base_url: String,
     pub model: String,
@@ -184,7 +184,7 @@ pub(crate) struct LlamaCppOutcome {
     pub done: bool,
 }
 
-/// llama.cpp（OpenAI 互換）の SSE フレーム 1 件を解釈する純関数。
+/// Pure function to interpret a single SSE frame from llama.cpp (OpenAI-compatible).
 pub(crate) fn handle_llamacpp_frame(frame: &str) -> LlamaCppOutcome {
     let mut events = Vec::new();
     if frame.trim() == "[DONE]" {

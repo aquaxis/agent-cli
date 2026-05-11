@@ -1,48 +1,48 @@
-# ツールリファレンス（`tools.md`）
+# Tool Reference (`tools.md`)
 
-`agent-cli` 内蔵ツールの引数スキーマ、戻り値、制限、承認フローを示します。
+Describes the argument schemas, return values, limitations, and approval flow for `agent-cli` built-in tools.
 
-## 共通仕様
+## Common Specifications
 
-- ツールは AI から JSON 形式の入力で呼び出されます。
-- 戻り値は `{"ok": bool, "content": string}` の `ToolOutput` で表現され、`content` が AI に渡されます。`shell` のように構造化結果を返すツールは `content` に JSON 文字列を入れます。
-- 承認フロー：`auto_approve_tools=false`（既定）では実行前に REPL の入力ループ経由で y/N を取得します。詳細は下記「ツール実行承認」を参照。拒否時は `user denied tool execution` が AI に返ります。
-- ペルソナの `allowed_tools`／`denied_tools` で利用可能ツールを制御できます（`doc/config.md` 参照）。
+- Tools are called by the AI with JSON-formatted input.
+- Return values are represented as `{"ok": bool, "content": string}` in `ToolOutput`, where `content` is passed back to the AI. Tools that return structured results, such as `shell`, embed a JSON string in `content`.
+- Approval flow: When `auto_approve_tools=false` (default), a y/N prompt is obtained via the REPL input loop before execution. See "Tool Execution Approval" below for details. When denied, `user denied tool execution` is returned to the AI.
+- Available tools can be controlled via the persona's `allowed_tools`/`denied_tools` (see `doc/config.md`).
 
-## ツール実行承認
+## Tool Execution Approval
 
-承認 y/N の入出力は **REPL のメイン入力ループと統合** されています（`std::io::stdin().read_line()` の直読みは行いません）。これにより承認入力がユーザーの通常プロンプトと取り違えられる事象を防ぎます。
+The approval y/N input/output is **integrated into the REPL's main input loop** (it does not read directly via `std::io::stdin().read_line()`). This prevents approval input from being confused with the user's normal prompt.
 
-仕組み：
+Mechanism:
 
-1. agent タスクが `ApprovalRequest { tool_name, args, response: oneshot::Sender<bool> }` を入力ループへ送信。
-2. 入力ループは状態を `AwaitingApproval` に遷移し、`[tool approval] <tool> <args>` バナーと `approve? [y/N]: ` を描画。
-3. 入力ループが次の stdin 行を読み、`y`／`yes` のみ承認、それ以外（空入力／別単語）は拒否として `oneshot` に送信。
-4. agent タスクは応答に従ってツールを実行、または `user denied tool execution` を返却。
+1. The agent task sends `ApprovalRequest { tool_name, args, response: oneshot::Sender<bool> }` to the input loop.
+2. The input loop transitions state to `AwaitingApproval` and renders a `[tool approval] <tool> <args>` banner with `approve? [y/N]: `.
+3. The input loop reads the next stdin line; only `y`/`yes` is treated as approval. Anything else (empty input or a different word) is treated as denial and sent via `oneshot`.
+4. The agent task executes the tool according to the response, or returns `user denied tool execution`.
 
-承認スキップ（自動許可）の経路：
+Approval skip (auto-approve) paths:
 
-| 経路 | 例 | 反映 |
-|------|-----|------|
-| 設定ファイル | `[runtime] auto_approve_tools = true` | 起動時 |
-| CLI フラグ | `agent-cli run --auto-approve-tools` | 起動時のみ上書き |
-| REPL コマンド | `/auto on` | 即時。`/auto off` で承認モードへ復帰、`/auto status` で現在値表示 |
+| Path | Example | When Applied |
+|------|---------|-------------|
+| Config file | `[runtime] auto_approve_tools = true` | At startup |
+| CLI flag | `agent-cli run --auto-approve-tools` | Overrides at startup only |
+| REPL command | `/auto on` | Immediate. `/auto off` returns to approval mode; `/auto status` shows current value |
 
-実装上、`auto_approve` は `Arc<AtomicBool>` として agent と REPL 間で共有されており、`/auto on`／`/auto off` でセッション中いつでも切り替えできます。
+In the implementation, `auto_approve` is shared between the agent and REPL as `Arc<AtomicBool>`, so it can be toggled at any time during the session via `/auto on`/`/auto off`.
 
 ## `shell`
 
-シェルコマンドを実行します。
+Executes a shell command.
 
-### 引数
+### Arguments
 
-| キー | 型 | 必須 | 既定 | 説明 |
-|------|----|------|------|------|
-| `cmd` | string | ✓ | — | 実行するコマンド本文（`bash -lc <cmd>` で実行） |
-| `cwd` | string | — | プロセスの cwd | 作業ディレクトリ |
-| `timeout_secs` | integer | — | `[tools.shell] timeout_secs`（既定 60） | 個別タイムアウト |
+| Key | Type | Required | Default | Description |
+|-----|------|----------|---------|-------------|
+| `cmd` | string | Yes | -- | Command body to execute (runs via `bash -lc <cmd>`) |
+| `cwd` | string | -- | Process cwd | Working directory |
+| `timeout_secs` | integer | -- | `[tools.shell] timeout_secs` (default 60) | Per-invocation timeout |
 
-### 戻り値（`content` は JSON 文字列）
+### Return Value (`content` is a JSON string)
 
 ```json
 {
@@ -52,15 +52,15 @@
 }
 ```
 
-`stdout`／`stderr` が `[tools.shell] max_output_kb` を超える場合は `...[truncated]` が付きます。
+When `stdout`/`stderr` exceeds `[tools.shell] max_output_kb`, `...[truncated]` is appended.
 
-### 制限
+### Limitations
 
-- `bash -lc` 経由のため、`bash` がインストールされている必要があります。
-- タイムアウト超過時は `ok=false` で `timed out after <N> seconds: <cmd>` を返します。
-- `auto_approve_tools=false`（既定）の場合、対話 y/N が必要です（上記「ツール実行承認」参照）。`/auto on` でセッション中は無効化できます。
+- Runs via `bash -lc`, so `bash` must be installed.
+- On timeout, returns `ok=false` with `timed out after <N> seconds: <cmd>`.
+- When `auto_approve_tools=false` (default), interactive y/N approval is required (see "Tool Execution Approval" above). Can be disabled for the session with `/auto on`.
 
-### 例
+### Example
 
 ```json
 {"name":"shell","arguments":{"cmd":"ls /tmp"}}
@@ -68,21 +68,21 @@
 
 ## `fs_read`
 
-UTF-8 のテキストファイルを読み取ります。
+Reads a UTF-8 text file.
 
-### 引数
+### Arguments
 
-| キー | 型 | 必須 | 説明 |
-|------|----|------|------|
-| `path` | string | ✓ | 読み取り対象。`~`／環境変数を展開 |
-| `offset` | integer | — | 読み取り開始バイト位置 |
-| `limit` | integer | — | 読み取りバイト数 |
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `path` | string | Yes | Target path. Expands `~` and environment variables |
+| `offset` | integer | -- | Byte offset to start reading from |
+| `limit` | integer | -- | Number of bytes to read |
 
-### 戻り値
+### Return Value
 
-`content` に UTF-8 テキストを返します。バイナリや非 UTF-8 ファイルの場合 `ok=false` で `binary or non-UTF-8 file: <path>` を返します。
+Returns UTF-8 text in `content`. For binary or non-UTF-8 files, returns `ok=false` with `binary or non-UTF-8 file: <path>`.
 
-### 例
+### Example
 
 ```json
 {"name":"fs_read","arguments":{"path":"./Cargo.toml","limit":1024}}
@@ -90,62 +90,62 @@ UTF-8 のテキストファイルを読み取ります。
 
 ## `fs_write`
 
-UTF-8 のテキストをファイルに書き込みます。
+Writes UTF-8 text to a file.
 
-### 引数
+### Arguments
 
-| キー | 型 | 必須 | 説明 |
-|------|----|------|------|
-| `path` | string | ✓ | 書き込み先 |
-| `content` | string | ✓ | 書き込む内容 |
-| `overwrite` | bool | — | `false`（既定）の場合、既存ファイルがあると `ok=false` |
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `path` | string | Yes | Destination path |
+| `content` | string | Yes | Content to write |
+| `overwrite` | bool | -- | When `false` (default), returns `ok=false` if the file already exists |
 
-### 戻り値
+### Return Value
 
-`ok=true` の場合、`content` に `wrote <path>` を返します。
+On `ok=true`, returns `wrote <path>` in `content`.
 
-### 注意
+### Notes
 
-- 親ディレクトリは自動作成します（`mkdir -p`）。
-- 既定で上書き拒否のため、AI が誤って既存ファイルを潰す事故を防げます。
-- バイナリ書き込みには対応していません。
+- Parent directories are created automatically (`mkdir -p`).
+- Overwrite is denied by default, preventing the AI from accidentally clobbering existing files.
+- Binary writes are not supported.
 
 ## `send_to`
 
-別プロセスのエージェント（ピア）へプロンプトを送信します。
+Sends a prompt to an agent in another process (a peer).
 
-### 引数
+### Arguments
 
-| キー | 型 | 必須 | 説明 |
-|------|----|------|------|
-| `peer` | string | ✓ | 宛先 agent-id または表示名 |
-| `text` | string | ✓ | 送信するプロンプト |
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `peer` | string | Yes | Destination agent-id or display name |
+| `text` | string | Yes | Prompt to send |
 
-### 戻り値
+### Return Value
 
-成功時 `content` に `delivered to <agent-id>`。失敗時はエラーメッセージ（`peer not found by id or name: ...` など）。
+On success, returns `delivered to <agent-id>` in `content`. On failure, returns an error message (e.g., `peer not found by id or name: ...`).
 
-### 例
+### Example
 
 ```json
-{"name":"send_to","arguments":{"peer":"alice","text":"レビューお願いします"}}
+{"name":"send_to","arguments":{"peer":"alice","text":"Please review this"}}
 ```
 
-### 注意
+### Notes
 
-- 宛先解決は `registry_dir` 配下の `<agent-id>.json` を走査して行います。
-- 同期型（応答待ち）ではなく、Ack を受領した時点で成功扱いとなります。
-- 受信側のエージェントには `[peer prompt from <agent-id>]` プレフィックスが付与されたうえで、ユーザー入力相当として AI に渡ります。
+- Destination resolution scans `<agent-id>.json` files under `registry_dir`.
+- This is asynchronous (it does not wait for a response); success is acknowledged upon receipt of the Ack.
+- On the receiving agent side, the prompt is prefixed with `[peer prompt from <agent-id>]` and passed to the AI as user input.
 
-## ツール無効化と権限制御
+## Tool Disabling and Permission Control
 
-設定／ペルソナでの優先順位：
+Priority order in config/persona:
 
 ```text
-[tools] enabled の集合
-  ∩ persona.allowed_tools が指定されていればそれ
-  ＼ persona.denied_tools が指定されていればそれ
-= 当該エージェントで利用可能なツール
+[tools] enabled set
+  ∩ persona.allowed_tools if specified
+  \ persona.denied_tools if specified
+= tools available to the agent
 ```
 
-REPL コマンド `/tools` で現在のセットが確認できます。
+The current tool set can be checked with the REPL command `/tools`.

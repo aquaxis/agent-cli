@@ -1,24 +1,24 @@
-# トラブルシューティング（`troubleshooting.md`）
+# Troubleshooting (`troubleshooting.md`)
 
-困ったときに最初に試すコマンドは `agent-cli doctor` と `agent-cli selftest` です。
+The first commands to try when something goes wrong are `agent-cli doctor` and `agent-cli selftest`.
 
-## API キー関連
+## API Key Issues
 
-### 起動直後に `env var ANTHROPIC_API_KEY not set` などで終了する
+### Exiting immediately with `env var ANTHROPIC_API_KEY not set`
 
-- 設定の `api_key_env` で指定された環境変数が未設定です。
-- `export ANTHROPIC_API_KEY=...` してから再実行してください。
-- `direnv` 利用時は `.envrc` の `direnv allow` 状態を確認。
+- The environment variable specified by `api_key_env` in your config is not set.
+- Run `export ANTHROPIC_API_KEY=...` and try again.
+- If using `direnv`, check that `.envrc` has been `direnv allow`ed.
 
-### `HTTP 401: ...` が応答する
+### Getting `HTTP 401: ...` responses
 
-- API キーが失効／無効、または別アカウントのキーを使っている可能性。
-- `agent-cli doctor` の `provider conn` ステップで再現します。
-- 公式コンソールでキーの有効性を確認してください。
+- The API key may be expired, invalid, or from a different account.
+- Reproduce with `agent-cli doctor` in the `provider conn` step.
+- Verify the key's validity in the provider's console.
 
-### `HTTP 400 Bad Request` ＋ `Your credit balance is too low ...` が応答する（Claude）
+### Getting `HTTP 400 Bad Request` + `Your credit balance is too low ...` (Claude)
 
-Anthropic Claude バックエンド利用時に下記のような多行メッセージが出るケース：
+When using the Anthropic Claude backend, you may see a multi-line message like this:
 
 ```
 [error] provider error (claude): HTTP 400 Bad Request
@@ -26,196 +26,196 @@ Anthropic Claude バックエンド利用時に下記のような多行メッセ
   config     : /home/hidemi/.config/agent-cli/config.toml
   api_key_env: ANTHROPIC_API_KEY (sk-a...nQAA)
   detail     : {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."},...}
-  hint       : Anthropic アカウントのクレジット残高が不足しています。https://console.anthropic.com/settings/billing で確認・購入するか、別アカウントの API キーを `api_key_env` の指す環境変数に設定してください。
+  hint       : Your Anthropic account credit balance is insufficient. Visit https://console.anthropic.com/settings/billing to check/purchase credits, or set a different account's API key in the environment variable referenced by `api_key_env`.
 ```
 
-- **直接原因はアカウントのクレジット残高不足**です（HTTP 400 ＋ `invalid_request_error` の応答パターン）。API キー認証自体は通過しています（無効なら HTTP 401 が返ります）。
-- 対処：
-  1. https://console.anthropic.com/settings/billing でクレジットを購入／自動チャージを有効化。
-  2. または別アカウントのキーを `api_key_env` で指定された環境変数に設定し直す。
-  3. 暫定回避として `provider.kind = "ollama"` などへ切替（設定ファイルを編集後 `agent-cli` を再起動）。
-- 表示される `config` 行は **実際に読み込まれた設定ファイルの解決済みパス**です。`~/.local/config/...` と `~/.config/...` などのタイポを防ぐため、迷ったら `agent-cli config path` でも確認できます。
-- `api_key_env` 行に表示される `(sk-a...nQAA)` は環境変数値の先頭 4 文字＋末尾 4 文字のマスクです。期待しているキーと一致しない場合は別のキーが渡されています。
+- **The direct cause is insufficient account credit** (HTTP 400 + `invalid_request_error` response pattern). API key authentication itself succeeded (an invalid key would return HTTP 401).
+- Workarounds:
+  1. Visit https://console.anthropic.com/settings/billing to purchase credits or enable auto-recharge.
+  2. Or set a different account's API key in the environment variable referenced by `api_key_env`.
+  3. As a temporary workaround, switch to `provider.kind = "ollama"` or another backend (edit the config file and restart `agent-cli`).
+- The `config` line shown is the **resolved path of the actually loaded config file**. If you're unsure whether `~/.local/config/...` or `~/.config/...` is being used, check with `agent-cli config path`.
+- The `(sk-a...nQAA)` shown on the `api_key_env` line is a masked version showing the first 4 and last 4 characters of the environment variable value. If it doesn't match the key you expect, a different key is being passed.
 
-### `HTTP 429: ...` が応答する
+### Getting `HTTP 429: ...` responses
 
-- レート制限。短時間で大量のリクエストを発行していないか確認してください。
-- `[tools.shell] timeout_secs` を長めにとっておくと、長時間処理中の再試行で過剰なリクエストを抑えられます。
+- Rate limiting. Check whether you're sending a large number of requests in a short time.
+- Increasing `[tools.shell] timeout_secs` can reduce excessive retries during long-running operations.
 
-### どの設定ファイルが読まれているか分からない
+### Not sure which config file is being used
 
-- `agent-cli config path` で実際に解決される設定ファイルパスを表示します。
-- 解決順序：`--config <path>` → `AGENT_CLI_CONFIG` 環境変数 → 既定パス（`$XDG_CONFIG_HOME/agent-cli/config.toml`、未設定時は `~/.config/agent-cli/config.toml`）。
-- プロバイダ HTTP エラー時のメッセージにも `config` 行として実際のパスが表示されるので、`agent-cli config path` の出力と突き合わせると想定外のファイルが採用されていないかを即時確認できます。
+- `agent-cli config path` prints the resolved config file path.
+- Resolution order: `--config <path>` → `AGENT_CLI_CONFIG` env var → default path (`$XDG_CONFIG_HOME/agent-cli/config.toml`, or `~/.config/agent-cli/config.toml` if unset).
+- Provider HTTP error messages also include the resolved `config` line, so you can cross-check with `agent-cli config path` output to catch unexpected file usage.
 
-## Ollama / llama.cpp 関連
+## Ollama / llama.cpp Issues
 
-### `provider conn : FAIL (...)` が `doctor` に出る
+### `provider conn : FAIL (...)` in `doctor` output
 
-- ローカルサーバーが停止している／別ポートで起動している可能性。
-- 確認：
+- The local server may be down or running on a different port.
+- Verify:
   ```bash
   curl -s http://127.0.0.1:11434/api/tags    # ollama
   curl -s http://127.0.0.1:8080/v1/models    # llama.cpp
   ```
-- 設定の `base_url` を実環境に合わせてください。
+- Update `base_url` in your config to match the actual server.
 
-### `glm-5.1:cloud` が見つからない
+### `glm-5.1:cloud` not found
 
-- Ollama の cloud モデルが手元の環境で利用できない場合があります。
-- `ollama list` でローカルにあるモデル名を確認し、`--model <existing>` で起動できます。
+- Cloud models in Ollama may not be available in your local environment.
+- Run `ollama list` to see available model names, and start with `--model <existing>`.
 
-## レジストリ／IPC 関連
+## Registry / IPC Issues
 
-### `/list` に他プロセスが現れない
+### Other processes don't appear in `/list`
 
-- 双方の `[runtime] registry_dir` が異なる可能性が高いです。
-- `agent-cli config show` で確認し、`registry_dir` を共有して再起動してください。
+- Most likely, the two processes have different `[runtime] registry_dir` settings.
+- Check both with `agent-cli config show` and share the same `registry_dir`, then restart.
 
-### 古いソケット／JSON が残る
+### Stale sockets / JSON files remaining
 
-- 通常はプロセス終了時に自動削除されます。`/quit`／`/exit`／`Ctrl+D`／`Ctrl+C`（SIGINT）／`SIGTERM` のいずれの経路でも `IpcServer`／`RegistryHandle` の `Drop` 実装が socket と meta JSON を削除するため、残骸はほぼ発生しません。
-- 例外：`SIGKILL`（`kill -9`）や プロセスのパニック途中で OS 強制終了された場合は残ることがあります。
-- `agent-cli list` を実行すると stale エントリ（PID 不在 or socket 不在）を自動掃除します。
-- 手動掃除する場合：
+- Normally these are cleaned up automatically on process exit. Any of `/quit` / `/exit` / `Ctrl+D` / `Ctrl+C` (SIGINT) / `SIGTERM` triggers `IpcServer` and `RegistryHandle` `Drop` implementations that delete the socket and meta JSON, so leftovers are rare.
+- Exception: `SIGKILL` (`kill -9`) or an OS force-kill during a panic may leave remnants.
+- Running `agent-cli list` automatically cleans up stale entries (missing PID or missing socket).
+- Manual cleanup:
   ```bash
   rm /tmp/agent-cli/*.sock /tmp/agent-cli/*.json
   ```
 
 ### `bind ... failed: Permission denied`
 
-- `registry_dir` の権限不足。`mkdir -p` で作成した上で `chmod 0700` を確認してください。
-- root で動かしたソケットが残っている場合、所有権の問題が起きます。掃除して再作成してください。
+- Insufficient permissions on `registry_dir`. Create it with `mkdir -p` and verify `chmod 0700`.
+- If a socket was created by root, ownership issues can occur. Clean up and recreate.
 
-## REPL 関連
+## REPL Issues
 
-### `/quit` または `/exit` で終わらない
+### `/quit` or `/exit` doesn't terminate
 
-- 旧バージョンの不具合で、現行版（T-504 修正後）では `/quit`／`/exit` のいずれも 1 秒以内に確実に終了します。
-- もし古いバイナリで終わらない場合は、`Ctrl+C`（SIGINT）または `Ctrl+\`（SIGQUIT）で強制終了したのち、最新版へアップデートしてください。
+- This was a bug in older versions. The current version (fixed in T-504) reliably exits within 1 second via either `/quit` or `/exit`.
+- If you're running an older binary that won't exit, use `Ctrl+C` (SIGINT) or `Ctrl+\` (SIGQUIT) to force-quit, then update to the latest version.
 
-### `Ctrl+D` で終わらない
+### `Ctrl+D` doesn't exit
 
-- 同じく旧バージョンの不具合（T-504）。現行版では EOF 検出 → shutdown チャネル → 各タスク abort → ファイル削除 → `std::process::exit(0)` まで自動で進みます。
+- Same issue as above (T-504). In the current version, EOF detection triggers the shutdown channel, which aborts all tasks, deletes files, and calls `std::process::exit(0)`.
 
-### 応答後に次のプロンプトが表示されない／応答が前のプロンプトと混じる
+### Next prompt doesn't appear after a response / response mixes with previous prompt
 
-- T-505 で実装したプロンプト同期（`PromptState::Pending → Ready`）により、応答完了（`AgentEvent::Done`）まで次のプロンプトは描画されません。
-- もし症状が出る場合は、`provider.complete_stream` の失敗時にも `Done` を必ず emit する仕組み（agent.rs）が動いているか確認。エラー時もエラーメッセージ → `Done` → 新プロンプトの順で描画されます。
+- T-505 implemented prompt synchronization (`PromptState::Pending → Ready`), which ensures the next prompt is not drawn until the response completes (`AgentEvent::Done`).
+- If symptoms persist, verify that the mechanism that always emits `Done` even on `provider.complete_stream` failure (in `agent.rs`) is working. On errors, the sequence is: error message → `Done` → new prompt.
 
-### 承認 `y` が次のユーザー入力として消費される（旧不具合）
+### Approval `y` being consumed as the next user input (old bug)
 
-- T-506 で承認チャネル経由（`mpsc::Sender<ApprovalRequest>` + `oneshot::Sender<bool>`）に置き換え、`std::io::stdin` 直読みを排除済。旧バイナリでは発生しましたが、現行版では発生しません。
-- 承認画面では `[tool approval] <tool> <args>` と `approve? [y/N]: ` が表示されます。`y`／`yes` のみ承認、それ以外（空入力／別単語）は拒否扱いです。
+- T-506 replaced direct `std::io::stdin` reads with the approval channel (`mpsc::Sender<ApprovalRequest>` + `oneshot::Sender<bool>`). This bug no longer occurs in the current version.
+- The approval screen shows `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted as approval; anything else (blank input, other words) counts as denial.
 
-### 毎回承認するのが面倒
+### Tired of approving every time
 
-- セッション中は `/auto on` で承認スキップに切替（`/auto off` で復帰、`/auto status` で現在値表示）。
-- 永続化したい場合は設定ファイルに `[runtime] auto_approve_tools = true`、または起動時に `--auto-approve-tools`。
+- During a session, switch to skip mode with `/auto on` (`/auto off` to return, `/auto status` to check).
+- To persist, add `[runtime] auto_approve_tools = true` to the config file, or use `--auto-approve-tools` at startup.
 
-### `[thinking]` で画面が埋まる（特に `glm-5.1:cloud`）
+### Screen filled with `[thinking]` output (especially with `glm-5.1:cloud`)
 
-`glm-5.1:cloud` のような長尺 reasoning モデルは応答前に大量の thinking トークンを返します。agent-cli はこれを `[thinking] <text>` で逐次表示するため、ターミナルが thinking 行で埋め尽くされて本文の応答が見えにくくなることがあります。
+Long-reasoning models like `glm-5.1:cloud` emit large amounts of thinking tokens before the response body. agent-cli renders these as `[thinking] <text>` lines, which can fill the terminal and make the actual response hard to see.
 
-対処：`~/.config/agent-cli/config.toml` の `[ui] show_thinking` を変更して `agent-cli` を再起動してください。
+Workaround: change `[ui] show_thinking` in `~/.config/agent-cli/config.toml` and restart `agent-cli`.
 
-| 値 | 挙動 | 推奨 |
-|----|------|------|
-| `"hidden"` | `[thinking]` を一切表示しない | thinking が不要、応答だけ見たい場合 |
-| `"collapsed"`（既定） | 各 delta を「先頭 80 文字 + `...`」の 1 行に切り詰め | thinking の存在は確認したいが詳細は不要 |
-| `"expanded"` | 全文表示（修正前の挙動） | デバッグ・推論過程を全部見たい場合 |
+| Value | Behavior | Recommended when |
+|-------|----------|------------------|
+| `"hidden"` | Never print `[thinking]` lines | You don't need thinking, just the response |
+| `"collapsed"` (default) | Truncate each delta to "first 80 chars + `...`" on one line | You want to see that thinking happened but don't need details |
+| `"expanded"` | Full text (previous behavior) | Debugging or you want the full reasoning trace |
 
-設定変更後の反映には `agent-cli` 再起動が必要です（実行時切替は未対応）。実装と仕様の詳細は [`doc/config.md`](config.md) の「UI 表示モード」節、関連コードは `src/app.rs::display_event` および `src/config.rs::ShowThinkingMode`。
+Changes require `agent-cli` restart (runtime toggling is not supported). See [`doc/config.md`](config.md) "UI display modes" for implementation details, and `src/app.rs::display_event` / `src/config.rs::ShowThinkingMode` for the code.
 
-### `[info] max tool-use iterations reached` と表示される
+### When `[info] max tool-use iterations reached` appears
 
-| 項目 | 内容 |
-|------|------|
-| 種別 | `AgentEvent::Info`（情報通知。エラーではない） |
-| 発生条件 | 1 回のユーザー入力に対して、AI が tool_use → ツール結果 → tool_use … を繰り返し、`[runtime] max_tool_iterations` 回（既定 24）に達した |
-| 直後の挙動 | 当該ターンを `Done` で終了。次のユーザー入力プロンプト `> ` が再描画される（FR-03-2） |
-| 影響 | エラーログ／監視警報には残らない（`[error]` ではなく `[info]` チャネル）。会話履歴は保持される |
+| Item | Description |
+|------|-------------|
+| Type | `AgentEvent::Info` (informational; not an error) |
+| Trigger | The AI cycles through `tool_use → tool result → tool_use → ...` for a single user input and reaches the `[runtime] max_tool_iterations` cap (default 24) |
+| What happens next | The turn ends with `Done`; the next user prompt `> ` is redrawn (FR-03-2) |
+| Impact | Not written to error logs or monitoring alerts (`[info]` channel, not `[error]`). Conversation history is preserved |
 
-意味：AI が「ツール結果を踏まえて続報 → さらに別のツール呼び出し → さらに続報 …」を上限回数に渡って続けても結論にたどり着かなかったことを示します。`agent.rs::process_turn` の `self.config.runtime.max_tool_iterations.max(1)` で守られた防護機構（無限ループ防止）です。
+Meaning: The AI kept calling tools iteratively without reaching a conclusion. This is a guard mechanism (`agent.rs::process_turn` applies `self.config.runtime.max_tool_iterations.max(1)`) to prevent infinite loops.
 
-ユーザー側の対処（推奨順）：
+User-side workarounds (in recommended order):
 
-1. **プロンプトを分割する**：1 リクエストでの目的を狭め、ステップを刻んで指示する。
-2. **意図を具体化する**：欲しい結果（ファイル・コマンド・出力例）を文中で明示する。AI がツールで「探索」し続けるのを抑止できる。
-3. **不要なツールを `denied_tools` で除外**：ペルソナファイルで `denied_tools: [fs_read, fs_write]` のように制限して、AI が無関係なツールに飛ばないようにする。
-4. **会話を一旦リセット**：`/clear` で履歴を初期化し、新しい指示で再試行する。
-5. **`[runtime] max_tool_iterations` を引き上げる**：設定ファイルで上限を変更（既定 24、最小 1、最大 `u32::MAX = 4,294,967,295`）。多段オーケストレーター用途なら 32／48、長尺自律実行なら 64-256 を目安に。変更は `agent-cli` 再起動で反映。詳細は [`doc/config.md`](config.md) の `[runtime]` 節参照。
+1. **Split the prompt**: Narrow the goal per request and give instructions step by step.
+2. **Be more specific**: State the desired result (file, command, output example) explicitly. This reduces the AI's tendency to keep "exploring" with tools.
+3. **Exclude unnecessary tools with `denied_tools`**: Add `denied_tools: [fs_read, fs_write]` in the persona file to prevent the AI from calling irrelevant tools.
+4. **Reset the conversation**: Run `/clear` to wipe history and retry with a fresh instruction.
+5. **Raise `[runtime] max_tool_iterations`**: Edit the config file to increase the cap (default 24, min 1, max `u32::MAX = 4,294,967,295`). For multi-step orchestrators, try 32/48; for long autonomous runs, 64-256. Changes take effect on `agent-cli` restart. See [`doc/config.md`](config.md) section `[runtime]` for details.
 
-## シェルツール関連
+## Shell Tool Issues
 
 ### `timed out after 60 seconds: ...`
 
-- 既定タイムアウトを超過。`[tools.shell] timeout_secs` を増やすか、AI に短いコマンドを指示してください。
+- The default timeout was exceeded. Increase `[tools.shell] timeout_secs` or instruct the AI to use shorter commands.
 
-### 出力末尾に `...[truncated]`
+### Output ending with `...[truncated]`
 
-- `max_output_kb`（既定 256KB）を超えた出力は切り詰めています。閾値を上げてください。
+- Output exceeded `max_output_kb` (default 256 KB) and was truncated. Increase the threshold.
 
 ### `tool_result ERR: spawn error: ...`
 
-- `bash` が見つからない／実行不可。`agent-cli doctor` の bash チェックでも検出できます。
-- Linux 以外では本アプリは未対応です。
+- `bash` was not found or is not executable. `agent-cli doctor` also detects this in its bash check.
+- This application only supports Linux.
 
-## ペルソナ関連
+## Persona Issues
 
-詳細な解決手順は [`doc/personas.md`](personas.md) §11「トラブルシューティング」を参照。
+For detailed troubleshooting, see [`doc/personas.md`](personas.md) section 11 "Troubleshooting".
 
-### 起動時に `persona file not found: ...`
+### `persona file not found: ...` at startup
 
-- `--persona` または `[runtime] persona_file` で指定したパスが存在しません。
-- 既定パス（`<agents_dir>/<name>.md`）の場合は黙って組み込み既定にフォールバックします。
+- The path specified via `--persona` or `[runtime] persona_file` does not exist.
+- The default path (`<agents_dir>/<name>.md`) silently falls back to the built-in default if the file is missing.
 
-### `role` が必須エラーになる
+### `role` is required error
 
-- ペルソナファイル先頭の YAML フロントマターに `role: ...` が無い／空です。
-- サンプル `example/agents/coder.md` を参考にしてください。
+- The YAML frontmatter at the top of the persona file is missing `role: ...` or has an empty value.
+- See the example in `example/agents/coder.md`.
 
-### `/reload-persona` が反映されない
+### `/reload-persona` doesn't seem to take effect
 
-- ペルソナファイルを編集していますか？ パスは `/persona` の `source` で確認できます。
-- 反映直後の応答からシステムプロンプトが切り替わります。
-- ただし `allowed_tools`／`denied_tools`／`model`／`temperature` の差し替えは現状再起動が必要です（システムプロンプトのみ即時反映）。
+- Did you edit the persona file? Check the path with `/persona`'s `source` line.
+- The system prompt changes in the next response after reload.
+- Note that `allowed_tools` / `denied_tools` / `model` / `temperature` changes currently require a restart; only the system prompt is updated immediately.
 
-## 設定ファイル関連
+## Config File Issues
 
 ### `error: config file not found: ...`
 
-- `--config` または `AGENT_CLI_CONFIG` で指定した明示パスが存在しないと自動生成しません。
-- 既定パス（`~/.config/agent-cli/config.toml`）を使うと自動生成されます。
+- An explicit path specified via `--config` or `AGENT_CLI_CONFIG` must exist; it will not be auto-generated.
+- The default path (`~/.config/agent-cli/config.toml`) is auto-generated on first run.
 
 ### `provider error (claude): [provider.claude] missing`
 
-- 設定ファイルに `[provider.claude]` セクションが無い／壊れている可能性。
-- `agent-cli config show` で TOML 構造を確認してください。
+- The config file may be missing or have a broken `[provider.claude]` section.
+- Check the TOML structure with `agent-cli config show`.
 
-## ビルド／インストール関連
+## Build / Install Issues
 
-### `cargo install` が `--locked` で失敗する
+### `cargo install` fails with `--locked`
 
-- リポジトリに `Cargo.lock` が無い場合に発生します。`install.sh` は自動的に `--locked` 抜きで再試行するので大半は問題ありません。
-- 手動で行う場合：
+- This occurs when `Cargo.lock` is not in the repository. `install.sh` automatically retries without `--locked`, so this is usually not a problem.
+- To install manually:
   ```bash
   cargo install --path . --root "$HOME/.local"
   ```
 
-### `install.sh` が `cargo is required but not found.`
+### `install.sh` says `cargo is required but not found.`
 
-- Rust ツールチェーンが入っていません。
+- The Rust toolchain is not installed.
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   source "$HOME/.cargo/env"
   ```
 
-## それでも解決しない場合
+## Still not resolved?
 
-1. `agent-cli doctor` の出力をすべてコピー
-2. `cargo --version`／`rustc --version` の情報
-3. 設定ファイル（API キーは伏せる）
-4. 直前のコマンドと表示メッセージ
+Please open an issue on the repository with:
 
-を添えて、リポジトリの Issue に報告してください。
+1. Full output of `agent-cli doctor`
+2. `cargo --version` and `rustc --version`
+3. Your config file (with API keys redacted)
+4. The command you ran and the error message you saw

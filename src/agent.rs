@@ -13,9 +13,9 @@ use crate::log::{ConversationLog, LogEvent};
 use crate::persona::Persona;
 use crate::tools::{ToolCtx, ToolRegistry};
 
-/// REPL 入力ループへ送る、ツール実行承認のリクエスト（FR-04-1／設計書 4.3A）。
+/// Tool execution approval request sent to the REPL input loop (FR-04-1 / design doc 4.3A).
 ///
-/// `agent` タスクは `response` の `oneshot::Sender` 経由でユーザーの y/N 応答を待つ。
+/// The `agent` task waits for the user's y/N response via `response` oneshot::Sender.
 pub struct ApprovalRequest {
     pub tool_name: String,
     pub args: Value,
@@ -31,8 +31,8 @@ pub enum AgentInput {
         text: String,
     },
     SetSystemPrompt(String),
-    /// 会話履歴を初期化する（システムプロンプトのみ残し、User/Assistant/ToolResult を全消去）。
-    /// REPL コマンド `/clear` から発行される。
+    /// Initialize conversation history (keep only system prompt, remove all User/Assistant/ToolResult).
+    /// Issued from the REPL command `/clear`.
     ClearHistory,
     Cancel,
 }
@@ -74,9 +74,9 @@ pub struct Agent {
     pub config: Config,
     pub registry_dir: std::path::PathBuf,
     pub log: Option<ConversationLog>,
-    /// `/auto` REPL コマンドで実行時切替されるため `Arc<AtomicBool>` で共有（FR-04-2）。
+    /// Shared via `Arc<AtomicBool>` for runtime toggle via `/auto` REPL command (FR-04-2).
     pub auto_approve: Arc<AtomicBool>,
-    /// 入力ループへ承認リクエストを流すチャネル。`None` の場合は承認できないので拒否扱い（FR-04-1）。
+    /// Channel to send approval requests to the input loop. `None` means approval is not possible, so deny (FR-04-1).
     pub approval_tx: Option<mpsc::Sender<ApprovalRequest>>,
     pub history: Vec<Message>,
 }
@@ -142,8 +142,8 @@ impl Agent {
                         .await;
                 }
                 AgentInput::ClearHistory => {
-                    // 現在のペルソナから初期履歴（System のみ）を再構築する。
-                    // ペルソナを差し替えたい場合は別途 SetSystemPrompt を組み合わせること。
+                    // Rebuild initial history (System only) from the current persona.
+                    // To replace the persona, use SetSystemPrompt separately.
                     let removed = self
                         .history
                         .iter()
@@ -190,8 +190,8 @@ impl Agent {
                             message: e.to_string(),
                         })
                         .await;
-                    // FR-03-2：エラー終了でも 1 ターン分の `Done` を必ず発行し、
-                    // REPL 入力ループが Pending のまま固まらないようにする。
+                    // FR-03-2: Always emit a `Done` even on error, so the REPL input
+                    // loop does not get stuck in Pending state.
                     let _ = event_tx.send(AgentEvent::Done).await;
                     return Ok(());
                 }
@@ -246,7 +246,7 @@ impl Agent {
                 return Ok(());
             }
 
-            // ツール実行
+            // Tool execution
             let ctx = ToolCtx {
                 self_id: self.id.clone(),
                 registry_dir: self.registry_dir.clone(),
@@ -327,7 +327,7 @@ impl Agent {
                     is_error: !result.ok,
                 });
             }
-            // ツール結果を踏まえて再度プロバイダ呼び出し
+            // Call provider again with tool results
         }
         let _ = event_tx
             .send(AgentEvent::Info {
@@ -339,14 +339,14 @@ impl Agent {
     }
 }
 
-/// REPL 入力ループへ承認リクエストを送って応答を待つ（FR-04-1／設計書 4.3A）。
+/// Send an approval request to the REPL input loop and wait for a response (FR-04-1 / design doc 4.3A).
 ///
-/// - `approval_tx` が `None`（テストや承認ハンドラ未接続時）：安全側で `false` を返す。
-/// - 送信失敗（入力ループ終了済み）：`false`。
-/// - oneshot 受信失敗（入力ループが状態を破棄）：`false`。
+/// - `approval_tx` is `None` (tests or no approval handler connected): return `false` for safety.
+/// - Send fails (input loop already terminated): `false`.
+/// - oneshot receive fails (input loop discarded state): `false`.
 ///
-/// 旧実装の `std::io::stdin().read_line()` 直読みは禁止（tokio 側の stdin reader と
-/// stdin を奪い合い、承認 `y` 入力が取り違えられる事象が報告された）。
+/// Direct `std::io::stdin().read_line()` is prohibited because it competes with tokio's
+/// stdin reader, causing the approval `y` input to be misattributed.
 async fn request_approval(
     approval_tx: Option<&mpsc::Sender<ApprovalRequest>>,
     tool_name: String,
@@ -441,8 +441,8 @@ mod tests {
 
     #[tokio::test]
     async fn agent_completes_tool_use_cycle_with_shell() {
-        // 1 ターン目: shell ツール呼び出しを要求
-        // 2 ターン目: ツール結果を反映してテキストで終了
+        // Turn 1: request a shell tool call
+        // Turn 2: reflect tool result and finish with text
         let scripts = vec![
             vec![
                 ProviderEvent::ToolUse {
@@ -503,13 +503,13 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-3／設計書 4.3B：tool_use ループが `max_tool_iterations` に達したとき、
-    /// `AgentEvent::Info { message: "max tool-use iterations reached" }` と
-    /// `AgentEvent::Done` がこの順で発行され、`AgentEvent::Error` は発行されないことを検証。
-    /// 既定値（24）は遅いため、テスト用に `max_tool_iterations = 4` へ上書き。
+    /// FR-04-3 / design doc 4.3B: Verify that when the tool_use loop reaches `max_tool_iterations`,
+    /// `AgentEvent::Info { message: "max tool-use iterations reached" }` and
+    /// `AgentEvent::Done` are emitted in that order, and `AgentEvent::Error` is not emitted.
+    /// Default (24) is too slow, so override to `max_tool_iterations = 4` for this test.
     #[tokio::test]
     async fn agent_emits_max_tool_iterations_info_when_loop_caps() {
-        // 5 個用意するが、process_turn は 4 反復で打ち切る（5 個目は呼び出されない）。
+        // Prepare 5 scripts, but process_turn caps at 4 iterations (5th is never called).
         let mut scripts = Vec::new();
         for i in 0..5 {
             scripts.push(vec![
@@ -570,8 +570,8 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-3 境界値（下限）：`max_tool_iterations = 0` は `.max(1)` により 1 反復として動作。
-    /// 1 反復で tool_use が emit されるとループが続行できないため Info ＋ Done が即発行される。
+    /// FR-04-3 boundary (lower limit): `max_tool_iterations = 0` is clamped to 1 iteration by `.max(1)`.
+    /// With 1 iteration, emitting a tool_use means the loop cannot continue, so Info + Done fire immediately.
     #[tokio::test]
     async fn agent_clamps_zero_max_tool_iterations_to_one() {
         let scripts = vec![
@@ -583,12 +583,12 @@ mod tests {
                 },
                 ProviderEvent::Done,
             ],
-            // 2 個目以降は呼ばれない（1 反復で打ち切られるため）。
+            // Second script onward is never called (capped at 1 iteration).
             vec![ProviderEvent::Done],
         ];
         let history = Agent::build_initial_history(&Persona::builtin_default());
         let mut agent = build_test_agent(scripts, history);
-        agent.config.runtime.max_tool_iterations = 0; // .max(1) で 1 へ丸め込み
+        agent.config.runtime.max_tool_iterations = 0; // clamped to 1 via .max(1)
         let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
         let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
 
@@ -638,7 +638,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Info 通知を 1 件受け取って終了
+        // Receive one Info notification and finish
         let mut got_info = false;
         if let Some(AgentEvent::Info { message }) = ev_rx.recv().await {
             got_info = message.contains("system prompt");
@@ -649,10 +649,10 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// `/clear` から発行される `ClearHistory` で、履歴がペルソナ由来の System のみに戻る。
+    /// `ClearHistory` issued from `/clear` resets history to the persona-derived System message only.
     #[tokio::test]
     async fn clear_history_resets_to_system_only() {
-        // 1 ターン目で text を返すスクリプトを 1 つ用意（次のターンは消費されない）
+        // Prepare 1 script that returns text on turn 1 (next turn is not consumed)
         let scripts = vec![vec![
             ProviderEvent::Text { delta: "hi".into() },
             ProviderEvent::Done,
@@ -662,17 +662,17 @@ mod tests {
         let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
         let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
 
-        // Agent への可視内部状態をスパイするため、process_turn 後の history を確認する
-        // 経路がないので、ここでは Info メッセージ内の "0 message(s) removed"／"2 message(s) removed"
-        // の差分で間接的に検証する。
+        // There is no way to inspect Agent's internal history after process_turn,
+        // so we indirectly verify via the Info message count difference
+        // ("0 message(s) removed" vs "2 message(s) removed").
         let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
 
-        // 1 ターン目：UserPrompt → Assistant text → Done を消費
+        // Turn 1: consume UserPrompt -> Assistant text -> Done
         in_tx
             .send(AgentInput::UserPrompt("first".into()))
             .await
             .unwrap();
-        // text と Done を消化
+        // Consume text and Done
         let mut saw_done = false;
         while let Some(ev) = ev_rx.recv().await {
             if matches!(ev, AgentEvent::Done) {
@@ -682,7 +682,7 @@ mod tests {
         }
         assert!(saw_done);
 
-        // この時点で history = [System, User("first"), Assistant("hi")]（3 件のうち System 以外 2 件）。
+        // At this point history = [System, User("first"), Assistant("hi")] (2 non-System out of 3).
         in_tx.send(AgentInput::ClearHistory).await.unwrap();
         let info = ev_rx.recv().await.expect("info expected");
         match info {
@@ -703,8 +703,8 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// `ClearHistory` 直後の履歴は System 1 件のみで、ペルソナ系統が保持されている。
-    /// （続くターンが「最初のターンと同じ」状態から始まることを担保。）
+    /// After `ClearHistory`, history contains only the System message and the persona lineage is preserved.
+    /// (Ensures the next turn starts from the same state as the very first turn.)
     #[tokio::test]
     async fn clear_history_then_next_prompt_starts_fresh() {
         let scripts = vec![
@@ -728,7 +728,7 @@ mod tests {
 
         let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
 
-        // 1 ターン目 → Done
+        // Turn 1 -> Done
         in_tx
             .send(AgentInput::UserPrompt("first".into()))
             .await
@@ -739,11 +739,11 @@ mod tests {
             }
         }
 
-        // 履歴クリア → Info を読み流す
+        // Clear history -> consume and discard Info
         in_tx.send(AgentInput::ClearHistory).await.unwrap();
         let _ = ev_rx.recv().await;
 
-        // 2 ターン目もスクリプトに用意した通り text → Done が再度発火する
+        // Turn 2 also fires text -> Done as prepared in the script
         in_tx
             .send(AgentInput::UserPrompt("second".into()))
             .await
@@ -767,7 +767,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-1：approval_tx 経由で承認 `true` が返れば、ツールが実行されその結果が反映される。
+    /// FR-04-1: When approval `true` is returned via approval_tx, the tool is executed and its result is reflected.
     #[tokio::test]
     async fn approval_channel_grants_tool_execution() {
         let scripts = vec![
@@ -788,7 +788,7 @@ mod tests {
         ];
         let history = Agent::build_initial_history(&Persona::builtin_default());
         let mut agent = build_test_agent(scripts, history);
-        // auto_approve を OFF にして承認チャネルを必須化
+        // Disable auto_approve to require the approval channel
         agent.auto_approve = Arc::new(AtomicBool::new(false));
         let (approval_tx, mut approval_rx) = mpsc::channel::<ApprovalRequest>(4);
         agent.approval_tx = Some(approval_tx);
@@ -796,7 +796,7 @@ mod tests {
         let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
         let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
 
-        // 承認リクエストに対して y（true）を返す擬似ハンドラ
+        // Stub handler that returns y (true) for approval requests
         tokio::spawn(async move {
             while let Some(req) = approval_rx.recv().await {
                 let _ = req.response.send(true);
@@ -839,7 +839,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-1：承認 `false` が返ればツールは実行されず "user denied tool execution" が返る。
+    /// FR-04-1: When approval `false` is returned, the tool is not executed and "user denied tool execution" is returned.
     #[tokio::test]
     async fn approval_channel_denial_skips_tool() {
         let scripts = vec![
@@ -898,7 +898,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-2：`auto_approve = true` のとき、approval_tx を経由せず即実行される。
+    /// FR-04-2: When `auto_approve = true`, execution proceeds immediately without going through approval_tx.
     #[tokio::test]
     async fn auto_approve_atomic_skips_approval_channel() {
         let scripts = vec![
@@ -914,7 +914,7 @@ mod tests {
         ];
         let history = Agent::build_initial_history(&Persona::builtin_default());
         let mut agent = build_test_agent(scripts, history);
-        // auto_approve は build_test_agent の既定で true なので明示しないが、念のため
+        // auto_approve defaults to true in build_test_agent, but make it explicit
         agent.auto_approve.store(true, Ordering::SeqCst);
         let (approval_tx, mut approval_rx) = mpsc::channel::<ApprovalRequest>(4);
         agent.approval_tx = Some(approval_tx);
@@ -928,7 +928,7 @@ mod tests {
             .await
             .unwrap();
 
-        // ツール実行が approval を経由していないことを確認
+        // Verify tool execution did not go through approval
         let mut tool_ok = false;
         let mut saw_done = false;
         while let Some(ev) = ev_rx.recv().await {
@@ -945,7 +945,7 @@ mod tests {
         }
         assert!(tool_ok);
         assert!(saw_done);
-        // approval_rx に何も来ていない
+        // Nothing arrived on approval_rx
         assert!(
             approval_rx.try_recv().is_err(),
             "approval channel should not be invoked when auto_approve=true"

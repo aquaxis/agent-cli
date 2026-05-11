@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use crate::ai::ToolSpec;
 
-/// Anthropic 形式のツール定義（input_schema）に変換。
+/// Convert to Anthropic-style tool definition (input_schema).
 pub fn to_anthropic_tools(tools: &[ToolSpec]) -> Vec<Value> {
     tools
         .iter()
@@ -16,7 +16,7 @@ pub fn to_anthropic_tools(tools: &[ToolSpec]) -> Vec<Value> {
         .collect()
 }
 
-/// OpenAI 互換のツール定義（function calling）に変換。
+/// Convert to OpenAI-compatible tool definition (function calling).
 pub fn to_openai_tools(tools: &[ToolSpec]) -> Vec<Value> {
     tools
         .iter()
@@ -33,7 +33,7 @@ pub fn to_openai_tools(tools: &[ToolSpec]) -> Vec<Value> {
         .collect()
 }
 
-/// Ollama `/api/chat` のツール定義は OpenAI 形式とほぼ同一。
+/// Ollama `/api/chat` tool definitions are nearly identical to the OpenAI format.
 pub fn to_ollama_tools(tools: &[ToolSpec]) -> Vec<Value> {
     to_openai_tools(tools)
 }
