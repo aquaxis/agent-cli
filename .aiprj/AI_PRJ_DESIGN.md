@@ -1,188 +1,215 @@
 # Design Document (AI_PRJ_DESIGN)
 
-This document is the design document for the conversion work required to satisfy the conversion requirements in `AI_PRJ_REQUIREMENTS.md`. It does not describe software design; rather, it defines "how to convert" and "how to ensure quality."
+This document describes the design for modifying the "[thinking]" display to show the label only at the start of thinking and adding an "[answer]" label, as required by `AI_PRJ_REQUIREMENTS.md`.
 
-## 1. Conversion Scope
+## 1. Design Scope
 
 ### 1.1 In Scope
 
-- Detect Japanese text (hiragana, katakana, kanji, full-width symbols) in all files in the repository and convert it to equivalent English text.
-- Detect full-width alphanumeric characters and full-width symbols in all files in the repository and convert them to their corresponding half-width characters.
-- Conversion target files are classified into the following categories (Requirements Section 3.4).
-
-| Category | Files | Conversion Policy |
-|----------|-------|-------------------|
-| Documentation | `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `doc/*.md`, `example/agents/*.md`, `report_cli.md` | Convert entire body text to English + convert full-width to half-width |
-| Source code | `src/**/*.rs` | Convert only comments, doc comments, and user-facing messages to English |
-| Project management | `.aiprj/AI_PRJ_REQUIREMENTS.md`, `.aiprj/AI_PRJ_DESIGN.md`, `.aiprj/AI_PRJ_TASKS.md` | Convert to English in the implementation phase |
-| Project management (other) | `.aiprj/README.md`, `.aiprj/rules/*.md` | Convert to English + convert full-width to half-width |
+- Modifying `display_event` to track thinking/answer phase state and print labels only once per turn.
+- Adding `[answer]` label output when the first `AgentEvent::Text` event is received.
+- Ensuring `[thinking]` label is printed only once at the start of the thinking phase.
+- Resetting state between turns.
 
 ### 1.2 Out of Scope
 
-- Logic changes to source code (Rust). Function names, variable names, and type names will not be changed.
-- Files in external directories such as `.git/`, `target/`, and `node_modules/`.
-- Binary files and image files.
-- `.aiprj/instructions.md` (already in English, so no conversion needed).
+- Modifying `--help` output or CLI argument handling.
+- Changing `show_thinking` configuration values or semantics.
+- Modifying provider implementations or `AgentEvent` enum variants.
+- Changing logging behavior.
 
-## 2. Conversion Policy
+## 2. Current Behavior
 
-### 2.1 English Conversion of Japanese Text (Requirement FR-01)
+### 2.1 Current `[thinking]` Display (Before Change)
 
-#### 2.1.1 Translation Principles
+In the current implementation (`src/app.rs`), every `AgentEvent::Thinking` event triggers a `eprintln!("\n[thinking] {text}")` (collapsed or expanded). This means `[thinking]` is printed on every thinking event, not just at the start.
 
-- **Context preservation**: Accurately reflect the Japanese context and intent in English. Produce natural English suitable for technical documentation rather than literal translations.
-- **Terminological consistency**: Use the same English translation for the same Japanese term. The primary terminology mapping is defined below.
+```rust
+AgentEvent::Thinking { text } => match show_thinking {
+    ShowThinkingMode::Hidden => {}
+    ShowThinkingMode::Collapsed => {
+        let collapsed = collapse_thinking_text(&text);
+        eprintln!("\n[thinking] {collapsed}");
+    }
+    ShowThinkingMode::Expanded => {
+        eprintln!("\n[thinking] {text}");
+    }
+},
+```
 
-| Japanese | English |
-|---------|---------|
-| Requirements | Requirements |
-| Design | Design |
-| Task | Task |
-| Agent | Agent |
-| Provider | Provider |
-| Tool | Tool |
-| Session | Session |
-| Streaming | Streaming |
-| Configuration | Configuration |
-| Command | Command |
-| Output | Output |
-| Input | Input |
-| Launch | Launch / Start |
-| Terminate | Terminate / Exit |
-| Approval | Approval |
-| Permission | Permission |
+### 2.2 Current Text Display (Before Change)
 
-- **Structure preservation**: Maintain heading levels, list structures, table structures, and code block boundaries.
-- **Information preservation**: Verify that no information is lost through translation.
+`AgentEvent::Text` events are printed to stdout with no label:
 
-#### 2.1.2 Category-Specific Policies
+```rust
+AgentEvent::Text { delta } => {
+    print!("{delta}");
+    let _ = std::io::stdout().flush();
+}
+```
 
-**Documentation files**:
-- Translate the entire body text to English.
-- Translate comments within code blocks to English as well.
-- Do not translate execution commands or code bodies within code blocks.
+There is no `[answer]` label anywhere in the codebase.
 
-**Source code files (Rust)**:
-- Translate `///` doc comments and `//` comments to English.
-- Translate user-facing messages (error messages, help text, etc.) among string literals to English.
-- Do not modify internal identifiers (function names, variable names, type names, module names).
-- Translate assertion messages in test code to English as well.
+### 2.3 Current State Management
 
-### 2.2 Half-Width Conversion of Full-Width Characters (Requirement FR-02)
+Currently, `display_event` is a pure function that takes `(AgentEvent, ShowThinkingMode)` with no state. There is no tracking of whether `[thinking]` or `[answer]` has been printed in the current turn.
 
-- Convert full-width alphanumeric characters (A-Z, a-z, 0-9) to their corresponding half-width alphanumeric characters (A-Z, a-z, 0-9).
-- Convert full-width symbols (_, -, (, ), ., ,, :, ;, etc.) to their corresponding half-width symbols.
-- Punctuation marks within Japanese text (. -> ., , -> ,) will be converted as part of the FR-01 translation.
-- Parts intentionally expressed in full-width (decorative separator lines, etc.) will be evaluated based on context and replaced with half-width characters as necessary.
+## 3. New Design
 
-### 2.3 Quality Assurance (Requirement FR-03)
+### 3.1 Phase State Tracking (Requirement FR-01, FR-02, FR-04)
 
-#### 2.3.1 Structural Integrity Check
+Introduce a `DisplayState` struct to track whether `[thinking]` and `[answer]` have been printed in the current turn:
 
-- Verify that heading levels (`#`, `##`, etc.) match before and after translation for each file.
-- Verify that the number of columns and rows in tables match.
-- Verify that code block boundaries (sections enclosed by ` ``` `) are maintained.
-- Verify that the URL portions of links (in `[text](url)` format) have not been changed.
+```rust
+struct DisplayState {
+    thinking_printed: bool,
+    answer_printed: bool,
+}
+```
 
-#### 2.3.2 Terminological Consistency Check
+This state will be initialized at the start of each turn (reset on `AgentEvent::Done`).
 
-- Verify that the same Japanese term is translated to the same English term across multiple files.
-- Verify consistency in the use of abbreviations (e.g., CLI, API, IPC, etc.).
+### 3.2 Modified `[thinking]` Display (Requirement FR-01, FR-03)
 
-#### 2.3.3 Behavioral Impact Check
+Change the thinking event handling to print `[thinking]` only once at the start:
 
-- For Rust source code translations, verify that changes to string literals do not affect compilation or tests.
-- Verify that `cargo build` and `cargo test` complete successfully after changes.
+**When `thinking_printed` is `false`** (first thinking event in a turn):
+- Print `\n[thinking] {text}` on stderr (collapsed or expanded depending on mode).
+- Set `thinking_printed = true`.
 
-## 3. Conversion Target File List
+**When `thinking_printed` is `true`** (subsequent thinking events):
+- For `Collapsed` mode: Do not print any additional output (the collapsed summary was already shown).
+- For `Expanded` mode: Continue appending thinking text to stderr, but without another `[thinking]` label.
 
-The following are files in the repository containing Japanese text (as of 2026-05-11).
+### 3.3 New `[answer]` Label (Requirement FR-02)
 
-### 3.1 Documentation Files
+Change the text event handling to print `[answer]` once at the start:
 
-| File | Conversion Content |
-|------|--------------------|
-| `README.md` | Convert entire body text to English + convert full-width to half-width |
-| `README.en.md` | Content consistency check only (already in English) |
-| `CHANGELOG.md` | Convert entire body text to English + convert full-width to half-width |
-| `CONTRIBUTING.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/architecture.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/config.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/personas.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/providers/claude.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/providers/codex.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/providers/llamacpp.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/providers/ollama.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/tools.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/troubleshooting.md` | Convert entire body text to English + convert full-width to half-width |
-| `doc/usage.md` | Convert entire body text to English + convert full-width to half-width |
-| `example/agents/coder.md` | Convert entire body text to English + convert full-width to half-width |
-| `example/agents/planner.md` | Convert entire body text to English + convert full-width to half-width |
-| `example/agents/reviewer.md` | Convert entire body text to English + convert full-width to half-width |
-| `report_cli.md` | Convert entire body text to English + convert full-width to half-width |
+**When `answer_printed` is `false`** (first text event in a turn):
+- Print `\n[answer]` on stderr.
+- Set `answer_printed = true`.
+- Then print the text delta to stdout as usual.
 
-### 3.2 Source Code Files
+**When `answer_printed` is `true`** (subsequent text events):
+- Print the text delta to stdout as usual (no additional `[answer]` label).
 
-| File | Conversion Content |
-|------|--------------------|
-| `src/agent.rs` | Comments and doc comments only |
-| `src/ai/claude.rs` | Comments and doc comments only |
-| `src/ai/codex.rs` | Comments and doc comments only |
-| `src/ai/llamacpp.rs` | Comments and doc comments only |
-| `src/ai/mod.rs` | Comments and doc comments only |
-| `src/ai/ollama.rs` | Comments and doc comments only |
-| `src/ai/stream.rs` | Comments and doc comments only |
-| `src/ai/tool_bridge.rs` | Comments and doc comments only |
-| `src/app.rs` | Comments and doc comments only |
-| `src/cli.rs` | Comments and doc comments only |
-| `src/commands.rs` | Comments and doc comments only |
-| `src/config.rs` | Comments and doc comments only |
-| `src/id.rs` | Comments and doc comments only |
-| `src/ipc/mod.rs` | Comments and doc comments only |
-| `src/ipc/registry.rs` | Comments and doc comments only |
-| `src/ipc/server.rs` | Comments and doc comments only |
-| `src/main.rs` | Comments and doc comments only |
-| `src/persona.rs` | Comments and doc comments only |
-| `src/tools/mod.rs` | Comments and doc comments only |
+### 3.4 State Reset (Requirement FR-04)
 
-### 3.3 Project Management Files
+On `AgentEvent::Done`, reset `DisplayState`:
 
-| File | Conversion Content |
-|------|--------------------|
-| `.aiprj/README.md` | Convert entire body text to English + convert full-width to half-width |
-| `.aiprj/rules/exec_job.md` | Convert entire body text to English + convert full-width to half-width |
-| `.aiprj/rules/update_project.md` | Convert entire body text to English + convert full-width to half-width |
-| `.aiprj/AI_PRJ_REQUIREMENTS.md` | Convert to English + convert full-width to half-width in the implementation phase |
-| `.aiprj/AI_PRJ_DESIGN.md` | Convert to English + convert full-width to half-width in the implementation phase |
-| `.aiprj/AI_PRJ_TASKS.md` | Convert to English + convert full-width to half-width in the implementation phase |
+```rust
+AgentEvent::Done => {
+    display_state.thinking_printed = false;
+    display_state.answer_printed = false;
+    println!();
+}
+```
 
-## 4. Tools Used for Conversion Work
+### 3.5 Configuration Method (Requirement FR-05)
 
-| Purpose | Tool |
-|---------|------|
-| Read files and verify content | Read |
-| Convert files (write) | Edit / Write |
-| Detect Japanese text | Bash (grep) |
-| Detect full-width characters | Bash (grep) |
-| Build and test Rust code | Bash (cargo build / cargo test) |
-| Progress management | TaskCreate (during implementation phase) |
+No code changes needed. The existing `[ui] show_thinking` in `config.toml` is the only configuration method. This is confirmed by investigation:
+- `src/cli.rs` has no `show_thinking` flag.
+- `src/config.rs` defines `show_thinking` under `UiConfig` with default `"collapsed"`.
+- Unknown values fall back to `Collapsed`.
 
-## 5. Risks and Countermeasures
+## 4. Implementation Details
 
-| Risk | Impact | Countermeasure |
-|------|--------|----------------|
-| Inconsistent translation quality | English translations vary by context | Ensure consistency using the terminology mapping (Section 2.1.1) |
-| Build errors due to string changes in Rust source code | Compilation failure | Run `cargo build` and `cargo test` after conversion to verify |
-| Markdown structural corruption | Reduced document readability | Verify heading levels, table structures, and code block boundaries before and after translation |
-| Missed full-width to half-width conversions | Remaining full-width characters | Re-run `grep` to detect full-width characters and verify |
-| Content divergence between `README.md` and `README.en.md` | Information inconsistency | Verify consistency with `README.en.md` after converting `README.md` to English |
+### 4.1 Modified Function Signature
 
-## 6. Handoff to Implementation Phase
+Change `display_event` from a pure function to a method that takes mutable state:
 
-Actions to take in the implementation phase (separate session):
+```rust
+fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut DisplayState)
+```
 
-1. Execute the tasks in `AI_PRJ_TASKS.md` in order, converting Japanese text to English and full-width characters to half-width in each file.
-2. Follow the file list in Section 3 and apply the category-specific conversion policies.
-3. Perform the quality checks in Section 2.3 after conversion.
-4. Append findings during progress to `.aiprj/AI_LOG/`.
-5. Finalize updates using `/close_ai` or similar upon completion.
+Or alternatively, keep `display_event` as-is and manage state at the call site. The call site in `src/app.rs` already has a loop processing events, so state can be managed there.
+
+### 4.2 Call Site Changes
+
+The call site in `src/app.rs` currently looks like:
+
+```rust
+let show_thinking = config.ui.show_thinking_mode();
+// ...
+display_event(ev, show_thinking);
+```
+
+After the change, it will need to create and manage `DisplayState`:
+
+```rust
+let show_thinking = config.ui.show_thinking_mode();
+let mut display_state = DisplayState::new();
+// ...
+display_event(ev, show_thinking, &mut display_state);
+```
+
+### 4.3 Output Examples
+
+**Before (current behavior) — Collapsed mode:**
+
+```
+[thinking] I need to analyze this problem...
+[thinking] Let me consider the options...
+[answer text starts flowing to stdout]
+```
+
+**After (new behavior) — Collapsed mode:**
+
+```
+[thinking] I need to analyze this problem...
+[answer]
+[answer text flows to stdout]
+```
+
+**Before (current behavior) — Expanded mode:**
+
+```
+[thinking] I need to analyze this problem. Let me consider the options...
+[thinking] Continuing my analysis...
+[answer text starts flowing to stdout]
+```
+
+**After (new behavior) — Expanded mode:**
+
+```
+[thinking] I need to analyze this problem. Let me consider the options...
+Continuing my analysis...
+[answer]
+[answer text flows to stdout]
+```
+
+**Hidden mode (unchanged):**
+
+```
+[answer text flows to stdout]
+```
+
+Note: In hidden mode, `[answer]` is still printed on stderr when the first text event arrives.
+
+## 5. Key Source Files
+
+| File | Change |
+|------|--------|
+| `src/app.rs` | Add `DisplayState`, modify `display_event`, modify call site |
+
+No other source files need modification.
+
+## 6. Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|------|--------|-----------|
+| State not reset between turns | `[thinking]` and `[answer]` not printed in subsequent turns | Reset `DisplayState` on `AgentEvent::Done` |
+| `[answer]` printed even in hidden mode | Could be unexpected | This is by design per FR-02; `[answer]` is always shown to demarcate the answer phase |
+| Expanded mode behavior with subsequent thinking events | Need to decide whether to append text or suppress | Per FR-03, in expanded mode subsequent thinking text continues to be appended without an additional label |
+| `cargo test` failures | Possible if tests check stderr output format | Update tests that check for `[thinking]` output patterns |
+
+## 7. Handoff to Implementation Phase
+
+The implementation phase should:
+
+1. Add `DisplayState` struct to `src/app.rs`.
+2. Modify `display_event` to accept `&mut DisplayState`.
+3. Change `[thinking]` handling to print label only on first thinking event.
+4. Add `[answer]` label on first text event.
+5. Reset state on `AgentEvent::Done`.
+6. Verify `cargo build` and `cargo test` pass.

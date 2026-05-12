@@ -255,9 +255,10 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // getting stuck in Pending forever if Provider construction fails without a `Done`.
     let show_thinking = config.ui.show_thinking_mode();
     let display_task = tokio::spawn(async move {
+        let mut display_state = DisplayState::new();
         while let Some(ev) = event_rx.recv().await {
             let is_idle = matches!(ev, AgentEvent::Done | AgentEvent::Error { .. });
-            display_event(ev, show_thinking);
+            display_event(ev, show_thinking, &mut display_state);
             if is_idle {
                 let _ = agent_idle_tx.send(()).await;
             }
@@ -561,20 +562,51 @@ fn print_prompt() {
     let _ = std::io::stdout().flush();
 }
 
-fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode) {
+struct DisplayState {
+    thinking_printed: bool,
+    answer_printed: bool,
+}
+
+impl DisplayState {
+    fn new() -> Self {
+        Self {
+            thinking_printed: false,
+            answer_printed: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.thinking_printed = false;
+        self.answer_printed = false;
+    }
+}
+
+fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut DisplayState) {
     match ev {
         AgentEvent::Text { delta } => {
+            if !state.answer_printed {
+                eprintln!("\n[answer]");
+                state.answer_printed = true;
+            }
             print!("{delta}");
             let _ = std::io::stdout().flush();
         }
         AgentEvent::Thinking { text } => match show_thinking {
             ShowThinkingMode::Hidden => {}
             ShowThinkingMode::Collapsed => {
-                let collapsed = collapse_thinking_text(&text);
-                eprintln!("\n[thinking] {collapsed}");
+                if !state.thinking_printed {
+                    let collapsed = collapse_thinking_text(&text);
+                    eprintln!("\n[thinking] {collapsed}");
+                    state.thinking_printed = true;
+                }
             }
             ShowThinkingMode::Expanded => {
-                eprintln!("\n[thinking] {text}");
+                if !state.thinking_printed {
+                    eprintln!("\n[thinking] {text}");
+                    state.thinking_printed = true;
+                } else {
+                    eprintln!("{text}");
+                }
             }
         },
         AgentEvent::ToolCall { name, args } => {
@@ -585,9 +617,11 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode) {
             eprintln!("[tool-result {mark}] {name}: {output}");
         }
         AgentEvent::Done => {
+            state.reset();
             println!();
         }
         AgentEvent::Error { message } => {
+            state.reset();
             eprintln!("\n[error] {message}");
         }
         AgentEvent::Info { message } => {
