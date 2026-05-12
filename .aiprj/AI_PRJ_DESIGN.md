@@ -1,14 +1,14 @@
 # Design Document (AI_PRJ_DESIGN)
 
-This document describes the design for modifying the "[thinking]" display to show the label only at the start of thinking and adding an "[answer]" label, as required by `AI_PRJ_REQUIREMENTS.md`.
+This document describes the design for modifying the "[thinking]" display to show the label on its own line, display all thinking content, and add an "[answer]" label, as required by `AI_PRJ_REQUIREMENTS.md`.
 
 ## 1. Design Scope
 
 ### 1.1 In Scope
 
-- Modifying `display_event` to track thinking/answer phase state and print labels only once per turn.
-- Adding `[answer]` label output when the first `AgentEvent::Text` event is received.
-- Ensuring `[thinking]` label is printed only once at the start of the thinking phase.
+- Modifying `display_event` to print `[thinking]` on its own line (not on the same line as content).
+- Displaying ALL thinking content (not just the first thinking event).
+- Keeping `[answer]` label on its own line when the first text event arrives.
 - Resetting state between turns.
 
 ### 1.2 Out of Scope
@@ -18,198 +18,206 @@ This document describes the design for modifying the "[thinking]" display to sho
 - Modifying provider implementations or `AgentEvent` enum variants.
 - Changing logging behavior.
 
-## 2. Current Behavior
+## 2. Previous Implementation (Before This Update)
 
-### 2.1 Current `[thinking]` Display (Before Change)
+### 2.1 Previous `[thinking]` Display
 
-In the current implementation (`src/app.rs`), every `AgentEvent::Thinking` event triggers a `eprintln!("\n[thinking] {text}")` (collapsed or expanded). This means `[thinking]` is printed on every thinking event, not just at the start.
+The previous implementation placed `[thinking]` on the same line as the thinking content:
 
 ```rust
 AgentEvent::Thinking { text } => match show_thinking {
     ShowThinkingMode::Hidden => {}
     ShowThinkingMode::Collapsed => {
-        let collapsed = collapse_thinking_text(&text);
-        eprintln!("\n[thinking] {collapsed}");
+        if !state.thinking_printed {
+            let collapsed = collapse_thinking_text(&text);
+            eprintln!("\n[thinking] {collapsed}");
+            state.thinking_printed = true;
+        }
     }
     ShowThinkingMode::Expanded => {
-        eprintln!("\n[thinking] {text}");
+        if !state.thinking_printed {
+            eprintln!("\n[thinking] {text}");
+            state.thinking_printed = true;
+        } else {
+            eprintln!("{text}");
+        }
     }
 },
 ```
 
-### 2.2 Current Text Display (Before Change)
+Issues with the previous implementation:
+1. `[thinking]` was on the same line as the content: `\n[thinking] {text}`.
+2. In collapsed mode, only the first thinking event was shown; subsequent events were suppressed.
+3. In expanded mode, subsequent thinking events printed without a label, which was correct.
 
-`AgentEvent::Text` events are printed to stdout with no label:
+### 2.2 Previous `[answer]` Display
+
+The previous implementation was correct:
 
 ```rust
 AgentEvent::Text { delta } => {
+    if !state.answer_printed {
+        eprintln!("\n[answer]");
+        state.answer_printed = true;
+    }
     print!("{delta}");
     let _ = std::io::stdout().flush();
 }
 ```
 
-There is no `[answer]` label anywhere in the codebase.
-
-### 2.3 Current State Management
-
-Currently, `display_event` is a pure function that takes `(AgentEvent, ShowThinkingMode)` with no state. There is no tracking of whether `[thinking]` or `[answer]` has been printed in the current turn.
-
 ## 3. New Design
 
-### 3.1 Phase State Tracking (Requirement FR-01, FR-02, FR-04)
+### 3.1 `[thinking]` on Own Line (Requirement FR-01)
 
-Introduce a `DisplayState` struct to track whether `[thinking]` and `[answer]` have been printed in the current turn:
+Change the `[thinking]` label to be printed on its own line, separate from the thinking content:
 
-```rust
-struct DisplayState {
-    thinking_printed: bool,
-    answer_printed: bool,
-}
-```
+**First thinking event in a turn** (`thinking_printed` is `false`):
+1. Print `\n[thinking]` on stderr (label on its own line).
+2. Set `thinking_printed = true`.
+3. Then print the thinking content on the next line.
 
-This state will be initialized at the start of each turn (reset on `AgentEvent::Done`).
+**Subsequent thinking events** (`thinking_printed` is `true`):
+- Print the thinking content without another `[thinking]` label.
 
-### 3.2 Modified `[thinking]` Display (Requirement FR-01, FR-03)
+### 3.2 Display All Thinking Content (Requirement FR-02)
 
-Change the thinking event handling to print `[thinking]` only once at the start:
+**Collapsed mode** (`ShowThinkingMode::Collapsed`):
+- First thinking event: Print `[thinking]` label, then print the collapsed thinking text on the next line.
+- Subsequent thinking events: Print the collapsed thinking text on its own line (no label).
 
-**When `thinking_printed` is `false`** (first thinking event in a turn):
-- Print `\n[thinking] {text}` on stderr (collapsed or expanded depending on mode).
-- Set `thinking_printed = true`.
+**Expanded mode** (`ShowThinkingMode::Expanded`):
+- First thinking event: Print `[thinking]` label, then print the full thinking text on the next line.
+- Subsequent thinking events: Print the full thinking text on its own line (no label).
 
-**When `thinking_printed` is `true`** (subsequent thinking events):
-- For `Collapsed` mode: Do not print any additional output (the collapsed summary was already shown).
-- For `Expanded` mode: Continue appending thinking text to stderr, but without another `[thinking]` label.
+**Hidden mode** (`ShowThinkingMode::Hidden`):
+- No thinking output at all (unchanged).
 
-### 3.3 New `[answer]` Label (Requirement FR-02)
+### 3.3 `[answer]` Label (Requirement FR-03)
 
-Change the text event handling to print `[answer]` once at the start:
-
-**When `answer_printed` is `false`** (first text event in a turn):
-- Print `\n[answer]` on stderr.
-- Set `answer_printed = true`.
-- Then print the text delta to stdout as usual.
-
-**When `answer_printed` is `true`** (subsequent text events):
-- Print the text delta to stdout as usual (no additional `[answer]` label).
+No change from previous implementation. `[answer]` is printed on stderr on its own line when the first `AgentEvent::Text` event is received.
 
 ### 3.4 State Reset (Requirement FR-04)
 
-On `AgentEvent::Done`, reset `DisplayState`:
+No change from previous implementation. `DisplayState` is reset on `AgentEvent::Done` and `AgentEvent::Error`.
+
+### 3.5 Implementation Details
+
+The `display_event` function for `AgentEvent::Thinking` changes from:
 
 ```rust
-AgentEvent::Done => {
-    display_state.thinking_printed = false;
-    display_state.answer_printed = false;
-    println!();
-}
+AgentEvent::Thinking { text } => match show_thinking {
+    ShowThinkingMode::Hidden => {}
+    ShowThinkingMode::Collapsed => {
+        if !state.thinking_printed {
+            let collapsed = collapse_thinking_text(&text);
+            eprintln!("\n[thinking] {collapsed}");
+            state.thinking_printed = true;
+        }
+    }
+    ShowThinkingMode::Expanded => {
+        if !state.thinking_printed {
+            eprintln!("\n[thinking] {text}");
+            state.thinking_printed = true;
+        } else {
+            eprintln!("{text}");
+        }
+    }
+},
 ```
 
-### 3.5 Configuration Method (Requirement FR-05)
-
-No code changes needed. The existing `[ui] show_thinking` in `config.toml` is the only configuration method. This is confirmed by investigation:
-- `src/cli.rs` has no `show_thinking` flag.
-- `src/config.rs` defines `show_thinking` under `UiConfig` with default `"collapsed"`.
-- Unknown values fall back to `Collapsed`.
-
-## 4. Implementation Details
-
-### 4.1 Modified Function Signature
-
-Change `display_event` from a pure function to a method that takes mutable state:
+To:
 
 ```rust
-fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut DisplayState)
+AgentEvent::Thinking { text } => match show_thinking {
+    ShowThinkingMode::Hidden => {}
+    ShowThinkingMode::Collapsed => {
+        if !state.thinking_printed {
+            eprintln!("\n[thinking]");
+            state.thinking_printed = true;
+        }
+        let collapsed = collapse_thinking_text(&text);
+        eprintln!("{collapsed}");
+    }
+    ShowThinkingMode::Expanded => {
+        if !state.thinking_printed {
+            eprintln!("\n[thinking]");
+            state.thinking_printed = true;
+        }
+        eprintln!("{text}");
+    }
+},
 ```
 
-Or alternatively, keep `display_event` as-is and manage state at the call site. The call site in `src/app.rs` already has a loop processing events, so state can be managed there.
+Key changes:
+1. `[thinking]` label is printed on its own line (`\n[thinking]`), not on the same line as content.
+2. In collapsed mode, ALL thinking events display their content (not just the first).
+3. In expanded mode, ALL thinking events display their content (unchanged behavior).
 
-### 4.2 Call Site Changes
+### 3.6 Output Examples
 
-The call site in `src/app.rs` currently looks like:
-
-```rust
-let show_thinking = config.ui.show_thinking_mode();
-// ...
-display_event(ev, show_thinking);
-```
-
-After the change, it will need to create and manage `DisplayState`:
-
-```rust
-let show_thinking = config.ui.show_thinking_mode();
-let mut display_state = DisplayState::new();
-// ...
-display_event(ev, show_thinking, &mut display_state);
-```
-
-### 4.3 Output Examples
-
-**Before (current behavior) — Collapsed mode:**
-
+**Collapsed mode — before this update:**
 ```
 [thinking] I need to analyze this problem...
-[thinking] Let me consider the options...
-[answer text starts flowing to stdout]
 ```
+(Only first thinking event shown, label and content on same line)
 
-**After (new behavior) — Collapsed mode:**
-
+**Collapsed mode — after this update:**
 ```
-[thinking] I need to analyze this problem...
-[answer]
-[answer text flows to stdout]
+[thinking]
+I need to analyze this problem...
+Let me consider the options...
 ```
+(All thinking events shown, each truncated to 80 chars, label on own line)
 
-**Before (current behavior) — Expanded mode:**
-
-```
-[thinking] I need to analyze this problem. Let me consider the options...
-[thinking] Continuing my analysis...
-[answer text starts flowing to stdout]
-```
-
-**After (new behavior) — Expanded mode:**
-
+**Expanded mode — before this update:**
 ```
 [thinking] I need to analyze this problem. Let me consider the options...
 Continuing my analysis...
+```
+(First event with label, subsequent events without)
+
+**Expanded mode — after this update:**
+```
+[thinking]
+I need to analyze this problem. Let me consider the options...
+Continuing my analysis...
+```
+(All thinking events shown, label on own line)
+
+**Answer phase (all modes):**
+```
 [answer]
-[answer text flows to stdout]
+{answer text flows to stdout}
 ```
 
-**Hidden mode (unchanged):**
-
+**Hidden mode:**
 ```
-[answer text flows to stdout]
+[answer]
+{answer text flows to stdout}
 ```
+(No `[thinking]` label or thinking content, but `[answer]` is still shown)
 
-Note: In hidden mode, `[answer]` is still printed on stderr when the first text event arrives.
-
-## 5. Key Source Files
+## 4. Key Source Files
 
 | File | Change |
 |------|--------|
-| `src/app.rs` | Add `DisplayState`, modify `display_event`, modify call site |
+| `src/app.rs` | Modify `display_event` for `AgentEvent::Thinking` to put `[thinking]` on its own line and display all thinking content |
 
 No other source files need modification.
 
-## 6. Risks and Mitigations
+## 5. Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |------|--------|-----------|
-| State not reset between turns | `[thinking]` and `[answer]` not printed in subsequent turns | Reset `DisplayState` on `AgentEvent::Done` |
-| `[answer]` printed even in hidden mode | Could be unexpected | This is by design per FR-02; `[answer]` is always shown to demarcate the answer phase |
-| Expanded mode behavior with subsequent thinking events | Need to decide whether to append text or suppress | Per FR-03, in expanded mode subsequent thinking text continues to be appended without an additional label |
+| More verbose output in collapsed mode | All thinking deltas are now shown, not just the first | Each delta is still collapsed (truncated) per the existing `collapse_thinking_text` function |
+| State not reset between turns | `[thinking]` and `[answer]` not printed in subsequent turns | Reset `DisplayState` on `AgentEvent::Done` and `AgentEvent::Error` |
 | `cargo test` failures | Possible if tests check stderr output format | Update tests that check for `[thinking]` output patterns |
 
-## 7. Handoff to Implementation Phase
+## 6. Handoff to Implementation Phase
 
 The implementation phase should:
 
-1. Add `DisplayState` struct to `src/app.rs`.
-2. Modify `display_event` to accept `&mut DisplayState`.
-3. Change `[thinking]` handling to print label only on first thinking event.
-4. Add `[answer]` label on first text event.
-5. Reset state on `AgentEvent::Done`.
-6. Verify `cargo build` and `cargo test` pass.
+1. Modify the `AgentEvent::Thinking` branch in `display_event` to print `[thinking]` on its own line.
+2. Change collapsed mode to display ALL thinking events (not just the first).
+3. Change expanded mode to display all thinking events on their own lines.
+4. Verify `cargo build` and `cargo test` pass.

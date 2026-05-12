@@ -11,23 +11,19 @@ This document breaks down the implementation tasks from `AI_PRJ_REQUIREMENTS.md`
 
 ---
 
-## Milestone M1: State Tracking Implementation
+## Milestone M1: Display Behavior Update
 
-- [x] **T-001** Add `DisplayState` struct to `src/app.rs` with `thinking_printed: bool` and `answer_printed: bool` fields, and a `DisplayState::new()` constructor that initializes both to `false`. FR-01/FR-02/FR-04 / Design Section 3.1.
-- [x] **T-002** Modify `display_event` function signature to accept `&mut DisplayState` as a third parameter. FR-01/FR-02 / Design Section 4.1.
-- [x] **T-003** Modify the call site in `src/app.rs` to create a `DisplayState` instance and pass it to `display_event`. FR-01/FR-02 / Design Section 4.2.
+- [x] **T-001** Modify the `AgentEvent::Thinking` branch in `display_event` to print `[thinking]` on its own line (`\n[thinking]`) instead of on the same line as content. FR-01 / Design Section 3.1.
+- [x] **T-002** Modify collapsed mode to display ALL thinking events (not just the first). Each delta is still collapsed (truncated) per `collapse_thinking_text`. FR-02 / Design Section 3.2.
+- [x] **T-003** Modify expanded mode to display ALL thinking events on their own lines. Each delta prints its full text. FR-02 / Design Section 3.2.
+- [x] **T-004** Verify that `[answer]` label is still printed on its own line when the first text event arrives. FR-03 / Design Section 3.3. -- No regression; implementation unchanged.
+- [x] **T-005** Verify that `DisplayState` resets on `AgentEvent::Done` and `AgentEvent::Error`. FR-04 / Design Section 3.4. -- No regression; implementation unchanged.
 
-## Milestone M2: Display Behavior Changes
+## Milestone M2: Verification
 
-- [x] **T-010** Modify the `AgentEvent::Thinking` branch in `display_event` to print `[thinking]` only when `state.thinking_printed` is `false`, then set `thinking_printed = true`. FR-01 / Design Section 3.2. -- For collapsed mode: suppress subsequent thinking events. For expanded mode: continue printing thinking text without an additional label.
-- [x] **T-011** Modify the `AgentEvent::Text` branch in `display_event` to print `[answer]` on stderr when `state.answer_printed` is `false`, then set `answer_printed = true`. FR-02 / Design Section 3.3. -- The `[answer]` label is printed regardless of `show_thinking` mode.
-- [x] **T-012** Modify the `AgentEvent::Done` and `AgentEvent::Error` branches to reset `DisplayState` (set `thinking_printed = false` and `answer_printed = false`). FR-04 / Design Section 3.4.
-
-## Milestone M3: Verification
-
-- [x] **T-020** Run `cargo build` and verify it compiles successfully. NFR-03. -- Passed.
-- [x] **T-021** Run `cargo test` and verify all tests pass. NFR-03. -- All 80 tests passed.
-- [x] **T-022** Verify the display behavior: `[thinking]` appears only once per turn, `[answer]` appears once per turn, and state resets between turns. FR-01/FR-02/FR-04. -- Verified via code review and test pass.
+- [x] **T-010** Run `cargo build` and verify it compiles successfully. NFR-03. -- Passed.
+- [x] **T-011** Run `cargo test` and verify all tests pass. NFR-03. -- All 80 tests passed.
+- [x] **T-012** Verify the display behavior: `[thinking]` appears on its own line, all thinking content is displayed, `[answer]` appears once per turn. FR-01/FR-02/FR-03. -- Verified via code review and test pass.
 
 ---
 
@@ -36,10 +32,12 @@ This document breaks down the implementation tasks from `AI_PRJ_REQUIREMENTS.md`
 - The `show_thinking` configuration is confirmed to be config.toml-only (`[ui] show_thinking`). There is no CLI flag for this setting (FR-05).
 - `DisplayState` is only needed in `src/app.rs`; no changes to other source files.
 - The `[answer]` label is printed on stderr, the same destination as `[thinking]`.
-- In `Hidden` mode, `[thinking]` and thinking text are suppressed, but `[answer]` is still printed per FR-02.
+- In `Hidden` mode, `[thinking]` and thinking text are suppressed, but `[answer]` is still printed per FR-03.
 - `AgentEvent::Error` also resets `DisplayState` since the turn ends on error.
+- The key change from the previous implementation: `[thinking]` is now on its own line (not on the same line as content), and ALL thinking events display their content (not just the first event in collapsed mode).
 
 ## Work Log
 
-- **2026-05-12 (Update Phase)**: Instructions updated to include feature request for start-only `[thinking]` label and new `[answer]` label. Requirements, design, and tasks fully rewritten. Previous investigation-only task is replaced.
-- **2026-05-12 (Implementation Phase)**: All tasks completed. Added `DisplayState` struct with `thinking_printed` and `answer_printed` flags. Modified `display_event` to print `[thinking]` only once per turn and `[answer]` once per turn. State resets on `Done` and `Error` events. `cargo build` and `cargo test` (80 tests) pass successfully.
+- **2026-05-12 (Update Phase 1)**: Instructions initially about investigating whether `[thinking]` is displayed by default. Requirements, design, and tasks created for investigation task.
+- **2026-05-12 (Update Phase 2)**: Instructions updated to include feature request for start-only `[thinking]` label and new `[answer]` label. Implementation completed: `DisplayState` added, `[thinking]` printed only once, `[answer]` printed once.
+- **2026-05-12 (Update Phase 3)**: Instructions updated: `[thinking]` should be on its own line, ALL thinking content should be displayed. Code updated: `[thinking]` now prints on its own line, all thinking events display their content (collapsed or expanded). `cargo build` and `cargo test` (80 tests) pass.
