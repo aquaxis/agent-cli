@@ -4,25 +4,24 @@
 
 ### 1.1 Project Name
 
-Display Label Refactoring: "[thinking]" on Separate Line, Full Content Display, and "[answer]" Label for agent-cli
+Thinking Display: Sentence-Based Line Breaking for agent-cli
 
 ### 1.2 Background
 
 The following instruction was received in `.aiprj/instructions.md` (as of 2026-05-12):
 
-> When displaying "[thinking]", put "[thinking]" on a new line, display all thinking content, and then display "[answer]" when answering.
+> When displaying "[thinking]", instead of breaking lines per token, please break lines per sentence.
 
-The previous implementation placed `[thinking]` on the same line as the thinking content and only showed the first thinking event in collapsed mode. The user now requests:
-1. `[thinking]` label on its own line (not on the same line as content).
-2. All thinking content to be displayed (not just the first event in collapsed mode).
-3. `[answer]` label displayed when the answer starts.
+The previous implementation printed each thinking delta (token) on its own line using `eprintln!`. This created fragmented output where each small streaming chunk appeared on a separate line. The user wants thinking text to flow together naturally, with line breaks occurring at sentence boundaries rather than at every token.
 
 ### 1.3 Objectives
 
-- Modify the `display_event` function so that `[thinking]` is printed on its own line, followed by all thinking content on subsequent lines.
-- Display ALL thinking content, not just the first thinking event. In collapsed mode, each thinking delta is still truncated (first line, 80 chars max) but all deltas are shown. In expanded mode, all thinking text is shown in full.
-- Keep the `[answer]` label printed once when the first text event is received.
-- Preserve the existing `show_thinking` configuration mechanism (`[ui] show_thinking` in config.toml) and its three modes (`hidden`, `collapsed`, `expanded`).
+- Change the thinking display so that thinking text flows together instead of each token getting its own line.
+- Use `eprint!` instead of `eprintln!` for thinking text so that deltas concatenate naturally.
+- In collapsed mode, add a space separator between deltas to prevent words from running together.
+- In expanded mode, let provider-sent deltas flow together naturally (providers include appropriate spacing).
+- Preserve the `[thinking]` label on its own line and the `[answer]` label on its own line.
+- Preserve the `show_thinking` configuration mechanism and its three modes.
 
 ### 1.4 Non-Objectives
 
@@ -30,46 +29,47 @@ The previous implementation placed `[thinking]` on the same line as the thinking
 - No changes to the `show_thinking` configuration values or their semantics.
 - No changes to provider-level thinking support (Claude, Ollama, etc.).
 - No changes to logging behavior (`LogEvent::Thinking` is still always logged).
+- No changes to sentence boundary detection logic (provider-sent newlines serve as natural breaks).
 
 ## 2. Terminology
 
 | Term | Definition |
 |------|-----------|
+| Token-based line breaking | Breaking lines at each thinking delta/token (previous behavior) |
+| Sentence-based line breaking | Letting text flow together, with line breaks at natural boundaries (new behavior) |
 | `[thinking]` label | The label printed on stderr on its own line at the start of the thinking phase |
-| `[answer]` label | The label printed on stderr on its own line when the first text (answer) event is received |
-| Thinking phase | The period during which `AgentEvent::Thinking` events are received |
-| Answer phase | The period during which `AgentEvent::Text` events are received |
+| `[answer]` label | The label printed on stderr on its own line when the first text event is received |
 | `show_thinking` | The configuration key under `[ui]` that controls how thinking output is displayed |
 | `ShowThinkingMode` | The Rust enum (`Hidden`, `Collapsed`, `Expanded`) that determines display behavior |
 
 ## 3. Functional Requirements
 
-### 3.1 "[thinking]" Label on Own Line (FR-01)
+### 3.1 Sentence-Based Line Breaking for Thinking (FR-01)
 
-- When `show_thinking` is set to `"collapsed"` or `"expanded"`, print `[thinking]` on stderr on its own line at the start of the thinking phase (i.e., when the first `AgentEvent::Thinking` event is received).
-- The `[thinking]` label must be on a separate line from the thinking content. The format is: `\n[thinking]\n{content}`, not `\n[thinking] {content}`.
-- When `show_thinking` is set to `"hidden"`, no `[thinking]` label or thinking text is displayed (existing behavior preserved).
+- In expanded mode, thinking text must flow together using `eprint!` instead of `eprintln!`. Each thinking delta is printed without a trailing newline, allowing tokens to concatenate naturally.
+- In collapsed mode, each thinking delta is still truncated (first line, 80 chars max), but deltas are concatenated with spaces between them using `eprint!` instead of each delta getting its own line.
+- Provider-sent newlines in thinking text create natural sentence/paragraph boundaries.
+- The `[thinking]` label remains on its own line (unchanged from previous implementation).
+- The `[answer]` label remains on its own line (unchanged from previous implementation).
 
-### 3.2 Display All Thinking Content (FR-02)
+### 3.2 Collapsed Mode Space Separator (FR-02)
 
-- ALL thinking events must display their content, not just the first one.
-- In `"collapsed"` mode, each thinking delta is displayed on its own line with the collapsed text (first line truncated to 80 chars). All deltas are shown, not just the first.
-- In `"expanded"` mode, each thinking delta is displayed in full on its own line.
-- The `[thinking]` label is printed only once at the start; subsequent thinking events print their content without another label.
+- In collapsed mode, a space must be inserted between consecutive thinking deltas to prevent truncated words from running together.
+- The space is inserted before each subsequent delta (not the first one), using the `thinking_printed` flag to distinguish the first delta from subsequent ones.
 
-### 3.3 "[answer]" Label (FR-03)
+### 3.3 Expanded Mode Natural Flow (FR-03)
 
-- Print `[answer]` on stderr on its own line exactly once when the first `AgentEvent::Text` event is received in a turn.
-- Subsequent `AgentEvent::Text` events must NOT print additional `[answer]` labels.
-- The `[answer]` label must be printed regardless of the `show_thinking` mode (i.e., even when `show_thinking` is `"hidden"`).
+- In expanded mode, thinking deltas must flow together naturally without artificial spaces or newlines between them.
+- The provider sends tokens that include appropriate whitespace (e.g., " World" with a leading space), so no additional separator is needed.
 
-### 3.4 State Reset Between Turns (FR-04)
+### 3.4 "[answer]" Label (FR-04)
 
-- The thinking/answer phase state (whether `[thinking]` or `[answer]` has been printed) must be reset at the start of each new turn (i.e., when `AgentEvent::Done` or `AgentEvent::Error` is received).
+- No change from previous implementation. `[answer]` is printed on stderr on its own line when the first `AgentEvent::Text` event is received.
+- The `\n` prefix in `eprintln!("\n[answer]")` ensures a newline after any flowing thinking text, creating separation between thinking and answer.
 
-### 3.5 Configuration Method Documentation (FR-05)
+### 3.5 State Reset Between Turns (FR-05)
 
-- Confirm and document that `show_thinking` is configured exclusively via the `[ui]` section of `config.toml`. There is no `--help` flag or CLI argument for this setting.
+- No change from previous implementation. `DisplayState` resets on `AgentEvent::Done` and `AgentEvent::Error`.
 
 ## 4. Non-Functional Requirements
 
@@ -96,14 +96,14 @@ The previous implementation placed `[thinking]` on the same line as the thinking
 
 ## 6. Intended Users
 
-- Users of agent-cli who want a clearer distinction between the thinking and answering phases in the output.
+- Users of agent-cli who want thinking text to flow naturally instead of being fragmented per token.
 - Developers maintaining the agent-cli display layer.
 
 ## 7. Acceptance Criteria
 
-- `[thinking]` is printed on its own line (not on the same line as thinking content) only once per turn at the start of the thinking phase.
-- ALL thinking content is displayed (not just the first event).
-- `[answer]` is printed on its own line exactly once per turn when the first text event is received.
-- The `show_thinking` configuration continues to work as before (`"hidden"`, `"collapsed"`, `"expanded"`).
+- Thinking text flows together using `eprint!` instead of `eprintln!`.
+- In collapsed mode, deltas are separated by spaces, not newlines.
+- In expanded mode, deltas concatenate naturally without separators.
+- `[thinking]` remains on its own line.
+- `[answer]` remains on its own line.
 - `cargo build` and `cargo test` pass after the changes.
-- No other display behavior is unintentionally altered.

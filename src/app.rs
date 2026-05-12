@@ -597,16 +597,18 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
                 if !state.thinking_printed {
                     eprintln!("\n[thinking]");
                     state.thinking_printed = true;
+                } else {
+                    eprint!(" ");
                 }
                 let collapsed = collapse_thinking_text(&text);
-                eprintln!("{collapsed}");
+                eprint!("{collapsed}");
             }
             ShowThinkingMode::Expanded => {
                 if !state.thinking_printed {
                     eprintln!("\n[thinking]");
                     state.thinking_printed = true;
                 }
-                eprintln!("{text}");
+                eprint!("{text}");
             }
         },
         AgentEvent::ToolCall { name, args } => {

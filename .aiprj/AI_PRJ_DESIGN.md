@@ -1,15 +1,14 @@
 # Design Document (AI_PRJ_DESIGN)
 
-This document describes the design for modifying the "[thinking]" display to show the label on its own line, display all thinking content, and add an "[answer]" label, as required by `AI_PRJ_REQUIREMENTS.md`.
+This document describes the design for changing thinking display from token-based to sentence-based line breaking, as required by `AI_PRJ_REQUIREMENTS.md`.
 
 ## 1. Design Scope
 
 ### 1.1 In Scope
 
-- Modifying `display_event` to print `[thinking]` on its own line (not on the same line as content).
-- Displaying ALL thinking content (not just the first thinking event).
-- Keeping `[answer]` label on its own line when the first text event arrives.
-- Resetting state between turns.
+- Changing `eprintln!` to `eprint!` for thinking text in both collapsed and expanded modes.
+- Adding space separators between collapsed deltas.
+- Keeping `[thinking]` and `[answer]` labels on their own lines.
 
 ### 1.2 Out of Scope
 
@@ -17,115 +16,13 @@ This document describes the design for modifying the "[thinking]" display to sho
 - Changing `show_thinking` configuration values or semantics.
 - Modifying provider implementations or `AgentEvent` enum variants.
 - Changing logging behavior.
+- Implementing sentence boundary detection (relying on provider-sent newlines instead).
 
 ## 2. Previous Implementation (Before This Update)
 
-### 2.1 Previous `[thinking]` Display
+### 2.1 Previous Thinking Display
 
-The previous implementation placed `[thinking]` on the same line as the thinking content:
-
-```rust
-AgentEvent::Thinking { text } => match show_thinking {
-    ShowThinkingMode::Hidden => {}
-    ShowThinkingMode::Collapsed => {
-        if !state.thinking_printed {
-            let collapsed = collapse_thinking_text(&text);
-            eprintln!("\n[thinking] {collapsed}");
-            state.thinking_printed = true;
-        }
-    }
-    ShowThinkingMode::Expanded => {
-        if !state.thinking_printed {
-            eprintln!("\n[thinking] {text}");
-            state.thinking_printed = true;
-        } else {
-            eprintln!("{text}");
-        }
-    }
-},
-```
-
-Issues with the previous implementation:
-1. `[thinking]` was on the same line as the content: `\n[thinking] {text}`.
-2. In collapsed mode, only the first thinking event was shown; subsequent events were suppressed.
-3. In expanded mode, subsequent thinking events printed without a label, which was correct.
-
-### 2.2 Previous `[answer]` Display
-
-The previous implementation was correct:
-
-```rust
-AgentEvent::Text { delta } => {
-    if !state.answer_printed {
-        eprintln!("\n[answer]");
-        state.answer_printed = true;
-    }
-    print!("{delta}");
-    let _ = std::io::stdout().flush();
-}
-```
-
-## 3. New Design
-
-### 3.1 `[thinking]` on Own Line (Requirement FR-01)
-
-Change the `[thinking]` label to be printed on its own line, separate from the thinking content:
-
-**First thinking event in a turn** (`thinking_printed` is `false`):
-1. Print `\n[thinking]` on stderr (label on its own line).
-2. Set `thinking_printed = true`.
-3. Then print the thinking content on the next line.
-
-**Subsequent thinking events** (`thinking_printed` is `true`):
-- Print the thinking content without another `[thinking]` label.
-
-### 3.2 Display All Thinking Content (Requirement FR-02)
-
-**Collapsed mode** (`ShowThinkingMode::Collapsed`):
-- First thinking event: Print `[thinking]` label, then print the collapsed thinking text on the next line.
-- Subsequent thinking events: Print the collapsed thinking text on its own line (no label).
-
-**Expanded mode** (`ShowThinkingMode::Expanded`):
-- First thinking event: Print `[thinking]` label, then print the full thinking text on the next line.
-- Subsequent thinking events: Print the full thinking text on its own line (no label).
-
-**Hidden mode** (`ShowThinkingMode::Hidden`):
-- No thinking output at all (unchanged).
-
-### 3.3 `[answer]` Label (Requirement FR-03)
-
-No change from previous implementation. `[answer]` is printed on stderr on its own line when the first `AgentEvent::Text` event is received.
-
-### 3.4 State Reset (Requirement FR-04)
-
-No change from previous implementation. `DisplayState` is reset on `AgentEvent::Done` and `AgentEvent::Error`.
-
-### 3.5 Implementation Details
-
-The `display_event` function for `AgentEvent::Thinking` changes from:
-
-```rust
-AgentEvent::Thinking { text } => match show_thinking {
-    ShowThinkingMode::Hidden => {}
-    ShowThinkingMode::Collapsed => {
-        if !state.thinking_printed {
-            let collapsed = collapse_thinking_text(&text);
-            eprintln!("\n[thinking] {collapsed}");
-            state.thinking_printed = true;
-        }
-    }
-    ShowThinkingMode::Expanded => {
-        if !state.thinking_printed {
-            eprintln!("\n[thinking] {text}");
-            state.thinking_printed = true;
-        } else {
-            eprintln!("{text}");
-        }
-    }
-},
-```
-
-To:
+The previous implementation printed each thinking delta on its own line:
 
 ```rust
 AgentEvent::Thinking { text } => match show_thinking {
@@ -148,60 +45,111 @@ AgentEvent::Thinking { text } => match show_thinking {
 },
 ```
 
-Key changes:
-1. `[thinking]` label is printed on its own line (`\n[thinking]`), not on the same line as content.
-2. In collapsed mode, ALL thinking events display their content (not just the first).
-3. In expanded mode, ALL thinking events display their content (unchanged behavior).
+Issues:
+1. Each thinking delta got its own line (`eprintln!`), creating fragmented output.
+2. In expanded mode, streaming tokens appeared on separate lines: "I", "need", "to", "analyze" etc.
+3. In collapsed mode, each truncated delta appeared on its own line.
 
-### 3.6 Output Examples
+### 2.2 Previous Output Examples
 
-**Collapsed mode — before this update:**
-```
-[thinking] I need to analyze this problem...
-```
-(Only first thinking event shown, label and content on same line)
-
-**Collapsed mode — after this update:**
+**Collapsed mode (before):**
 ```
 [thinking]
-I need to analyze this problem...
+I need to analyze this...
 Let me consider the options...
-```
-(All thinking events shown, each truncated to 80 chars, label on own line)
-
-**Expanded mode — before this update:**
-```
-[thinking] I need to analyze this problem. Let me consider the options...
 Continuing my analysis...
 ```
-(First event with label, subsequent events without)
+Each delta on its own line.
 
-**Expanded mode — after this update:**
+**Expanded mode (before):**
 ```
 [thinking]
-I need to analyze this problem. Let me consider the options...
-Continuing my analysis...
+I need to analyze this problem.
+Let me consider the options.
+Continuing my analysis.
 ```
-(All thinking events shown, label on own line)
+Each delta on its own line.
 
-**Answer phase (all modes):**
-```
-[answer]
-{answer text flows to stdout}
+## 3. New Design
+
+### 3.1 Sentence-Based Line Breaking (Requirement FR-01)
+
+Change `eprintln!` to `eprint!` for thinking text. This allows deltas to flow together instead of each getting its own line.
+
+### 3.2 Collapsed Mode Space Separator (Requirement FR-02)
+
+In collapsed mode, add a space before each subsequent delta (using the `thinking_printed` flag to identify subsequent deltas). This prevents truncated words from running together.
+
+```rust
+ShowThinkingMode::Collapsed => {
+    if !state.thinking_printed {
+        eprintln!("\n[thinking]");
+        state.thinking_printed = true;
+    } else {
+        eprint!(" ");
+    }
+    let collapsed = collapse_thinking_text(&text);
+    eprint!("{collapsed}");
+}
 ```
 
-**Hidden mode:**
+The `else { eprint!(" "); }` adds a space before each subsequent delta (but not the first one). The `thinking_printed` flag distinguishes the first delta from subsequent ones.
+
+### 3.3 Expanded Mode Natural Flow (Requirement FR-03)
+
+In expanded mode, use `eprint!` for thinking text without any separator. Provider-sent tokens already include appropriate whitespace (e.g., " World" with a leading space), so they concatenate naturally.
+
+```rust
+ShowThinkingMode::Expanded => {
+    if !state.thinking_printed {
+        eprintln!("\n[thinking]");
+        state.thinking_printed = true;
+    }
+    eprint!("{text}");
+}
 ```
+
+### 3.4 Answer Label Separation (Requirement FR-04)
+
+The `\n` prefix in `eprintln!("\n[answer]")` ensures a newline after flowing thinking text. This creates clear separation:
+
+```
+[thinking]
+thinking text flows here...
+
 [answer]
-{answer text flows to stdout}
+answer text flows here
 ```
-(No `[thinking]` label or thinking content, but `[answer]` is still shown)
+
+The `\n` in `\n[answer]` ends the current line (where thinking text is flowing), and `[answer]` starts on the next line.
+
+### 3.5 Output Examples
+
+**Collapsed mode (after):**
+```
+[thinking]
+I need to analyze this... Let me consider the options... Continuing my analysis...
+
+[answer]
+The answer is 42.
+```
+Deltas flow together with spaces between truncated fragments.
+
+**Expanded mode (after):**
+```
+[thinking]
+I need to analyze this problem. Let me consider the options. Continuing my analysis...
+
+[answer]
+The answer is 42.
+```
+Deltas flow together naturally. Provider-sent newlines create sentence boundaries.
 
 ## 4. Key Source Files
 
 | File | Change |
 |------|--------|
-| `src/app.rs` | Modify `display_event` for `AgentEvent::Thinking` to put `[thinking]` on its own line and display all thinking content |
+| `src/app.rs` | Change `eprintln!` to `eprint!` for thinking text; add space separator for collapsed mode |
 
 No other source files need modification.
 
@@ -209,15 +157,15 @@ No other source files need modification.
 
 | Risk | Impact | Mitigation |
 |------|--------|-----------|
-| More verbose output in collapsed mode | All thinking deltas are now shown, not just the first | Each delta is still collapsed (truncated) per the existing `collapse_thinking_text` function |
-| State not reset between turns | `[thinking]` and `[answer]` not printed in subsequent turns | Reset `DisplayState` on `AgentEvent::Done` and `AgentEvent::Error` |
-| `cargo test` failures | Possible if tests check stderr output format | Update tests that check for `[thinking]` output patterns |
+| Very long lines in collapsed mode | All deltas on one line could exceed terminal width | Terminal will wrap; this is better than per-token line breaks |
+| Missing spaces between expanded deltas | Provider tokens that don't include spaces could concatenate | Most providers include appropriate whitespace in streaming tokens |
+| Trailing space in collapsed mode | Last delta has a space before `[answer]` | The `\n` in `\n[answer]` creates separation; trailing space is minor |
+| `eprint!` buffering | Output may not flush immediately on some systems | Stderr is typically unbuffered; if needed, add explicit flush |
 
 ## 6. Handoff to Implementation Phase
 
 The implementation phase should:
 
-1. Modify the `AgentEvent::Thinking` branch in `display_event` to print `[thinking]` on its own line.
-2. Change collapsed mode to display ALL thinking events (not just the first).
-3. Change expanded mode to display all thinking events on their own lines.
-4. Verify `cargo build` and `cargo test` pass.
+1. Change `eprintln!("{collapsed}")` to `eprint!("{collapsed}")` in collapsed mode, with space separator for subsequent deltas.
+2. Change `eprintln!("{text}")` to `eprint!("{text}")` in expanded mode.
+3. Verify `cargo build` and `cargo test` pass.
