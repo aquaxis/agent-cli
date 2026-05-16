@@ -8,7 +8,7 @@ use crate::error::{AppError, Result};
 const DEFAULT_CONFIG: &str = r#"# agent-cli configuration
 
 [provider]
-# Backend to use: "claude" | "codex" | "ollama" | "llama.cpp"
+# Backend to use: "claude" | "codex" | "ollama" | "opencode" | "llama.cpp"
 kind = "claude"
 
 [provider.claude]
@@ -16,6 +16,8 @@ model       = "claude-opus-4-7"
 api_key_env = "ANTHROPIC_API_KEY"
 base_url    = "https://api.anthropic.com"
 thinking    = true
+# Opt-in: Anthropic prompt caching (system + tools + conversation tail).
+# prompt_cache = true
 
 [provider.codex]
 model       = "gpt-4.1"
@@ -25,6 +27,17 @@ base_url    = "https://api.openai.com/v1"
 [provider.ollama]
 model    = "glm-5.1:cloud"
 base_url = "http://127.0.0.1:11434"
+
+[provider.opencode]
+# Local: point base_url at a running `opencode serve` (no api_key_env needed).
+# Cloud (OpenCode Zen): set base_url to the Zen endpoint and api_key_env to the
+# environment variable holding your key. A resolved key selects cloud mode.
+model    = "claude-sonnet-4-5"
+base_url = "http://127.0.0.1:4096"
+# api_key_env = "OPENCODE_API_KEY"
+# base_url    = "https://opencode.ai/zen/v1"
+# Opt-in (local mode only): reuse one server session across turns.
+# persistent_session = true
 
 [provider."llama.cpp"]
 model    = "default"
@@ -46,6 +59,13 @@ max_output_kb = 256
 
 [ui]
 show_thinking = "collapsed"
+
+[history]
+# Opt-in hybrid window management. When disabled (default), the full
+# conversation is replayed verbatim each turn (unchanged behavior).
+enabled            = false
+max_context_tokens = 24000
+keep_recent_turns  = 6
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +77,8 @@ pub struct Config {
     pub tools: ToolsConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub history: HistoryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +90,8 @@ pub struct ProviderRoot {
     pub codex: Option<ProviderEntry>,
     #[serde(default)]
     pub ollama: Option<ProviderEntry>,
+    #[serde(default)]
+    pub opencode: Option<ProviderEntry>,
     #[serde(default, rename = "llama.cpp")]
     pub llamacpp: Option<ProviderEntry>,
     #[serde(flatten)]
@@ -92,6 +116,16 @@ pub struct ProviderEntry {
     /// before content do not get aborted mid-stream.
     #[serde(default)]
     pub request_timeout_secs: Option<u64>,
+    /// Claude only: enable Anthropic prompt caching (`cache_control`
+    /// breakpoints on system / tools / conversation tail). Opt-in;
+    /// `None`/absent => disabled (behavior unchanged).
+    #[serde(default)]
+    pub prompt_cache: Option<bool>,
+    /// opencode local mode only: reuse one OpenCode `session_id` across turns
+    /// and send only new turns instead of re-flattening full history. Opt-in;
+    /// `None`/absent => disabled (ephemeral session per turn, unchanged).
+    #[serde(default)]
+    pub persistent_session: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +243,41 @@ fn default_show_thinking() -> String {
     "collapsed".to_string()
 }
 
+/// `[history]` — hybrid history-window management. Opt-in (`enabled = false`
+/// by default); when disabled the conversation is replayed verbatim as before.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryConfig {
+    /// Master switch. When false, no summarization or trimming occurs.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Approximate context budget (estimated tokens ≈ chars/4). When the
+    /// estimated history exceeds this, compaction runs.
+    #[serde(default = "default_max_context_tokens")]
+    pub max_context_tokens: usize,
+    /// Number of most-recent turns always kept verbatim (never summarized or
+    /// dropped). Leading system/persona messages are always kept too.
+    #[serde(default = "default_keep_recent_turns")]
+    pub keep_recent_turns: usize,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_context_tokens: default_max_context_tokens(),
+            keep_recent_turns: default_keep_recent_turns(),
+        }
+    }
+}
+
+fn default_max_context_tokens() -> usize {
+    24_000
+}
+
+fn default_keep_recent_turns() -> usize {
+    6
+}
+
 /// Display mode for `[ui] show_thinking` (FR-03-1-2 / design doc 4.3C).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShowThinkingMode {
@@ -306,6 +375,7 @@ impl Config {
             "claude" => self.provider.claude.as_ref(),
             "codex" => self.provider.codex.as_ref(),
             "ollama" => self.provider.ollama.as_ref(),
+            "opencode" => self.provider.opencode.as_ref(),
             "llama.cpp" => self.provider.llamacpp.as_ref(),
             _ => None,
         }
@@ -339,6 +409,7 @@ impl Config {
             "claude" => Some(self.provider.claude.get_or_insert_with(Default::default)),
             "codex" => Some(self.provider.codex.get_or_insert_with(Default::default)),
             "ollama" => Some(self.provider.ollama.get_or_insert_with(Default::default)),
+            "opencode" => Some(self.provider.opencode.get_or_insert_with(Default::default)),
             "llama.cpp" => Some(self.provider.llamacpp.get_or_insert_with(Default::default)),
             _ => None,
         }

@@ -4,106 +4,114 @@
 
 ### 1.1 Project Name
 
-Thinking Display: Sentence-Based Line Breaking for agent-cli
+Context-efficiency features for agent-cli (persistent session / prompt cache /
+history-window management)
 
 ### 1.2 Background
 
-The following instruction was received in `.aiprj/instructions.md` (as of 2026-05-12):
+`.aiprj/instructions.md` (2026-05-16) requests three opt-in context-efficiency
+features. agent-cli currently replays the full conversation history to every
+provider on every send (stateless), which grows cost/latency unbounded and has
+no context-window management. The previous project (the `opencode` provider)
+is complete; this builds on it.
 
-> When displaying "[thinking]", instead of breaking lines per token, please break lines per sentence.
+### 1.3 Scope Decision (confirmed with user, 2026-05-16)
 
-The previous implementation printed each thinking delta (token) on its own line using `eprintln!`. This created fragmented output where each small streaming chunk appeared on a separate line. The user wants thinking text to flow together naturally, with line breaks occurring at sentence boundaries rather than at every token.
+- **#3 history management strategy = Hybrid:** summarize the oldest turns via
+  the LLM into one summary message; if still over budget, drop the oldest
+  remaining turns.
+- **Rollout = all opt-in:** every feature is gated by a config flag, **default
+  OFF**. With all flags off, behavior is byte-for-byte unchanged.
 
-### 1.3 Objectives
+### 1.4 Objectives
 
-- Change the thinking display so that thinking text flows together instead of each token getting its own line.
-- Use `eprint!` instead of `eprintln!` for thinking text so that deltas concatenate naturally.
-- In collapsed mode, add a space separator between deltas to prevent words from running together.
-- In expanded mode, let provider-sent deltas flow together naturally (providers include appropriate spacing).
-- Preserve the `[thinking]` label on its own line and the `[answer]` label on its own line.
-- Preserve the `show_thinking` configuration mechanism and its three modes.
+Implement all three:
 
-### 1.4 Non-Objectives
+1. **opencode local persistent session** — reuse one OpenCode `session_id`
+   across turns and send only new user/tool turns; reset on history clear or
+   system-prompt change.
+2. **Claude prompt caching** — Anthropic `cache_control` breakpoints on the
+   system prompt, tools, and the conversation tail.
+3. **Hybrid history-window management** — summarize-then-drop when estimated
+   context exceeds a configurable budget, always keeping the system/persona
+   prefix and the most recent N turns verbatim.
 
-- No changes to the `--help` output or CLI argument handling.
-- No changes to the `show_thinking` configuration values or their semantics.
-- No changes to provider-level thinking support (Claude, Ollama, etc.).
-- No changes to logging behavior (`LogEvent::Thinking` is still always logged).
-- No changes to sentence boundary detection logic (provider-sent newlines serve as natural breaks).
+### 1.5 Non-Objectives
+
+- No change to the `Provider` trait signature or `ProviderEvent` variants.
+- No behavior change when all flags are off.
+- No tokenizer dependency (token estimate is a cheap heuristic).
+- No persistence to disk / conversation resume (out of scope here).
+- opencode cloud mode and other providers' session handling unchanged.
 
 ## 2. Terminology
 
 | Term | Definition |
 |------|-----------|
-| Token-based line breaking | Breaking lines at each thinking delta/token (previous behavior) |
-| Sentence-based line breaking | Letting text flow together, with line breaks at natural boundaries (new behavior) |
-| `[thinking]` label | The label printed on stderr on its own line at the start of the thinking phase |
-| `[answer]` label | The label printed on stderr on its own line when the first text event is received |
-| `show_thinking` | The configuration key under `[ui]` that controls how thinking output is displayed |
-| `ShowThinkingMode` | The Rust enum (`Hidden`, `Collapsed`, `Expanded`) that determines display behavior |
+| Persistent session | Reusing a server-side OpenCode `session_id` across turns |
+| Prompt cache | Anthropic `cache_control: {type:"ephemeral"}` breakpoints |
+| Compaction | Summarize-then-drop of the old history span |
+| Old span | History after the system prefix and before the last N turns |
+| Estimated tokens | `sum(content chars) / 4` heuristic |
 
 ## 3. Functional Requirements
 
-### 3.1 Sentence-Based Line Breaking for Thinking (FR-01)
+### 3.1 opencode Persistent Session (FR-01)
 
-- In expanded mode, thinking text must flow together using `eprint!` instead of `eprintln!`. Each thinking delta is printed without a trailing newline, allowing tokens to concatenate naturally.
-- In collapsed mode, each thinking delta is still truncated (first line, 80 chars max), but deltas are concatenated with spaces between them using `eprint!` instead of each delta getting its own line.
-- Provider-sent newlines in thinking text create natural sentence/paragraph boundaries.
-- The `[thinking]` label remains on its own line (unchanged from previous implementation).
-- The `[answer]` label remains on its own line (unchanged from previous implementation).
+- Config `[provider.opencode] persistent_session` (bool, default false).
+  Effective only in local mode (no API key); ignored in cloud mode.
+- When enabled: create the session once, cache `session_id`, and on each turn
+  send only the new `User`/`ToolResult` turns (skip `Assistant`; `System` via
+  the session). `sent_count` tracks delivered history length.
+- Reset (recreate session, resend from scratch) when: no session yet, history
+  shrank (e.g. `/clear`), or the system prompt changed.
+- A stale-session HTTP response (404/400/410) triggers exactly one transparent
+  session recreate + resend.
+- Disabled: existing ephemeral-session-per-turn behavior, unchanged.
 
-### 3.2 Collapsed Mode Space Separator (FR-02)
+### 3.2 Claude Prompt Caching (FR-02)
 
-- In collapsed mode, a space must be inserted between consecutive thinking deltas to prevent truncated words from running together.
-- The space is inserted before each subsequent delta (not the first one), using the `thinking_printed` flag to distinguish the first delta from subsequent ones.
+- Config `[provider.claude] prompt_cache` (bool, default false).
+- When enabled, add `cache_control` to: the system prompt (as a text block),
+  the last tool definition, and the last message's last content block
+  (≤ 3 of Anthropic's 4 allowed breakpoints).
+- String content is converted to block form only when caching; tool_result
+  array content gets the marker on its last block.
+- Disabled: request body identical to today (plain strings).
 
-### 3.3 Expanded Mode Natural Flow (FR-03)
+### 3.3 Hybrid History-Window Management (FR-03)
 
-- In expanded mode, thinking deltas must flow together naturally without artificial spaces or newlines between them.
-- The provider sends tokens that include appropriate whitespace (e.g., " World" with a leading space), so no additional separator is needed.
-
-### 3.4 "[answer]" Label (FR-04)
-
-- No change from previous implementation. `[answer]` is printed on stderr on its own line when the first `AgentEvent::Text` event is received.
-- The `\n` prefix in `eprintln!("\n[answer]")` ensures a newline after any flowing thinking text, creating separation between thinking and answer.
-
-### 3.5 State Reset Between Turns (FR-05)
-
-- No change from previous implementation. `DisplayState` resets on `AgentEvent::Done` and `AgentEvent::Error`.
+- Config `[history]`: `enabled` (bool, default false),
+  `max_context_tokens` (default 24000), `keep_recent_turns` (default 6).
+- Before each provider call, if enabled and estimated tokens exceed
+  `max_context_tokens`: summarize the old span via the LLM into one
+  `System` summary message replacing that span; if still over budget, drop the
+  oldest old-span messages one at a time.
+- The leading system/persona prefix and the last `keep_recent_turns` messages
+  are never summarized or dropped.
+- Best-effort: a summarization-call failure degrades to drop-only and must
+  never fail the user's turn. An `Info` event reports what was compacted.
+- Disabled: full history replayed verbatim, unchanged.
 
 ## 4. Non-Functional Requirements
 
-### 4.1 Document Language (NFR-01)
-
-- All project management documents (Requirements, Design, Tasks) will be written in English.
-
-### 4.2 Consistency (NFR-02)
-
-- The design and tasks will be consistent with the requirements.
-
-### 4.3 Backward Compatibility (NFR-03)
-
-- The existing `show_thinking` configuration values (`"hidden"`, `"collapsed"`, `"expanded"`) and their semantics must remain unchanged.
-- The `--help` output must not be modified.
-- Logging behavior (`LogEvent::Thinking`) must remain unchanged.
+- **NFR-01** Docs in English; Requirements/Design/Tasks mutually consistent.
+- **NFR-02** `cargo build` / `cargo test` / `cargo clippy` clean; new logic
+  unit-tested.
+- **NFR-03** Additive, non-breaking config (`#[serde(default)]`); all existing
+  tests still pass; default behavior unchanged.
+- **NFR-04** Summarization must not recurse into compaction.
 
 ## 5. Constraints
 
-- Source code modifications are limited to `src/app.rs` (display logic). No other source files should be modified.
-- No changes to the CLI argument parser (`src/cli.rs`).
-- No changes to provider implementations.
-- No changes to the agent event model (`AgentEvent` enum variants).
+- Source changes limited to: `src/config.rs`, `src/ai/claude.rs`,
+  `src/ai/opencode.rs`, new `src/history.rs`, `src/agent.rs`, `src/main.rs`
+  (module decl), plus the embedded default config template.
 
-## 6. Intended Users
+## 6. Acceptance Criteria
 
-- Users of agent-cli who want thinking text to flow naturally instead of being fragmented per token.
-- Developers maintaining the agent-cli display layer.
-
-## 7. Acceptance Criteria
-
-- Thinking text flows together using `eprint!` instead of `eprintln!`.
-- In collapsed mode, deltas are separated by spaces, not newlines.
-- In expanded mode, deltas concatenate naturally without separators.
-- `[thinking]` remains on its own line.
-- `[answer]` remains on its own line.
-- `cargo build` and `cargo test` pass after the changes.
+- Three config flags exist, default OFF; all-off ⇒ unchanged behavior.
+- FR-01..FR-03 implemented with unit tests for the pure logic.
+- `cargo build`/`test`/`clippy` green; existing tests unaffected.
+- Requirements/Design/Tasks consistent.
+</content>

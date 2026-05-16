@@ -14,11 +14,22 @@ This backend uses the Anthropic Claude API (Messages, SSE). It is the reference 
 kind = "claude"
 
 [provider.claude]
-api_key_env = "ANTHROPIC_API_KEY"
-model       = "claude-opus-4-7"
-base_url    = "https://api.anthropic.com"   # usually leave as-is
-thinking    = true                           # enable thinking blocks
+api_key_env  = "ANTHROPIC_API_KEY"
+model        = "claude-opus-4-7"
+base_url     = "https://api.anthropic.com"   # usually leave as-is
+thinking     = true                           # enable thinking blocks
+prompt_cache = false                          # opt-in; see "Prompt Caching"
 ```
+
+## Prompt Caching (opt-in)
+
+Set `prompt_cache = true` to add Anthropic `cache_control: {type:"ephemeral"}`
+breakpoints to the system prompt, the last tool definition, and the last
+message's last content block (≤ 3 of Anthropic's 4 allowed). The repeated
+prefix is then served from Anthropic's prompt cache (≈ 5-minute TTL) instead of
+being reprocessed each turn — the full history is still sent, just cheaper and
+faster on cache hits. Default is `false` (request body identical to before).
+See [`doc/config.md`](../config.md) §11.1.
 
 ## Recommended Models
 
@@ -37,6 +48,7 @@ Check the Anthropic console for currently available models.
 | Streaming | ✓ | SSE |
 | Tool use | ✓ | Parses native Anthropic tool_use blocks |
 | Thinking | ✓ | Displayed with `[thinking]` header. Controlled via `ui.show_thinking` |
+| Prompt caching | ✓ (opt-in) | `prompt_cache = true`; `cache_control` on system / tools / tail |
 
 ## Verification
 
