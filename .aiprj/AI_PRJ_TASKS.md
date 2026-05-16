@@ -84,4 +84,11 @@ Implementation breakdown for the three opt-in context-efficiency features
   `doc/providers/opencode.md`. Docs-only; no source changed (build/test
   unaffected: still 93/93). Note: `doc/config.md` was also previously missing
   the `opencode` provider — brought current in the same pass.
+- **2026-05-16 (Docs pass 2)**: Brought the two remaining stale docs current:
+  `doc/architecture.md` (added `history.rs`/`opencode.rs` to module map,
+  `opencode` in the Provider list, compaction step in §3.1, new §8
+  "Context-efficiency Features", renumbered Target OS → §9) and
+  `doc/troubleshooting.md` (new "OpenCode Issues" and "Context-efficiency
+  Features" sections). Docs-only; no source changed (build/test still 93/93).
+  Committed on branch `feat/opencode-context-efficiency`.
 </content>
