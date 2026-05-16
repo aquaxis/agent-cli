@@ -8,7 +8,7 @@
 
 - Standalone — no tmux required. Just run `agent-cli` (the no-arg form is equivalent to `agent-cli run`).
 - Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch (does not call out to the `claude` CLI).
-- Four backends: `claude` / `codex` / `ollama` / `llama.cpp`.
+- Five backends: `claude` / `codex` / `ollama` / `opencode` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
 - Built-in tools: `shell` / `fs_read` / `fs_write` / `send_to`. Approval mode can be flipped at runtime with `/auto on`.
@@ -17,6 +17,7 @@
 - Self-diagnostics with `agent-cli doctor` and a 5-stage smoke test with `agent-cli selftest` (Provider OK / shell tool / IPC / subprocess registration / subprocess AI response).
 - Configurable tool-use loop cap via `[runtime] max_tool_iterations` (default 24, max `u32::MAX`) — see "[info] max tool-use iterations reached" below.
 - Ollama `message.thinking` field is decoded as `[thinking]` for thinking-capable models such as `glm-5.1:cloud`.
+- Opt-in context-efficiency features (all default OFF): Claude prompt caching, opencode local persistent session, and hybrid history-window management (summarize-then-drop). See [`doc/config.md`](doc/config.md) §11.
 
 ## Supported backends
 
@@ -25,15 +26,25 @@
 | claude | Anthropic Claude (Messages, SSE) | `claude-opus-4-7` |
 | codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
+| opencode | OpenCode — dual mode (see below) | `claude-sonnet-4-5` |
 | llama.cpp | OpenAI-compatible `/v1/chat/completions` (SSE) | `default` |
+
+`opencode` selects its mode by API-key presence:
+
+- **No key → local mode.** Talks to a running `opencode serve` over its native
+  session API: `POST /session` → `POST /session/:id/message` (synchronous JSON).
+  Default `base_url` `http://127.0.0.1:4096`.
+- **Key set → cloud mode (OpenCode Zen).** OpenAI-compatible
+  `POST {base_url}/chat/completions` (SSE, `[DONE]`), `Authorization: Bearer`.
+  Default cloud `base_url` `https://opencode.ai/zen/v1`, key env `OPENCODE_API_KEY`.
 
 The mandatory verification targets are `claude` and `ollama` (with model `glm-5.1:cloud`).
 
-| Capability | claude | codex | ollama | llama.cpp |
-|------------|--------|-------|--------|-----------|
-| Streaming  | ✓ | ✓ | ✓ | ✓ |
-| Tool use   | ✓ | ✓ (function calling) | ✓ (model-dependent) | ✓ (server-build dependent) |
-| Thinking   | ✓ (`thinking_delta`) | ✗ | ✓ (model-dependent, `message.thinking`) | ✗ |
+| Capability | claude | codex | ollama | opencode | llama.cpp |
+|------------|--------|-------|--------|----------|-----------|
+| Streaming  | ✓ | ✓ | ✓ | ✓ (cloud SSE; local buffered) | ✓ |
+| Tool use   | ✓ | ✓ (function calling) | ✓ (model-dependent) | ✓ cloud / ✗ local (v1) | ✓ (server-build dependent) |
+| Thinking   | ✓ (`thinking_delta`) | ✗ | ✓ (model-dependent, `message.thinking`) | ✗ | ✗ |
 
 ## Install
 
@@ -105,7 +116,7 @@ Minimum edits to get going:
 
 ```toml
 [provider]
-kind = "claude"  # or "codex" | "ollama" | "llama.cpp"
+kind = "claude"  # or "codex" | "ollama" | "opencode" | "llama.cpp"
 
 [provider.claude]
 api_key_env = "ANTHROPIC_API_KEY"  # name of the env var that holds the secret
@@ -114,6 +125,25 @@ model       = "claude-opus-4-7"
 [provider.ollama]
 base_url = "http://127.0.0.1:11434"
 model    = "glm-5.1:cloud"
+
+[provider.opencode]
+# Local mode: a running `opencode serve`, no key needed.
+base_url = "http://127.0.0.1:4096"
+model    = "claude-sonnet-4-5"
+# Cloud mode (OpenCode Zen): set both of these instead — a resolved key
+# switches opencode to cloud mode automatically.
+# base_url    = "https://opencode.ai/zen/v1"
+# api_key_env = "OPENCODE_API_KEY"
+
+# Opt-in context-efficiency features (all default OFF; see doc/config.md §11):
+# [provider.claude]
+# prompt_cache = true              # Anthropic prompt caching
+# [provider.opencode]
+# persistent_session = true        # reuse one local OpenCode session
+# [history]
+# enabled = true                   # summarize-then-drop old turns
+# max_context_tokens = 24000
+# keep_recent_turns  = 6
 ```
 
 To run multiple profiles in parallel, point each instance at its own `--config` file. Share `[runtime] registry_dir` if you want them to discover each other as peers.
@@ -267,7 +297,7 @@ Full frontmatter reference, validation rules, and operational scenarios are in [
 - [`doc/tools.md`](doc/tools.md) — built-in tool specifications
 - [`doc/architecture.md`](doc/architecture.md) — architecture overview
 - [`doc/troubleshooting.md`](doc/troubleshooting.md) — known failures and fixes
-- [`doc/providers/claude.md`](doc/providers/claude.md) / [`codex.md`](doc/providers/codex.md) / [`ollama.md`](doc/providers/ollama.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
+- [`doc/providers/claude.md`](doc/providers/claude.md) / [`codex.md`](doc/providers/codex.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development guide
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
 

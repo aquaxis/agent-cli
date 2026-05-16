@@ -175,6 +175,12 @@ impl Agent {
         event_tx: &mpsc::Sender<AgentEvent>,
         log: Option<&ConversationLog>,
     ) -> Result<()> {
+        // Hybrid history-window management (opt-in `[history]`). Runs before
+        // the provider call so the compacted history is what gets sent.
+        if self.config.history.enabled {
+            self.maybe_compact_history(event_tx).await;
+        }
+
         // Configurable cap (config.toml: [runtime] max_tool_iterations).
         // Default raised from the historical 8 to 24 so design-then-debug
         // orchestrators (the AI conductor generates HDL, then iterates on
@@ -336,6 +342,84 @@ impl Agent {
             .await;
         let _ = event_tx.send(AgentEvent::Done).await;
         Ok(())
+    }
+
+    /// Hybrid history-window management (opt-in `[history]`). When the
+    /// estimated context exceeds `max_context_tokens`, summarize the old span
+    /// via the LLM into one system message; if still over budget, drop the
+    /// oldest old-span messages. Best-effort: any summarization failure
+    /// degrades to drop-only and never fails the turn. The leading
+    /// system/persona prefix and the most recent `keep_recent_turns` are
+    /// always preserved verbatim.
+    async fn maybe_compact_history(&mut self, event_tx: &mpsc::Sender<AgentEvent>) {
+        let max = self.config.history.max_context_tokens;
+        let keep = self.config.history.keep_recent_turns;
+        if crate::history::estimate_tokens(&self.history) <= max {
+            return;
+        }
+        let span = match crate::history::old_span(&self.history, keep) {
+            Some(s) if s.start < s.end => s,
+            _ => return,
+        };
+
+        // Clone the old span out so the provider call does not borrow history.
+        let transcript = crate::history::render_transcript(&self.history[span.clone()]);
+        let n_old = span.len();
+        let summ_msgs = vec![
+            Message::System {
+                content: "You are a summarizer. Condense the conversation excerpt into a \
+                          compact summary that preserves facts, decisions, file paths, \
+                          identifiers, and open tasks. Output only the summary."
+                    .to_string(),
+            },
+            Message::User {
+                content: format!("Summarize this earlier conversation excerpt:\n\n{transcript}"),
+            },
+        ];
+
+        let mut summary = String::new();
+        if let Ok(mut stream) = self.provider.complete_stream(&summ_msgs, &[]).await {
+            while let Some(ev) = stream.next().await {
+                match ev {
+                    ProviderEvent::Text { delta } => summary.push_str(&delta),
+                    ProviderEvent::Done | ProviderEvent::Error { .. } => break,
+                    _ => {}
+                }
+            }
+        }
+        let summary = summary.trim().to_string();
+
+        if !summary.is_empty() {
+            let replacement = Message::System {
+                content: format!("[Summary of {n_old} earlier message(s)]\n{summary}"),
+            };
+            self.history
+                .splice(span.clone(), std::iter::once(replacement));
+            let _ = event_tx
+                .send(AgentEvent::Info {
+                    message: format!("history compacted: {n_old} message(s) summarized"),
+                })
+                .await;
+        }
+
+        // Still over budget → drop oldest eligible messages one at a time.
+        let mut dropped = 0usize;
+        while crate::history::estimate_tokens(&self.history) > max {
+            match crate::history::old_span(&self.history, keep) {
+                Some(s) if s.start < s.end => {
+                    self.history.remove(s.start);
+                    dropped += 1;
+                }
+                _ => break,
+            }
+        }
+        if dropped > 0 {
+            let _ = event_tx
+                .send(AgentEvent::Info {
+                    message: format!("history compacted: {dropped} oldest message(s) dropped"),
+                })
+                .await;
+        }
     }
 }
 

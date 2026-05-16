@@ -1,171 +1,104 @@
 # Design Document (AI_PRJ_DESIGN)
 
-This document describes the design for changing thinking display from token-based to sentence-based line breaking, as required by `AI_PRJ_REQUIREMENTS.md`.
+As-built design for the three opt-in context-efficiency features in
+`AI_PRJ_REQUIREMENTS.md`.
 
-## 1. Design Scope
+## 1. Config (`src/config.rs`)
 
-### 1.1 In Scope
+- `ProviderEntry` += `prompt_cache: Option<bool>`, `persistent_session:
+  Option<bool>` (both `#[serde(default)]`, `unwrap_or(false)` at use).
+- New `HistoryConfig` (`enabled` default false, `max_context_tokens` default
+  24000, `keep_recent_turns` default 6) added to `Config` as
+  `#[serde(default)] history`.
+- `DEFAULT_CONFIG` template: commented opt-in lines under `[provider.claude]`
+  and `[provider.opencode]`, and a `[history]` block (enabled=false).
+- Additive only — every existing config still parses; defaults preserve current
+  behavior.
 
-- Changing `eprintln!` to `eprint!` for thinking text in both collapsed and expanded modes.
-- Adding space separators between collapsed deltas.
-- Keeping `[thinking]` and `[answer]` labels on their own lines.
+## 2. Feature #1 — opencode Persistent Session (`src/ai/opencode.rs`)
 
-### 1.2 Out of Scope
+- `OpenCodeProvider` += `persistent_session: bool` and
+  `session: tokio::sync::Mutex<PersistState>` where
+  `PersistState { id: Option<String>, sent_count: usize, sys: String }`.
+  `tokio` mutex because the guard is held across `.await`; turns are
+  sequential so serialization is acceptable.
+- `complete_stream` dispatch: cloud (key) → unchanged; local + flag →
+  `complete_stream_local_persistent`; local + no flag → existing
+  `complete_stream_local` (ephemeral, unchanged).
+- `complete_stream_local_persistent`:
+  - compute `system` via `flatten_history`.
+  - reset if `id.is_none()` || `messages.len() < sent_count` ||
+    `sys != system` → `create_session` (`POST /session`), `sent_count = 0`.
+  - `new_turn_text(messages, sent_count)` builds the payload from new
+    `User`/`ToolResult` turns only (`Assistant` skipped — server keeps its
+    own; `System` via the message `system` field on the first message).
+    Falls back to the latest `User` if nothing new qualifies.
+  - `POST /session/:id/message`; on 404/400/410 → one recreate + resend; on
+    other non-2xx → standard `ProviderError`.
+  - on success `sent_count = messages.len()`; parse via `parse_local_parts`.
+- The server retains prior context, so full history is NOT re-flattened.
 
-- Modifying `--help` output or CLI argument handling.
-- Changing `show_thinking` configuration values or semantics.
-- Modifying provider implementations or `AgentEvent` enum variants.
-- Changing logging behavior.
-- Implementing sentence boundary detection (relying on provider-sent newlines instead).
+## 3. Feature #2 — Claude Prompt Cache (`src/ai/claude.rs`)
 
-## 2. Previous Implementation (Before This Update)
+- `ClaudeProvider` += `prompt_cache: bool` (`entry.prompt_cache`).
+- After building the request body, `if self.prompt_cache {
+  apply_prompt_cache(&mut body) }`.
+- `apply_prompt_cache` (pure, `&mut serde_json::Value`):
+  - `system` string → `[{type:text,text,cache_control:ephemeral}]`.
+  - `tools` → `cache_control` on the last tool object.
+  - `messages` last message: string content → text block with
+    `cache_control`; array content (tool_result) → `cache_control` on its
+    last block.
+- Disabled path untouched (plain strings, byte-identical to before).
 
-### 2.1 Previous Thinking Display
+## 4. Feature #3 — Hybrid History Management (`src/history.rs` + `src/agent.rs`)
 
-The previous implementation printed each thinking delta on its own line:
+- New pure module `src/history.rs` (declared in `main.rs`):
+  - `estimate_tokens(&[Message]) -> usize` = Σ content chars / 4.
+  - `old_span(&[Message], keep) -> Option<Range>` = after leading `System`
+    prefix, before last `keep` messages.
+  - `render_transcript(&[Message]) -> String` for the summarization prompt.
+- `Agent::process_turn` calls `maybe_compact_history(event_tx)` before the
+  tool-iteration loop, only when `config.history.enabled`.
+- `maybe_compact_history` (`&mut self`):
+  1. return early if `estimate_tokens <= max_context_tokens` or no old span.
+  2. clone old span → transcript; call `self.provider.complete_stream(&[
+     System(summarizer), User(transcript) ], &[])` with **no tools**
+     (cannot recurse — direct provider call, not `process_turn`); collect
+     `Text` until `Done`/`Error`.
+  3. if summary non-empty → `history.splice(span, [System(summary)])` and
+     emit an `Info` event.
+  4. while still over budget → `history.remove(old_span.start)` (drop oldest
+     eligible) and emit an `Info` event.
+  - Borrow safety: the provider call only borrows `&self`; the stream is
+    dropped before any `&mut self.history` mutation (sequential, NLL-clean).
+  - Best-effort: `complete_stream` error ⇒ skip summary, fall through to
+    drop-only; the turn never fails.
 
-```rust
-AgentEvent::Thinking { text } => match show_thinking {
-    ShowThinkingMode::Hidden => {}
-    ShowThinkingMode::Collapsed => {
-        if !state.thinking_printed {
-            eprintln!("\n[thinking]");
-            state.thinking_printed = true;
-        }
-        let collapsed = collapse_thinking_text(&text);
-        eprintln!("{collapsed}");
-    }
-    ShowThinkingMode::Expanded => {
-        if !state.thinking_printed {
-            eprintln!("\n[thinking]");
-            state.thinking_printed = true;
-        }
-        eprintln!("{text}");
-    }
-},
-```
-
-Issues:
-1. Each thinking delta got its own line (`eprintln!`), creating fragmented output.
-2. In expanded mode, streaming tokens appeared on separate lines: "I", "need", "to", "analyze" etc.
-3. In collapsed mode, each truncated delta appeared on its own line.
-
-### 2.2 Previous Output Examples
-
-**Collapsed mode (before):**
-```
-[thinking]
-I need to analyze this...
-Let me consider the options...
-Continuing my analysis...
-```
-Each delta on its own line.
-
-**Expanded mode (before):**
-```
-[thinking]
-I need to analyze this problem.
-Let me consider the options.
-Continuing my analysis.
-```
-Each delta on its own line.
-
-## 3. New Design
-
-### 3.1 Sentence-Based Line Breaking (Requirement FR-01)
-
-Change `eprintln!` to `eprint!` for thinking text. This allows deltas to flow together instead of each getting its own line.
-
-### 3.2 Collapsed Mode Space Separator (Requirement FR-02)
-
-In collapsed mode, add a space before each subsequent delta (using the `thinking_printed` flag to identify subsequent deltas). This prevents truncated words from running together.
-
-```rust
-ShowThinkingMode::Collapsed => {
-    if !state.thinking_printed {
-        eprintln!("\n[thinking]");
-        state.thinking_printed = true;
-    } else {
-        eprint!(" ");
-    }
-    let collapsed = collapse_thinking_text(&text);
-    eprint!("{collapsed}");
-}
-```
-
-The `else { eprint!(" "); }` adds a space before each subsequent delta (but not the first one). The `thinking_printed` flag distinguishes the first delta from subsequent ones.
-
-### 3.3 Expanded Mode Natural Flow (Requirement FR-03)
-
-In expanded mode, use `eprint!` for thinking text without any separator. Provider-sent tokens already include appropriate whitespace (e.g., " World" with a leading space), so they concatenate naturally.
-
-```rust
-ShowThinkingMode::Expanded => {
-    if !state.thinking_printed {
-        eprintln!("\n[thinking]");
-        state.thinking_printed = true;
-    }
-    eprint!("{text}");
-}
-```
-
-### 3.4 Answer Label Separation (Requirement FR-04)
-
-The `\n` prefix in `eprintln!("\n[answer]")` ensures a newline after flowing thinking text. This creates clear separation:
-
-```
-[thinking]
-thinking text flows here...
-
-[answer]
-answer text flows here
-```
-
-The `\n` in `\n[answer]` ends the current line (where thinking text is flowing), and `[answer]` starts on the next line.
-
-### 3.5 Output Examples
-
-**Collapsed mode (after):**
-```
-[thinking]
-I need to analyze this... Let me consider the options... Continuing my analysis...
-
-[answer]
-The answer is 42.
-```
-Deltas flow together with spaces between truncated fragments.
-
-**Expanded mode (after):**
-```
-[thinking]
-I need to analyze this problem. Let me consider the options. Continuing my analysis...
-
-[answer]
-The answer is 42.
-```
-Deltas flow together naturally. Provider-sent newlines create sentence boundaries.
-
-## 4. Key Source Files
+## 5. Source Files Touched
 
 | File | Change |
 |------|--------|
-| `src/app.rs` | Change `eprintln!` to `eprint!` for thinking text; add space separator for collapsed mode |
+| `src/config.rs` | `prompt_cache`/`persistent_session` fields; `HistoryConfig`; template |
+| `src/ai/claude.rs` | `prompt_cache` field; `apply_prompt_cache` + 3 tests |
+| `src/ai/opencode.rs` | `persistent_session`, `PersistState`, persistent path, `new_turn_text` |
+| `src/history.rs` | **new** pure module + 4 tests |
+| `src/agent.rs` | `maybe_compact_history` + call site in `process_turn` |
+| `src/main.rs` | `mod history;` |
 
-No other source files need modification.
+## 6. Risks & Mitigations
 
-## 5. Risks and Mitigations
+| Risk | Mitigation |
+|------|-----------|
+| Persistent-session dual-state drift (agent-cli history vs server session) | Send only new user/tool turns; skip assistant; reset on shrink/system change; one stale-session retry |
+| Summarization recursion / failure | No tools + direct provider call; failure degrades to drop-only; never fails turn |
+| Token estimate inaccuracy | Heuristic only gates compaction; conservative default budget; recent turns always kept |
+| Prompt-cache breakpoint overuse | ≤ 3 of Anthropic's 4 allowed; only when opted in |
 
-| Risk | Impact | Mitigation |
-|------|--------|-----------|
-| Very long lines in collapsed mode | All deltas on one line could exceed terminal width | Terminal will wrap; this is better than per-token line breaks |
-| Missing spaces between expanded deltas | Provider tokens that don't include spaces could concatenate | Most providers include appropriate whitespace in streaming tokens |
-| Trailing space in collapsed mode | Last delta has a space before `[answer]` | The `\n` in `\n[answer]` creates separation; trailing space is minor |
-| `eprint!` buffering | Output may not flush immediately on some systems | Stderr is typically unbuffered; if needed, add explicit flush |
+## 7. Handoff
 
-## 6. Handoff to Implementation Phase
-
-The implementation phase should:
-
-1. Change `eprintln!("{collapsed}")` to `eprint!("{collapsed}")` in collapsed mode, with space separator for subsequent deltas.
-2. Change `eprintln!("{text}")` to `eprint!("{text}")` in expanded mode.
-3. Verify `cargo build` and `cargo test` pass.
+Implementation complete and verified (`cargo build`/`test`/`clippy` green;
++7 unit tests). Live checks (real OpenCode server with `persistent_session`;
+real Anthropic cache-hit metrics; long-conversation compaction) require live
+backends and are user-side.
+</content>

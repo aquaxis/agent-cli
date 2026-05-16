@@ -13,6 +13,7 @@ pub mod claude;
 pub mod codex;
 pub mod llamacpp;
 pub mod ollama;
+pub mod opencode;
 pub mod stream;
 pub mod tool_bridge;
 
@@ -82,7 +83,7 @@ pub type EventStream<'a> = Pin<Box<dyn Stream<Item = ProviderEvent> + Send + 'a>
 /// drive dialog and tool calls without knowing backend-specific representations.
 #[async_trait]
 pub trait Provider: Send + Sync {
-    /// Backend identifier. `"claude"` / `"codex"` / `"ollama"` / `"llama.cpp"`.
+    /// Backend identifier. `"claude"` / `"codex"` / `"ollama"` / `"opencode"` / `"llama.cpp"`.
     fn name(&self) -> &'static str;
     /// Capabilities provided by this backend.
     fn capabilities(&self) -> Capabilities;
@@ -102,6 +103,9 @@ pub fn build(cfg: &Config, source: &ConfigSource) -> Result<Box<dyn Provider>> {
         "claude" => Ok(Box::new(claude::ClaudeProvider::from_config(cfg, source)?)),
         "codex" => Ok(Box::new(codex::CodexProvider::from_config(cfg, source)?)),
         "ollama" => Ok(Box::new(ollama::OllamaProvider::from_config(cfg, source)?)),
+        "opencode" => Ok(Box::new(opencode::OpenCodeProvider::from_config(
+            cfg, source,
+        )?)),
         "llama.cpp" => Ok(Box::new(llamacpp::LlamaCppProvider::from_config(
             cfg, source,
         )?)),
@@ -109,7 +113,7 @@ pub fn build(cfg: &Config, source: &ConfigSource) -> Result<Box<dyn Provider>> {
     }
 }
 
-pub const SUPPORTED: &[&str] = &["claude", "codex", "ollama", "llama.cpp"];
+pub const SUPPORTED: &[&str] = &["claude", "codex", "ollama", "opencode", "llama.cpp"];
 
 /// Diagnostic information for provider HTTP errors (FR-09-3 / design doc 5.1).
 ///

@@ -14,6 +14,7 @@ This document provides a comprehensive guide to configuring `agent-cli`. For a q
 8. [UI Display Mode](#8-ui-display-mode)
 9. [Common Configuration Mistakes and Diagnostics](#9-common-configuration-mistakes-and-diagnostics)
 10. [Applying Configuration Changes and Restarting](#10-applying-configuration-changes-and-restarting)
+11. [Context-efficiency Features (opt-in)](#11-context-efficiency-features-opt-in)
 
 ## 1. Configuration File Location and Resolution Order
 
@@ -46,6 +47,7 @@ agent-cli --config ./project-a.toml config path
 [provider.claude]           # claude backend-specific settings
 [provider.codex]            # codex (OpenAI) backend-specific settings
 [provider.ollama]           # ollama backend-specific settings
+[provider.opencode]         # opencode backend (local serve / OpenCode Zen)
 [provider."llama.cpp"]      # llama.cpp server-specific settings (key must be quoted)
 
 [runtime]                   # Runtime behavior and paths
@@ -53,6 +55,7 @@ agent-cli --config ./project-a.toml config path
 [tools.shell]               # Shell tool tuning
 
 [ui]                        # Display mode
+[history]                   # Opt-in history-window management
 ```
 
 ## 3. Full Item Reference
@@ -61,16 +64,19 @@ agent-cli --config ./project-a.toml config path
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
-| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"codex"` / `"ollama"` / `"llama.cpp"` |
+| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"codex"` / `"ollama"` / `"opencode"` / `"llama.cpp"` |
 
-### `[provider.claude]` / `[provider.codex]` / `[provider.ollama]` / `[provider."llama.cpp"]`
+### `[provider.claude]` / `[provider.codex]` / `[provider.ollama]` / `[provider.opencode]` / `[provider."llama.cpp"]`
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
 | `model` | string | Per-backend default | Yes | Model name to use |
-| `api_key_env` | string | Per-backend default | Yes | Environment variable name holding the API key (not the value itself) |
+| `api_key_env` | string | Per-backend default | Cond. | Environment variable name holding the API key (not the value itself). For `opencode`, presence selects cloud (Zen) vs local mode |
 | `base_url` | string | Per-backend default | Cond. | Endpoint URL. Override when using a proxy or compatible server |
 | `thinking` | bool | `true` (only meaningful for claude) | Cond. | Enable thinking blocks (`claude` only) |
+| `prompt_cache` | bool | `false` (**claude only**) | No | Opt-in Anthropic prompt caching (`cache_control` on system / tools / conversation tail). See §11 |
+| `persistent_session` | bool | `false` (**opencode local only**) | No | Opt-in: reuse one OpenCode server session across turns. See §11 |
+| `request_timeout_secs` | int | `900` | No | Total HTTP timeout incl. streaming |
 
 Per-backend defaults:
 
@@ -79,7 +85,10 @@ Per-backend defaults:
 | claude | `claude-opus-4-7` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
 | codex | `gpt-4.1` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | ollama | `glm-5.1:cloud` | `http://127.0.0.1:11434` | (not needed) |
+| opencode | `claude-sonnet-4-5` | `http://127.0.0.1:4096` (local) / `https://opencode.ai/zen/v1` (when key set) | (none = local; set = cloud, e.g. `OPENCODE_API_KEY`) |
 | llama.cpp | `default` | `http://127.0.0.1:8080` | (optional) |
+
+`opencode` runs in two modes selected by **API-key presence**: no resolved key → **local** mode against a running `opencode serve` (native session API); key resolved → **cloud** mode against OpenCode Zen (OpenAI-compatible). See [`doc/providers/opencode.md`](providers/opencode.md).
 
 ### `[runtime]`
 
@@ -146,6 +155,19 @@ If the persona has `allowed_tools` / `denied_tools`, the **intersection / differ
 | Key | Type | Default | Description |
 |------|----|------|------|
 | `show_thinking` | string | `"collapsed"` | Thinking display mode: `"collapsed"` (truncated to the first 80 characters + first line) / `"expanded"` (full text) / `"hidden"` (not displayed). See "UI Display Mode" below for details |
+
+### `[history]`
+
+Opt-in hybrid history-window management. When `enabled = false` (default), the
+full conversation is replayed verbatim every turn (unchanged behavior).
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `enabled` | bool | `false` | Master switch. When false, no summarization or trimming occurs |
+| `max_context_tokens` | int | `24000` | Approx. budget (estimated tokens ≈ chars/4). Compaction runs when exceeded |
+| `keep_recent_turns` | int | `6` | Most-recent messages always kept verbatim (system/persona prefix is always kept too) |
+
+See §11 for the compaction algorithm.
 
 ## 4. Complete Examples
 
@@ -373,3 +395,67 @@ Configuration changes take effect after restarting `agent-cli`. Dynamic switchin
   - **Persona file**: Reload with `/reload-persona` in the REPL (updates the system prompt only; conversation history is preserved).
   - **Tool approval skip**: `/auto on` / `/auto off` / `/auto status` in the REPL (overrides `auto_approve_tools` on the spot).
 - `--provider` / `--model` / `--persona` / `--auto-approve-tools` can be overridden via CLI options (per process).
+
+## 11. Context-efficiency Features (opt-in)
+
+agent-cli replays the full conversation history to the provider on every send.
+For long sessions this grows cost/latency. Three **opt-in** features mitigate
+this; all default OFF, and with every flag off behavior is byte-for-byte
+unchanged.
+
+### 11.1 Claude prompt caching — `[provider.claude] prompt_cache`
+
+```toml
+[provider.claude]
+prompt_cache = true
+```
+
+Adds Anthropic `cache_control: {type:"ephemeral"}` breakpoints to the system
+prompt, the last tool definition, and the last message's last content block
+(≤ 3 of Anthropic's 4 allowed). The repeated prefix is then served from
+Anthropic's cache (≈ 5-minute TTL) instead of being reprocessed each turn —
+the full history is still sent, but cheaper/faster. No effect on other
+backends.
+
+### 11.2 opencode persistent session — `[provider.opencode] persistent_session`
+
+```toml
+[provider.opencode]
+base_url           = "http://127.0.0.1:4096"   # local mode (no api_key_env)
+persistent_session = true
+```
+
+Local mode only (ignored in cloud/Zen mode). Creates one OpenCode server
+session and reuses its `session_id` across turns, sending only the new
+user/tool turns instead of re-flattening the whole history (the server retains
+prior context). The session is recreated when history is cleared (`/clear`) or
+the system prompt changes; a stale-session server error triggers one
+transparent recreate + resend.
+
+### 11.3 Hybrid history-window management — `[history]`
+
+```toml
+[history]
+enabled            = true
+max_context_tokens = 24000
+keep_recent_turns  = 6
+```
+
+Before each turn, if the estimated context (≈ chars/4) exceeds
+`max_context_tokens`:
+
+1. **Summarize:** the "old span" (everything after the system/persona prefix
+   and before the last `keep_recent_turns` messages) is summarized by the LLM
+   into a single summary message that replaces that span.
+2. **Drop:** if still over budget, the oldest old-span messages are dropped
+   one at a time until under budget.
+
+The system/persona prefix and the most recent `keep_recent_turns` messages are
+never summarized or dropped. Summarization is best-effort: a failed
+summarization call degrades to drop-only and never fails the turn. The REPL
+prints an `[info]` line reporting what was compacted. Works with any provider.
+
+> Provider-side note: at the network layer every send is still an independent
+> request (claude/ollama/codex/opencode-cloud APIs are stateless); only the
+> TCP/TLS socket is pooled. These features reduce *what* is reprocessed/sent,
+> not the per-send request model. See [`doc/architecture.md`](architecture.md).

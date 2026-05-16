@@ -65,6 +65,35 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
 - Cloud models in Ollama may not be available in your local environment.
 - Run `ollama list` to see available model names, and start with `--model <existing>`.
 
+## OpenCode Issues
+
+### Unexpectedly hitting the cloud (Zen) instead of the local server
+
+- `opencode` mode is selected by **API-key presence**: if the env var named by
+  `[provider.opencode] api_key_env` resolves to a value, cloud mode is used.
+- For local mode, omit `api_key_env` (or unset the variable) and point
+  `base_url` at your `opencode serve` (default `http://127.0.0.1:4096`).
+
+### Connection refused / `provider conn : FAIL` (local opencode)
+
+- `opencode serve` is not running or is on a different port.
+- Start it, then `curl -s http://127.0.0.1:4096/session` to confirm, and verify
+  `base_url`.
+
+### Local mode: the model can't call shell/fs tools
+
+- Known v1 limitation: agent-cli tool specs are **not** forwarded to a local
+  `opencode serve` (session-API tool schema unconfirmed). Use cloud mode if you
+  need tool use. See [`doc/providers/opencode.md`](providers/opencode.md).
+
+### `persistent_session` seems to forget context / starts a new session
+
+- The session is intentionally recreated when conversation history is cleared
+  (`/clear`) or the system prompt changes (e.g. `/reload-persona`), and once
+  transparently on a stale-session server error. This is expected; prior
+  context is rebuilt from agent-cli's replayed history.
+- `persistent_session` is ignored in cloud mode (no local session concept).
+
 ## Registry / IPC Issues
 
 ### Other processes don't appear in `/list`
@@ -210,6 +239,31 @@ For detailed troubleshooting, see [`doc/personas.md`](personas.md) section 11 "T
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   source "$HOME/.cargo/env"
   ```
+
+## Context-efficiency Features (opt-in)
+
+These are all default-OFF; see [`doc/config.md`](config.md) §11.
+
+### `[info] history compacted: ...` appears mid-conversation
+
+- Not an error. With `[history] enabled = true`, when the estimated context
+  exceeds `max_context_tokens` the oldest turns are summarized (and/or
+  dropped). The system/persona prefix and the most recent `keep_recent_turns`
+  are always kept. Raise `max_context_tokens` / `keep_recent_turns`, or set
+  `enabled = false`, to change this.
+
+### Older details seem lost after a long session
+
+- Expected when `[history] enabled = true`: old turns are condensed into a
+  summary. Increase `keep_recent_turns` or `max_context_tokens` to retain more
+  verbatim, or disable history management.
+
+### Claude `prompt_cache = true` but no apparent speed-up
+
+- The cache has a ≈5-minute TTL and only helps on a stable repeated prefix
+  (system/tools/conversation tail). The first call is always a cache write;
+  benefits show on subsequent calls within the TTL. The full history is still
+  sent either way. No effect on non-Claude backends.
 
 ## Still not resolved?
 

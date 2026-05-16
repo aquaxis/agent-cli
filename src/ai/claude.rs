@@ -18,6 +18,8 @@ pub struct ClaudeProvider {
     pub base_url: String,
     pub model: String,
     pub thinking: bool,
+    /// Opt-in Anthropic prompt caching (`cache_control` breakpoints).
+    pub prompt_cache: bool,
     pub temperature: Option<f32>,
     pub client: reqwest::Client,
     pub context: ProviderContext,
@@ -62,6 +64,7 @@ impl ClaudeProvider {
             base_url,
             model,
             thinking: entry.thinking.unwrap_or(true),
+            prompt_cache: entry.prompt_cache.unwrap_or(false),
             temperature: entry.temperature,
             client,
             context,
@@ -108,6 +111,54 @@ fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
     (system, out)
 }
 
+fn ephemeral() -> Value {
+    json!({"type": "ephemeral"})
+}
+
+/// Add Anthropic `cache_control: {type:"ephemeral"}` breakpoints to a
+/// `/v1/messages` request body: the system prompt, the last tool definition,
+/// and the final message's last content block. Each section is a no-op when
+/// absent. Up to 3 breakpoints (Anthropic allows 4).
+pub(crate) fn apply_prompt_cache(body: &mut Value) {
+    if let Some(sys) = body.get("system").and_then(|s| s.as_str()) {
+        let sys = sys.to_string();
+        body["system"] = json!([{
+            "type": "text",
+            "text": sys,
+            "cache_control": ephemeral(),
+        }]);
+    }
+    if let Some(tools) = body.get_mut("tools").and_then(|t| t.as_array_mut()) {
+        if let Some(obj) = tools.last_mut().and_then(|t| t.as_object_mut()) {
+            obj.insert("cache_control".into(), ephemeral());
+        }
+    }
+    if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        if let Some(last) = messages.last_mut() {
+            set_cache_control_on_message(last);
+        }
+    }
+}
+
+fn set_cache_control_on_message(msg: &mut Value) {
+    match msg.get("content").cloned() {
+        Some(Value::String(text)) => {
+            msg["content"] = json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": ephemeral(),
+            }]);
+        }
+        Some(Value::Array(mut blocks)) => {
+            if let Some(obj) = blocks.last_mut().and_then(|b| b.as_object_mut()) {
+                obj.insert("cache_control".into(), ephemeral());
+            }
+            msg["content"] = Value::Array(blocks);
+        }
+        _ => {}
+    }
+}
+
 #[async_trait]
 impl Provider for ClaudeProvider {
     fn name(&self) -> &'static str {
@@ -149,6 +200,9 @@ impl Provider for ClaudeProvider {
         }
         if let Some(t) = self.temperature {
             body["temperature"] = json!(t);
+        }
+        if self.prompt_cache {
+            apply_prompt_cache(&mut body);
         }
 
         let url = format!("{}/v1/messages", self.base_url.trim_end_matches('/'));
@@ -395,5 +449,59 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ProviderEvent::Error { message } if message == "boom"));
         assert!(has_err);
+    }
+
+    #[test]
+    fn prompt_cache_marks_system_tools_and_last_message() {
+        let mut body = json!({
+            "model": "claude-opus-4-7",
+            "system": "be terse",
+            "tools": [{"name": "a"}, {"name": "b"}],
+            "messages": [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "second"}
+            ],
+        });
+        apply_prompt_cache(&mut body);
+
+        // system became a text block with cache_control
+        let sys = &body["system"][0];
+        assert_eq!(sys["text"], "be terse");
+        assert_eq!(sys["cache_control"]["type"], "ephemeral");
+        // only the LAST tool is marked
+        assert!(body["tools"][0].get("cache_control").is_none());
+        assert_eq!(body["tools"][1]["cache_control"]["type"], "ephemeral");
+        // only the LAST message's content block is marked
+        assert!(body["messages"][0]["content"].is_string());
+        assert_eq!(
+            body["messages"][1]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+        assert_eq!(body["messages"][1]["content"][0]["text"], "second");
+    }
+
+    #[test]
+    fn prompt_cache_marks_last_block_of_array_content() {
+        // tool_result messages already carry array content.
+        let mut body = json!({
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]
+            }],
+        });
+        apply_prompt_cache(&mut body);
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"]["type"],
+            "ephemeral"
+        );
+    }
+
+    #[test]
+    fn prompt_cache_is_noop_for_absent_sections() {
+        let mut body = json!({"model": "x"});
+        apply_prompt_cache(&mut body);
+        assert!(body.get("system").is_none());
+        assert!(body.get("tools").is_none());
+        assert!(body.get("messages").is_none());
     }
 }
