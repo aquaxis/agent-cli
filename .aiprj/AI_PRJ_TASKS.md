@@ -84,6 +84,16 @@ Implementation breakdown for the three opt-in context-efficiency features
   `doc/providers/opencode.md`. Docs-only; no source changed (build/test
   unaffected: still 93/93). Note: `doc/config.md` was also previously missing
   the `opencode` provider — brought current in the same pass.
+- **2026-05-16 (opencode dual cloud API)**: User-requested. Added
+  `[provider.opencode] api` selector (`"openai"` default → `/chat/completions`;
+  `"anthropic"` → `/messages`) so the OpenCode Zen "go" endpoints work in both
+  wire formats. `CloudApi` enum + `cloud_url`; new
+  `complete_stream_cloud_anthropic` reusing Claude's `to_anthropic_messages` /
+  `handle_frame` / `ClaudeParseState` (made `to_anthropic_messages`
+  `pub(crate)`). Config field + default-template comment + docs
+  (`config.md` table, `providers/opencode.md` "Cloud Wire Format" section).
+  Backward-compatible (default openai). `cargo build`/`clippy` clean,
+  `cargo test` 95/95 (+2). Committed on `feat/opencode-context-efficiency`.
 - **2026-05-16 (Docs pass 2)**: Brought the two remaining stale docs current:
   `doc/architecture.md` (added `history.rs`/`opencode.rs` to module map,
   `opencode` in the Provider list, compaction step in §3.1, new §8

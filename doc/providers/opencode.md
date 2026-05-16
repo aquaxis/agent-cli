@@ -40,6 +40,35 @@ api_key_env = "OPENCODE_API_KEY"
 model       = "claude-sonnet-4-5"
 ```
 
+## Cloud Wire Format — `api` (OpenAI vs Anthropic compatible)
+
+OpenCode Zen exposes both an OpenAI-compatible and an Anthropic-compatible
+surface (including the "go" endpoints). Select which one agent-cli uses with
+`api` (cloud mode only; default `"openai"`):
+
+| `api` | Endpoint | Parser |
+|-------|----------|--------|
+| `"openai"` (default) | `{base_url}/chat/completions` | OpenAI SSE (`[DONE]`) |
+| `"anthropic"` | `{base_url}/messages` | Anthropic SSE (reuses the Claude parser) |
+
+Pair it with the matching `base_url`. Example — Anthropic-compatible "go"
+endpoint:
+
+```toml
+[provider.opencode]
+base_url    = "https://opencode.ai/zen/go/v1"   # → POST .../zen/go/v1/messages
+api         = "anthropic"
+api_key_env = "OPENCODE_API_KEY"
+model       = "claude-sonnet-4-5"               # a model the endpoint serves
+```
+
+OpenAI-compatible "go" endpoint: same but `api = "openai"` (or omit) →
+`POST https://opencode.ai/zen/go/v1/chat/completions`. The API key is sent as
+`Authorization: Bearer` (and, for the Anthropic path, also `x-api-key` +
+`anthropic-version`) for gateway compatibility. Always use a model id the
+endpoint actually serves (check `{base_url}/models`); an unknown model returns
+a `ModelError`.
+
 ## Supported Features
 
 | Feature | Support | Notes |

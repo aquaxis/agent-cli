@@ -72,7 +72,7 @@ impl ClaudeProvider {
     }
 }
 
-fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
+pub(crate) fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
     let mut system: Option<String> = None;
     let mut out: Vec<Value> = Vec::new();
     for m in messages {

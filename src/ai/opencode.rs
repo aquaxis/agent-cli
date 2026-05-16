@@ -2,10 +2,13 @@
 //!
 //! Supports two modes selected by configuration (see AI_PRJ_DESIGN.md 3.1):
 //!
-//! * **Cloud (OpenCode Zen)** — when an API key is resolved. Talks to the
-//!   OpenAI-compatible endpoint `POST {base_url}/chat/completions` with
-//!   `Authorization: Bearer <key>` and SSE streaming terminated by `[DONE]`.
-//!   Default cloud `base_url` is `https://opencode.ai/zen/v1`.
+//! * **Cloud (OpenCode Zen)** — when an API key is resolved. Two wire formats
+//!   selected by `[provider.opencode] api`: `"openai"` (default) →
+//!   `POST {base_url}/chat/completions` (`[DONE]` SSE); `"anthropic"` →
+//!   `POST {base_url}/messages` (Anthropic SSE, reuses the Claude parser).
+//!   `Authorization: Bearer <key>` either way. Default cloud `base_url` is
+//!   `https://opencode.ai/zen/v1` (use `https://opencode.ai/zen/go/v1` for
+//!   the "go" endpoints).
 //! * **Local (`opencode serve`)** — when no API key is resolved. Performs the
 //!   native session handshake: `POST /session` then `POST /session/:id/message`
 //!   which returns a synchronous JSON body `{ info, parts }`. No auth header.
@@ -22,14 +25,46 @@ use async_trait::async_trait;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
+use crate::ai::claude::{handle_frame, to_anthropic_messages, ClaudeParseState};
 use crate::ai::stream::SseAccumulator;
-use crate::ai::tool_bridge::to_openai_tools;
+use crate::ai::tool_bridge::{to_anthropic_tools, to_openai_tools};
 use crate::ai::{
     extract_request_id, Capabilities, EventStream, Message, Provider, ProviderContext,
     ProviderError, ProviderEvent, ToolSpec,
 };
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
+
+/// Cloud-mode wire format / endpoint (opencode Zen). Selected by
+/// `[provider.opencode] api`; ignored in local mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloudApi {
+    /// OpenAI-compatible `{base}/chat/completions` (default).
+    OpenAi,
+    /// Anthropic-compatible `{base}/messages`.
+    Anthropic,
+}
+
+impl CloudApi {
+    fn parse(s: Option<&str>) -> Self {
+        match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
+            Some("anthropic") | Some("messages") => CloudApi::Anthropic,
+            _ => CloudApi::OpenAi,
+        }
+    }
+
+    fn path(self) -> &'static str {
+        match self {
+            CloudApi::OpenAi => "/chat/completions",
+            CloudApi::Anthropic => "/messages",
+        }
+    }
+}
+
+/// Cloud endpoint URL for `base` under the selected API style.
+fn cloud_url(base: &str, api: CloudApi) -> String {
+    format!("{}{}", base.trim_end_matches('/'), api.path())
+}
 
 /// Cached local-mode session state (opt-in `persistent_session`).
 #[derive(Default)]
@@ -50,6 +85,8 @@ pub struct OpenCodeProvider {
     pub temperature: Option<f32>,
     /// Opt-in: reuse one server session across turns (local mode only).
     pub persistent_session: bool,
+    /// Cloud wire format (OpenAI vs Anthropic compatible). Local mode ignores.
+    pub(crate) cloud_api: CloudApi,
     pub client: reqwest::Client,
     pub context: ProviderContext,
     /// Persistent-session bookkeeping. `tokio::sync::Mutex` because it is
@@ -92,6 +129,7 @@ impl OpenCodeProvider {
             model,
             temperature: entry.temperature,
             persistent_session: entry.persistent_session.unwrap_or(false),
+            cloud_api: CloudApi::parse(entry.api.as_deref()),
             client,
             context,
             session: tokio::sync::Mutex::new(PersistState::default()),
@@ -112,8 +150,22 @@ impl OpenCodeProvider {
             .into_app_error()
     }
 
-    /// Cloud (OpenCode Zen) — OpenAI-compatible streaming chat completions.
+    /// Cloud (OpenCode Zen) dispatcher — picks the OpenAI- or
+    /// Anthropic-compatible endpoint per `[provider.opencode] api`.
     async fn complete_stream_cloud(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+    ) -> Result<EventStream<'_>> {
+        match self.cloud_api {
+            CloudApi::OpenAi => self.complete_stream_cloud_openai(messages, tools).await,
+            CloudApi::Anthropic => self.complete_stream_cloud_anthropic(messages, tools).await,
+        }
+    }
+
+    /// Cloud — OpenAI-compatible streaming chat completions
+    /// (`{base}/chat/completions`, `[DONE]`-terminated SSE).
+    async fn complete_stream_cloud_openai(
         &self,
         messages: &[Message],
         tools: &[ToolSpec],
@@ -129,7 +181,7 @@ impl OpenCodeProvider {
         if let Some(t) = self.temperature {
             body["temperature"] = json!(t);
         }
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = cloud_url(&self.base_url, CloudApi::OpenAi);
         let mut req = self
             .client
             .post(url)
@@ -159,6 +211,81 @@ impl OpenCodeProvider {
                         acc.push(&s);
                         for frame in acc.drain_frames() {
                             let outcome = handle_opencode_frame(&frame, &mut state);
+                            for ev in outcome.events {
+                                yield ev;
+                            }
+                            if outcome.done {
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yield ProviderEvent::Error { message: e.to_string() };
+                        return;
+                    }
+                }
+            }
+            yield ProviderEvent::Done;
+        };
+        Ok(Box::pin(stream))
+    }
+
+    /// Cloud — Anthropic-compatible streaming messages
+    /// (`{base}/messages`). Reuses the Claude request/SSE machinery; auth is
+    /// sent as both `Authorization: Bearer` (Zen convention) and `x-api-key`
+    /// (native Anthropic), plus `anthropic-version`, for gateway compatibility.
+    async fn complete_stream_cloud_anthropic(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+    ) -> Result<EventStream<'_>> {
+        let (system, msgs) = to_anthropic_messages(messages);
+        let mut body = json!({
+            "model": self.model,
+            "max_tokens": 1024,
+            "stream": true,
+            "messages": msgs,
+        });
+        if let Some(sys) = system {
+            body["system"] = Value::String(sys);
+        }
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(to_anthropic_tools(tools));
+        }
+        if let Some(t) = self.temperature {
+            body["temperature"] = json!(t);
+        }
+        let url = cloud_url(&self.base_url, CloudApi::Anthropic);
+        let mut req = self
+            .client
+            .post(url)
+            .header("content-type", "application/json")
+            .header("anthropic-version", "2023-06-01")
+            .json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key).header("x-api-key", key);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let text = resp.text().await.unwrap_or_default();
+            tracing::debug!(target: "agent_cli::ai::opencode", status = %status, body = %text, "provider HTTP error");
+            return Err(self.provider_error(status, &headers, text));
+        }
+
+        let byte_stream = resp.bytes_stream();
+        let stream = async_stream::stream! {
+            let mut acc = SseAccumulator::new();
+            let mut state = ClaudeParseState::default();
+            let mut byte_stream = Box::pin(byte_stream);
+            while let Some(chunk) = byte_stream.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        let s = String::from_utf8_lossy(&bytes);
+                        acc.push(&s);
+                        for frame in acc.drain_frames() {
+                            let outcome = handle_frame(&frame, &mut state);
                             for ev in outcome.events {
                                 yield ev;
                             }
@@ -746,5 +873,26 @@ mod tests {
         assert_eq!(system.as_deref(), Some("be terse"));
         assert!(prompt.contains("User: hi"));
         assert!(prompt.contains("Assistant: hello"));
+    }
+
+    #[test]
+    fn cloud_api_parse_defaults_to_openai() {
+        assert_eq!(CloudApi::parse(None), CloudApi::OpenAi);
+        assert_eq!(CloudApi::parse(Some("openai")), CloudApi::OpenAi);
+        assert_eq!(CloudApi::parse(Some("bogus")), CloudApi::OpenAi);
+        assert_eq!(CloudApi::parse(Some("  Anthropic ")), CloudApi::Anthropic);
+        assert_eq!(CloudApi::parse(Some("messages")), CloudApi::Anthropic);
+    }
+
+    #[test]
+    fn cloud_url_picks_endpoint_and_trims_slash() {
+        assert_eq!(
+            cloud_url("https://opencode.ai/zen/go/v1/", CloudApi::OpenAi),
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        );
+        assert_eq!(
+            cloud_url("https://opencode.ai/zen/go/v1", CloudApi::Anthropic),
+            "https://opencode.ai/zen/go/v1/messages"
+        );
     }
 }
