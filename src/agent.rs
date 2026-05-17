@@ -204,6 +204,7 @@ impl Agent {
             };
 
             let mut assistant_text = String::new();
+            let mut reasoning = String::new();
             let mut pending_tools: Vec<(String, String, Value)> = Vec::new();
             let mut had_error = false;
 
@@ -213,6 +214,10 @@ impl Agent {
                         if let Some(l) = log {
                             l.write(LogEvent::Thinking { text: &text }).await.ok();
                         }
+                        // Accumulate before the send moves `text`. Stored on
+                        // the assistant message and echoed back next request
+                        // (DeepSeek thinking mode requires it).
+                        reasoning.push_str(&text);
                         let _ = event_tx.send(AgentEvent::Thinking { text }).await;
                     }
                     ProviderEvent::Text { delta } => {
@@ -250,7 +255,16 @@ impl Agent {
                 })
                 .collect();
 
-            if !assistant_text.is_empty() || !tool_calls.is_empty() {
+            let reasoning_content = if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning.clone())
+            };
+
+            if !assistant_text.is_empty()
+                || !tool_calls.is_empty()
+                || reasoning_content.is_some()
+            {
                 if let Some(l) = log {
                     l.write(LogEvent::Assistant {
                         text: &assistant_text,
@@ -261,6 +275,7 @@ impl Agent {
                 self.history.push(Message::Assistant {
                     content: assistant_text.clone(),
                     tool_calls,
+                    reasoning_content,
                 });
             }
 

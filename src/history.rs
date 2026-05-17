@@ -91,6 +91,7 @@ mod tests {
         Message::Assistant {
             content: s.into(),
             tool_calls: vec![],
+            reasoning_content: None,
         }
     }
 
@@ -136,6 +137,7 @@ mod tests {
                 name: "shell".into(),
                 arguments: serde_json::json!({}),
             }],
+            reasoning_content: None,
         }
     }
     fn tr(id: &str) -> Message {

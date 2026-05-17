@@ -62,6 +62,16 @@ pub enum Message {
         /// keeps the wire shape byte-identical for tool-less messages.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ToolCall>,
+        /// Chain-of-thought the model produced this turn. DeepSeek thinking
+        /// mode (via opencode) streams it as `delta.reasoning_content` and
+        /// **requires it echoed back** on the prior assistant message in the
+        /// next request — omitting it triggers HTTP 400 "The
+        /// `reasoning_content` in the thinking mode must be passed back to
+        /// the API." `#[serde(default)]` keeps already-persisted history
+        /// loadable; `skip_serializing_if` keeps the wire shape unchanged
+        /// when there is no reasoning.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning_content: Option<String>,
     },
     /// Tool execution result injected synchronously from outside
     ToolResult {

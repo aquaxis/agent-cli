@@ -34,9 +34,14 @@
 - **No key → local mode.** Talks to a running `opencode serve` over its native
   session API: `POST /session` → `POST /session/:id/message` (synchronous JSON).
   Default `base_url` `http://127.0.0.1:4096`.
-- **Key set → cloud mode (OpenCode Zen).** OpenAI-compatible
-  `POST {base_url}/chat/completions` (SSE, `[DONE]`), `Authorization: Bearer`.
-  Default cloud `base_url` `https://opencode.ai/zen/v1`, key env `OPENCODE_API_KEY`.
+- **Key set → cloud mode (OpenCode Zen).** Default cloud `base_url`
+  `https://opencode.ai/zen/v1`, key env `OPENCODE_API_KEY`,
+  `Authorization: Bearer`. The wire format is selectable via
+  `[provider.opencode] api`: `"openai"` (default) →
+  `POST {base_url}/chat/completions` (SSE, `[DONE]`); `"anthropic"` →
+  `POST {base_url}/messages` (Anthropic SSE). Pair with the matching
+  `base_url`, e.g. the "go" endpoints `https://opencode.ai/zen/go/v1`. See
+  [`doc/providers/opencode.md`](doc/providers/opencode.md).
 
 The mandatory verification targets are `claude` and `ollama` (with model `glm-5.1:cloud`).
 
@@ -130,10 +135,12 @@ model    = "glm-5.1:cloud"
 # Local mode: a running `opencode serve`, no key needed.
 base_url = "http://127.0.0.1:4096"
 model    = "claude-sonnet-4-5"
-# Cloud mode (OpenCode Zen): set both of these instead — a resolved key
-# switches opencode to cloud mode automatically.
+# Cloud mode (OpenCode Zen): set these instead — a resolved key switches
+# opencode to cloud mode automatically.
 # base_url    = "https://opencode.ai/zen/v1"
 # api_key_env = "OPENCODE_API_KEY"
+# api         = "anthropic"   # cloud wire format: "openai" (default) | "anthropic"
+#                             # pair with the matching base_url, e.g. .../zen/go/v1
 
 # Opt-in context-efficiency features (all default OFF; see doc/config.md §11):
 # [provider.claude]

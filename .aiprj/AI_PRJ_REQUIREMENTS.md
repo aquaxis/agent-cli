@@ -5,7 +5,8 @@
 ### 1.1 Project Name
 
 Context-efficiency features for agent-cli (persistent session / prompt cache /
-history-window management)
+history-window management), plus the opencode wire-correctness follow-ups
+required to make the cloud path usable with DeepSeek.
 
 ### 1.2 Background
 
@@ -15,17 +16,27 @@ provider on every send (stateless), which grows cost/latency unbounded and has
 no context-window management. The previous project (the `opencode` provider)
 is complete; this builds on it.
 
+Live use of the opencode cloud path against DeepSeek then surfaced two
+protocol bugs that made the feature set unusable in practice (every
+tool-calling turn HTTP 400'd). They are in-scope follow-ups: the
+context-efficiency work is moot if the provider cannot complete a turn.
+
 ### 1.3 Scope Decision (confirmed with user, 2026-05-16)
 
 - **#3 history management strategy = Hybrid:** summarize the oldest turns via
   the LLM into one summary message; if still over budget, drop the oldest
   remaining turns.
-- **Rollout = all opt-in:** every feature is gated by a config flag, **default
-  OFF**. With all flags off, behavior is byte-for-byte unchanged.
+- **Rollout = all opt-in:** every context-efficiency feature is gated by a
+  config flag, **default OFF**. With all flags off, behavior is byte-for-byte
+  unchanged.
+- **Wire-correctness follow-ups (FR-04/FR-05) are NOT opt-in:** they are
+  unconditional protocol fixes, made additive (serde `default` +
+  `skip_serializing_if`) so the wire shape is unchanged when there is no
+  tool call / reasoning content.
 
 ### 1.4 Objectives
 
-Implement all three:
+Implement the three context-efficiency features:
 
 1. **opencode local persistent session** — reuse one OpenCode `session_id`
    across turns and send only new user/tool turns; reset on history clear or
@@ -36,13 +47,26 @@ Implement all three:
    context exceeds a configurable budget, always keeping the system/persona
    prefix and the most recent N turns verbatim.
 
+Plus the opencode cloud (OpenAI-compatible) wire-correctness follow-ups:
+
+4. **Assistant `tool_calls` echo** — record and re-emit the assistant turn's
+   tool calls so a following `role:"tool"` message has a qualifying
+   predecessor.
+5. **Assistant `reasoning_content` echo** — capture DeepSeek thinking-mode
+   chain-of-thought and echo it back on the prior assistant turn.
+
 ### 1.5 Non-Objectives
 
-- No change to the `Provider` trait signature or `ProviderEvent` variants.
-- No behavior change when all flags are off.
+- No change to the `Provider` trait signature or `ProviderEvent` variants
+  (FR-05 reuses the existing `Thinking` event).
+- No behavior change when all context-efficiency flags are off; the FR-04/05
+  fixes are wire-shape-preserving when there are no tool calls / reasoning.
 - No tokenizer dependency (token estimate is a cheap heuristic).
 - No persistence to disk / conversation resume (out of scope here).
-- opencode cloud mode and other providers' session handling unchanged.
+- opencode cloud Anthropic-API path and other providers' session handling
+  unchanged; FR-04/05 are implemented on the shipped opencode OpenAI path
+  (claude/codex/llamacpp/ollama get the new `Message` field only as a
+  compile-only match arm — documented latent residual).
 
 ## 2. Terminology
 
@@ -53,6 +77,7 @@ Implement all three:
 | Compaction | Summarize-then-drop of the old history span |
 | Old span | History after the system prefix and before the last N turns |
 | Estimated tokens | `sum(content chars) / 4` heuristic |
+| Tool-only turn | An assistant turn with tool calls but no prose (`content` empty) |
 
 ## 3. Functional Requirements
 
@@ -89,29 +114,68 @@ Implement all three:
   oldest old-span messages one at a time.
 - The leading system/persona prefix and the last `keep_recent_turns` messages
   are never summarized or dropped.
+- **old_span boundary guard:** the span boundary must not split an
+  `Assistant(tool_calls)` → `ToolResult` pair; if the recent-turns cut would
+  orphan a `ToolResult`, the boundary moves back to keep the pair intact (so
+  compaction can never produce an unanswerable `role:"tool"` on the wire).
 - Best-effort: a summarization-call failure degrades to drop-only and must
   never fail the user's turn. An `Info` event reports what was compacted.
 - Disabled: full history replayed verbatim, unchanged.
+
+### 3.4 Assistant `tool_calls` Echo (FR-04, unconditional)
+
+- `Message::Assistant` carries `tool_calls: Vec<ToolCall>`
+  (`#[serde(default, skip_serializing_if = "Vec::is_empty")]`).
+- The agent records the assistant turn **with its tool calls** before pushing
+  the `ToolResult`(s), including the previously-dropped tool-only (no-prose)
+  case.
+- The opencode OpenAI serializer emits `tool_calls[]` (`id`/`type`/`function`,
+  `arguments` as a JSON string) and `content: null` for a tool-only turn, so a
+  following `role:"tool"` message always has a qualifying `tool_calls`
+  predecessor. Eliminates the DeepSeek HTTP 400 "Messages with role 'tool'
+  must be a response to a preceding message with 'tool_calls'".
+- Wire-shape-preserving: no `tool_calls` ⇒ key omitted, byte-identical to
+  before.
+
+### 3.5 Assistant `reasoning_content` Echo (FR-05, unconditional)
+
+- `Message::Assistant` carries `reasoning_content: Option<String>`
+  (`#[serde(default, skip_serializing_if = "Option::is_none")]`).
+- opencode SSE handling surfaces `delta.reasoning_content` as the existing
+  `ProviderEvent::Thinking`; the agent accumulates it and stores it on the
+  assistant message, and the opencode OpenAI serializer echoes it back on that
+  turn. Eliminates the DeepSeek HTTP 400 "The `reasoning_content` in the
+  thinking mode must be passed back to the API."
+- Wire-shape-preserving: `None` ⇒ key omitted, byte-identical to before.
 
 ## 4. Non-Functional Requirements
 
 - **NFR-01** Docs in English; Requirements/Design/Tasks mutually consistent.
 - **NFR-02** `cargo build` / `cargo test` / `cargo clippy` clean; new logic
   unit-tested.
-- **NFR-03** Additive, non-breaking config (`#[serde(default)]`); all existing
-  tests still pass; default behavior unchanged.
+- **NFR-03** Additive, non-breaking config and message shape
+  (`#[serde(default)]` / `skip_serializing_if`); all existing tests still
+  pass; default behavior unchanged.
 - **NFR-04** Summarization must not recurse into compaction.
+- **NFR-05** FR-04/FR-05 are protocol fixes verified live against DeepSeek
+  (via opencode), not only by unit tests.
 
 ## 5. Constraints
 
-- Source changes limited to: `src/config.rs`, `src/ai/claude.rs`,
+- Context-efficiency source changes: `src/config.rs`, `src/ai/claude.rs`,
   `src/ai/opencode.rs`, new `src/history.rs`, `src/agent.rs`, `src/main.rs`
   (module decl), plus the embedded default config template.
+- FR-04/FR-05 additionally touch `src/ai/mod.rs` (the `ToolCall` struct and
+  the two new `Message::Assistant` fields) and add compile-only match arms in
+  `src/ai/claude.rs`, `src/ai/codex.rs`, `src/ai/llamacpp.rs`,
+  `src/ai/ollama.rs` (those providers' wire output unchanged).
 
 ## 6. Acceptance Criteria
 
-- Three config flags exist, default OFF; all-off ⇒ unchanged behavior.
-- FR-01..FR-03 implemented with unit tests for the pure logic.
-- `cargo build`/`test`/`clippy` green; existing tests unaffected.
+- Three config flags exist, default OFF; all-off ⇒ context-efficiency
+  behavior unchanged.
+- FR-01..FR-05 implemented with unit tests for the pure logic; FR-04/05
+  additionally verified live against DeepSeek.
+- `cargo build`/`test`/`clippy` green; existing tests unaffected;
+  `cargo test` **102/102**.
 - Requirements/Design/Tasks consistent.
-</content>

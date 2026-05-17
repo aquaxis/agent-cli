@@ -86,6 +86,19 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
   `opencode serve` (session-API tool schema unconfirmed). Use cloud mode if you
   need tool use. See [`doc/providers/opencode.md`](providers/opencode.md).
 
+### Cloud: `ModelError` / 404 / wrong wire format
+
+- `{"error":{"type":"ModelError","message":"Model X not supported"}}` means
+  the `model` id is not served by that endpoint (auth was fine — the request
+  reached the gateway). Pick a valid id from `{base_url}/models`. Note the
+  `hint:` line may misleadingly say "API key invalid" on a 401; the `detail:`
+  body is authoritative.
+- Choose the wire format with `[provider.opencode] api` and pair it with the
+  matching `base_url`: `api = "openai"` → `{base_url}/chat/completions`;
+  `api = "anthropic"` → `{base_url}/messages`. For the "go" endpoints use
+  `base_url = "https://opencode.ai/zen/go/v1"`. A format/endpoint mismatch
+  typically yields 404 or a parse error.
+
 ### `persistent_session` seems to forget context / starts a new session
 
 - The session is intentionally recreated when conversation history is cleared

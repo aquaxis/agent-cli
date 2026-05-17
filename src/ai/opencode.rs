@@ -525,9 +525,17 @@ fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
             Message::Assistant {
                 content,
                 tool_calls,
+                reasoning_content,
             } => {
                 let mut msg = serde_json::Map::new();
                 msg.insert("role".into(), json!("assistant"));
+                // DeepSeek thinking mode requires the prior assistant turn's
+                // chain-of-thought echoed back, else HTTP 400 "The
+                // `reasoning_content` in the thinking mode must be passed
+                // back to the API."
+                if let Some(r) = reasoning_content {
+                    msg.insert("reasoning_content".into(), json!(r));
+                }
                 // OpenAI/DeepSeek accept null content alongside tool_calls;
                 // a tool-only turn has no prose.
                 msg.insert(
@@ -656,6 +664,17 @@ pub(crate) fn handle_opencode_frame(frame: &str, state: &mut OpenCodeParseState)
         .cloned()
         .unwrap_or(Value::Null);
     let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
+    // DeepSeek thinking mode streams chain-of-thought as
+    // `delta.reasoning_content`. Surface it as a Thinking event so
+    // process_turn can accumulate and echo it back (the endpoint rejects
+    // the next request if the prior assistant turn omits it).
+    if let Some(r) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+        if !r.is_empty() {
+            events.push(ProviderEvent::Thinking {
+                text: r.to_string(),
+            });
+        }
+    }
     if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
         if !text.is_empty() {
             events.push(ProviderEvent::Text {
@@ -903,6 +922,7 @@ mod tests {
             Message::Assistant {
                 content: "hello".into(),
                 tool_calls: vec![],
+                reasoning_content: None,
             },
         ];
         let (system, prompt) = flatten_history(&msgs);
@@ -933,6 +953,7 @@ mod tests {
                     name: "shell".into(),
                     arguments: json!({"cmd": "ls -la"}),
                 }],
+                reasoning_content: None,
             },
             Message::ToolResult {
                 tool_use_id: "call_abc".into(),
@@ -973,6 +994,7 @@ mod tests {
                     name: "shell".into(),
                     arguments: json!({}),
                 }],
+                reasoning_content: None,
             },
             Message::ToolResult {
                 tool_use_id: "c1".into(),
@@ -991,12 +1013,65 @@ mod tests {
         let out = to_openai_messages(&[Message::Assistant {
             content: "hi".into(),
             tool_calls: vec![],
+            reasoning_content: None,
         }]);
         assert_eq!(out[0]["content"], "hi");
         assert!(
             out[0].get("tool_calls").is_none(),
             "no tool_calls key for a plain text reply"
         );
+        assert!(
+            out[0].get("reasoning_content").is_none(),
+            "no reasoning_content key when None"
+        );
+    }
+
+    #[test]
+    fn to_openai_messages_echoes_reasoning_content() {
+        // The exact invariant DeepSeek thinking mode enforces: the prior
+        // assistant turn must carry its `reasoning_content` back, else
+        // HTTP 400 "The `reasoning_content` in the thinking mode must be
+        // passed back to the API." Regression guard.
+        let msgs = vec![
+            Message::Assistant {
+                content: String::new(), // reasoning + tool call, no prose
+                tool_calls: vec![crate::ai::ToolCall {
+                    id: "c9".into(),
+                    name: "shell".into(),
+                    arguments: json!({"cmd": "ls"}),
+                }],
+                reasoning_content: Some("let me inspect the workspace".into()),
+            },
+            Message::ToolResult {
+                tool_use_id: "c9".into(),
+                content: "ok".into(),
+                is_error: false,
+            },
+        ];
+        let out = to_openai_messages(&msgs);
+        let asst = &out[0];
+        assert_eq!(asst["role"], "assistant");
+        assert_eq!(
+            asst["reasoning_content"], "let me inspect the workspace",
+            "thinking-mode reasoning must be echoed back"
+        );
+        // Prior-cycle invariants still hold alongside reasoning_content.
+        assert!(asst["content"].is_null());
+        assert_eq!(asst["tool_calls"][0]["id"], "c9");
+        assert_eq!(out[1]["role"], "tool");
+        assert_eq!(out[1]["tool_call_id"], "c9");
+    }
+
+    #[test]
+    fn to_openai_messages_reasoning_only_assistant() {
+        let out = to_openai_messages(&[Message::Assistant {
+            content: "the answer is 42".into(),
+            tool_calls: vec![],
+            reasoning_content: Some("42 by deduction".into()),
+        }]);
+        assert_eq!(out[0]["content"], "the answer is 42");
+        assert_eq!(out[0]["reasoning_content"], "42 by deduction");
+        assert!(out[0].get("tool_calls").is_none());
     }
 
     #[test]
