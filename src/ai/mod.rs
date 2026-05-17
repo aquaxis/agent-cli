@@ -30,6 +30,21 @@ pub struct Capabilities {
     pub thinking: bool,
 }
 
+/// A single tool invocation the assistant made in a turn. Recorded on the
+/// `Assistant` message so the conversation history can serialize the OpenAI
+/// `tool_calls` array — without it, a following `tool` result message has no
+/// qualifying predecessor and OpenAI-shaped providers (e.g. DeepSeek via
+/// opencode) reject the request with HTTP 400.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    /// Raw arguments as the model produced them; stringified at
+    /// OpenAI serialization time (the API wants `function.arguments` as a
+    /// JSON string).
+    pub arguments: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum Message {
@@ -41,6 +56,12 @@ pub enum Message {
     },
     Assistant {
         content: String,
+        /// Tool calls the assistant issued in this turn (empty for a plain
+        /// text reply). `#[serde(default)]` keeps already-persisted history
+        /// (compaction summaries, logs) loadable; `skip_serializing_if`
+        /// keeps the wire shape byte-identical for tool-less messages.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tool_calls: Vec<ToolCall>,
     },
     /// Tool execution result injected synchronously from outside
     ToolResult {

@@ -522,8 +522,41 @@ fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
             Message::User { content } => {
                 out.push(json!({"role": "user", "content": content}));
             }
-            Message::Assistant { content } => {
-                out.push(json!({"role": "assistant", "content": content}));
+            Message::Assistant {
+                content,
+                tool_calls,
+            } => {
+                let mut msg = serde_json::Map::new();
+                msg.insert("role".into(), json!("assistant"));
+                // OpenAI/DeepSeek accept null content alongside tool_calls;
+                // a tool-only turn has no prose.
+                msg.insert(
+                    "content".into(),
+                    if content.is_empty() {
+                        Value::Null
+                    } else {
+                        json!(content)
+                    },
+                );
+                if !tool_calls.is_empty() {
+                    let calls: Vec<Value> = tool_calls
+                        .iter()
+                        .map(|tc| {
+                            json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    // OpenAI requires `arguments` as a JSON string.
+                                    "arguments": serde_json::to_string(&tc.arguments)
+                                        .unwrap_or_else(|_| "{}".to_string()),
+                                }
+                            })
+                        })
+                        .collect();
+                    msg.insert("tool_calls".into(), Value::Array(calls));
+                }
+                out.push(Value::Object(msg));
             }
             Message::ToolResult {
                 tool_use_id,
@@ -561,7 +594,9 @@ fn flatten_history(messages: &[Message]) -> (Option<String>, String) {
                 body.push_str(content);
                 body.push_str("\n\n");
             }
-            Message::Assistant { content } => {
+            // Local session-API path (not the shipped cloud config); tool
+            // calls are not represented in this flat text form.
+            Message::Assistant { content, .. } => {
                 body.push_str("Assistant: ");
                 body.push_str(content);
                 body.push_str("\n\n");
@@ -867,12 +902,101 @@ mod tests {
             },
             Message::Assistant {
                 content: "hello".into(),
+                tool_calls: vec![],
             },
         ];
         let (system, prompt) = flatten_history(&msgs);
         assert_eq!(system.as_deref(), Some("be terse"));
         assert!(prompt.contains("User: hi"));
         assert!(prompt.contains("Assistant: hello"));
+    }
+
+    #[test]
+    fn to_openai_messages_emits_tool_calls_before_tool_result() {
+        // The exact invariant DeepSeek (via opencode) enforces: a
+        // `role:"tool"` message must be immediately preceded by an
+        // `assistant` message carrying a matching `tool_calls[].id`.
+        // Regression guard for the HTTP 400
+        // "Messages with role 'tool' must be a response to a preceding
+        //  message with 'tool_calls'".
+        let msgs = vec![
+            Message::System {
+                content: "sys".into(),
+            },
+            Message::User {
+                content: "do it".into(),
+            },
+            Message::Assistant {
+                content: String::new(), // tool-only turn: no prose
+                tool_calls: vec![crate::ai::ToolCall {
+                    id: "call_abc".into(),
+                    name: "shell".into(),
+                    arguments: json!({"cmd": "ls -la"}),
+                }],
+            },
+            Message::ToolResult {
+                tool_use_id: "call_abc".into(),
+                content: "total 0".into(),
+                is_error: false,
+            },
+        ];
+        let out = to_openai_messages(&msgs);
+        // [system, user, assistant(tool_calls), tool]
+        let asst = &out[2];
+        assert_eq!(asst["role"], "assistant");
+        assert!(asst["content"].is_null(), "tool-only turn ⇒ null content");
+        let calls = asst["tool_calls"].as_array().expect("tool_calls array");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "call_abc");
+        assert_eq!(calls[0]["type"], "function");
+        assert_eq!(calls[0]["function"]["name"], "shell");
+        // OpenAI requires `arguments` as a JSON *string*.
+        assert_eq!(
+            calls[0]["function"]["arguments"],
+            json!(r#"{"cmd":"ls -la"}"#)
+        );
+        let tool = &out[3];
+        assert_eq!(tool["role"], "tool");
+        assert_eq!(
+            tool["tool_call_id"], calls[0]["id"],
+            "tool_call_id must match the preceding assistant tool_calls[].id"
+        );
+    }
+
+    #[test]
+    fn to_openai_messages_assistant_with_text_and_calls() {
+        let msgs = vec![
+            Message::Assistant {
+                content: "I'll run it".into(),
+                tool_calls: vec![crate::ai::ToolCall {
+                    id: "c1".into(),
+                    name: "shell".into(),
+                    arguments: json!({}),
+                }],
+            },
+            Message::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "ok".into(),
+                is_error: false,
+            },
+        ];
+        let out = to_openai_messages(&msgs);
+        assert_eq!(out[0]["content"], "I'll run it");
+        assert_eq!(out[0]["tool_calls"][0]["id"], "c1");
+        assert_eq!(out[1]["tool_call_id"], "c1");
+    }
+
+    #[test]
+    fn to_openai_messages_plain_assistant_has_no_tool_calls_key() {
+        let out = to_openai_messages(&[Message::Assistant {
+            content: "hi".into(),
+            tool_calls: vec![],
+        }]);
+        assert_eq!(out[0]["content"], "hi");
+        assert!(
+            out[0].get("tool_calls").is_none(),
+            "no tool_calls key for a plain text reply"
+        );
     }
 
     #[test]
