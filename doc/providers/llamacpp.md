@@ -24,6 +24,43 @@ base_url = "http://127.0.0.1:8080"
 api_key_env = "LLAMACPP_API_KEY"   # optional; only for Bearer-auth builds
 ```
 
+## Sampling Parameters
+
+The generation knobs you would pass on the `llama-cli` / `llama-server` command
+line can be set in config; agent-cli forwards each one into the
+`/v1/chat/completions` request body. Every field is **optional** — omit it and
+the llama.cpp server applies its own default, so a config without any of these
+behaves exactly as before.
+
+```toml
+[provider."llama.cpp"]
+model    = "default"
+base_url = "http://127.0.0.1:8080"
+max_tokens     = 1024   # -n / --n-predict : max tokens to generate
+temperature    = 0.2    # --temp
+top_k          = 80     # --top-k
+top_p          = 0.95   # --top-p
+min_p          = 0.05   # --min-p
+repeat_penalty = 1.05   # --repeat-penalty
+repeat_last_n  = 64     # --repeat-last-n
+seed           = 0      # --seed (reproducibility)
+```
+
+| Config key | `llama-cli` flag | Server field | Type |
+|------------|------------------|--------------|------|
+| `max_tokens` | `-n` / `--n-predict` | `max_tokens` | integer |
+| `temperature` | `--temp` | `temperature` | float |
+| `top_k` | `--top-k` | `top_k` | integer |
+| `top_p` | `--top-p` | `top_p` | float |
+| `min_p` | `--min-p` | `min_p` | float |
+| `repeat_penalty` | `--repeat-penalty` | `repeat_penalty` | float |
+| `repeat_last_n` | `--repeat-last-n` | `repeat_last_n` | integer |
+| `seed` | `--seed` | `seed` | integer |
+
+`top_k`, `min_p`, `repeat_penalty`, `repeat_last_n`, and `seed` are llama.cpp
+extensions to the OpenAI schema; the llama.cpp server honors them on
+`/v1/chat/completions`. (These options apply to the `llama.cpp` backend only.)
+
 ## Supported Features
 
 | Feature | Support | Notes |

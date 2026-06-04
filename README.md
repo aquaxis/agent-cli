@@ -2,7 +2,7 @@
 
 `agent-cli` is a standalone Rust CLI that bundles a Claude Code-equivalent AI agent (tools / thinking / streaming REPL) into a single binary. It does not depend on tmux: each process owns exactly one agent and talks to other agents over local Unix-domain-socket IPC.
 
-> For the previous Japanese version, see [`README.en.md`](README.en.md) (now outdated; main README is in English).
+> 日本語版は [`README_ja.md`](README_ja.md) を参照してください. (The previous Japanese draft [`README.en.md`](README.en.md) is now outdated; the main README is in English and the maintained Japanese translation is `README_ja.md`.)
 
 ## Highlights
 
@@ -117,40 +117,101 @@ Config files are TOML. Resolution order:
 
 Explicit paths must exist (no auto-creation). The default path auto-generates a sensible template on first run.
 
-Minimum edits to get going:
+`[provider] kind` selects the active backend; only that backend's `[provider.*]` table needs to be filled in, but you can keep several tables in one file and switch with `kind` (or `--provider`).
+
+### Per-backend configuration examples
+
+**claude** — Anthropic Claude (Messages, SSE):
 
 ```toml
 [provider]
-kind = "claude"  # or "codex" | "ollama" | "opencode" | "llama.cpp"
+kind = "claude"
 
 [provider.claude]
-api_key_env = "ANTHROPIC_API_KEY"  # name of the env var that holds the secret
-model       = "claude-opus-4-7"
+api_key_env  = "ANTHROPIC_API_KEY"  # name of the env var that holds the secret
+model        = "claude-opus-4-7"
+base_url     = "https://api.anthropic.com"   # usually leave as-is
+thinking     = true                          # enable thinking blocks
+# prompt_cache = true                         # opt-in Anthropic prompt caching
+```
+
+**codex** — OpenAI Chat Completions (SSE, function calling). `kind = "codex"` is the internal name; it is not OpenAI's legacy Codex model. `base_url` also works with OpenAI-compatible gateways / Azure OpenAI:
+
+```toml
+[provider]
+kind = "codex"
+
+[provider.codex]
+api_key_env = "OPENAI_API_KEY"
+model       = "gpt-4.1"
+base_url    = "https://api.openai.com/v1"
+```
+
+**ollama** — local or cloud Ollama `/api/chat` (NDJSON). No API key required:
+
+```toml
+[provider]
+kind = "ollama"
 
 [provider.ollama]
-base_url = "http://127.0.0.1:11434"
 model    = "glm-5.1:cloud"
+base_url = "http://127.0.0.1:11434"
+```
 
+**opencode** — local mode talks to a running `opencode serve` (no key); a resolved API key automatically switches to cloud mode (OpenCode Zen):
+
+```toml
+[provider]
+kind = "opencode"
+
+# Local mode (default): a running `opencode serve`, no key needed.
 [provider.opencode]
-# Local mode: a running `opencode serve`, no key needed.
 base_url = "http://127.0.0.1:4096"
 model    = "claude-sonnet-4-5"
-# Cloud mode (OpenCode Zen): set these instead — a resolved key switches
-# opencode to cloud mode automatically.
+# persistent_session = true   # opt-in (local only): reuse one server session
+
+# Cloud mode (OpenCode Zen): set api_key_env — its presence switches to cloud.
 # base_url    = "https://opencode.ai/zen/v1"
 # api_key_env = "OPENCODE_API_KEY"
-# api         = "anthropic"   # cloud wire format: "openai" (default) | "anthropic"
+# api         = "anthropic"   # cloud wire format: "openai" (default) | "anthropic";
 #                             # pair with the matching base_url, e.g. .../zen/go/v1
+```
 
-# Opt-in context-efficiency features (all default OFF; see doc/config.md §11):
-# [provider.claude]
-# prompt_cache = true              # Anthropic prompt caching
-# [provider.opencode]
-# persistent_session = true        # reuse one local OpenCode session
-# [history]
-# enabled = true                   # summarize-then-drop old turns
-# max_context_tokens = 24000
-# keep_recent_turns  = 6
+**llama.cpp** — OpenAI-compatible `/v1/chat/completions` of a `llama-server`. Quote `"llama.cpp"` because the TOML key contains a dot. Sampling knobs mirror the `llama-cli` flags and are all optional (omit any → the server's own default):
+
+```toml
+[provider]
+kind = "llama.cpp"
+
+[provider."llama.cpp"]
+model    = "default"
+base_url = "http://127.0.0.1:8080"
+# api_key_env = "LLAMACPP_API_KEY"   # optional; only for Bearer-auth builds
+# max_tokens     = 1024   # -n / --n-predict : max tokens to generate
+# temperature    = 0.2    # --temp
+# top_k          = 80     # --top-k
+# top_p          = 0.95   # --top-p
+# min_p          = 0.05   # --min-p
+# repeat_penalty = 1.05   # --repeat-penalty
+# repeat_last_n  = 64     # --repeat-last-n
+# seed           = 0      # --seed
+```
+
+### Opt-in context-efficiency features
+
+All default OFF; with every flag off, request bodies and history handling are byte-for-byte unchanged. See [`doc/config.md`](doc/config.md) §11.
+
+```toml
+[provider.claude]
+prompt_cache = true              # Anthropic prompt caching (system + tools + tail)
+
+[provider.opencode]
+persistent_session = true        # reuse one local OpenCode session across turns
+
+[history]
+enabled            = true        # summarize-then-drop old turns when over budget
+max_context_tokens = 24000
+keep_recent_turns  = 6
 ```
 
 To run multiple profiles in parallel, point each instance at its own `--config` file. Share `[runtime] registry_dir` if you want them to discover each other as peers.

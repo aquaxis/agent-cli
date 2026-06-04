@@ -1,19 +1,19 @@
 # aiprj - AI Project Management Tool
 
-A project management tool for Claude Code. It deploys behavioral guidelines and document structures (requirements, design, tasks) for AI work into a target directory with a single command.
+A project management tool for Claude Code. It deploys AI operation guidelines and document structure (requirements, design, tasks) to a target directory with a single command.
 
 ## Overview
 
 aiprj provides the following features:
 
-- Definition of AI behavioral guidelines and rules
+- Definition of AI operation guidelines and rules
 - Document structure for requirements, design specifications, and task lists
-- Claude Code slash commands (`/setup_ai` `/ai` `/update_ai` `/next_ai` `/close_ai`)
-- Automatic work log storage (`.aiprj/AI_LOG/yyyy-MM-dd_NNN.md`)
+- Slash commands for Claude Code (`/setup_ai` `/ai` `/update_ai` `/next_ai` `/close_ai`)
+- Automatic work log saving (`.aiprj/AI_LOG/yyyy-MM-dd_NNN.md`)
 
 ## Setup
 
-### Setup in the current directory
+### Setup in current directory
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aquaxis/aiprj/main/install.sh | sh
@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/aquaxis/aiprj/main/install.sh | sh
 ### Setup in a specified directory
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aquaxis/aiprj/main/install.sh | sh -s -- <directory-name>
+curl -fsSL https://raw.githubusercontent.com/aquaxis/aiprj/main/install.sh | sh -s -- <directory_name>
 ```
 
 ### Manual setup
@@ -30,15 +30,15 @@ curl -fsSL https://raw.githubusercontent.com/aquaxis/aiprj/main/install.sh | sh 
 ```bash
 git clone https://github.com/aquaxis/aiprj.git
 cd aiprj
-./install.sh <setup-target-directory>
+./install.sh <target_directory>
 ```
 
-Setup creates the following files:
+The following files are created by setup:
 
-- `.aiprj/` — AI rules, `instructions.md`, `README.md`
-- `.claude/` — Claude Code settings and slash commands
-- `.mcp.json` — MCP server configuration
-- `.gitignore` — Git exclusion settings (prepends template if file exists)
+- `.aiprj/` - AI rules, `instructions.md`, `README.md`
+- `.claude/` - Claude Code settings and slash commands
+- `.mcp.json` - MCP server configuration
+- `.gitignore` - Git ignore configuration (prepended to existing file if present)
 
 ### Claude Code Slash Commands
 
@@ -47,8 +47,8 @@ Setup creates the following files:
 | `/setup_ai` | Create project documents (requirements, design, tasks) |
 | `/ai` | Execute tasks based on `instructions.md` |
 | `/update_ai` | Update project documents |
-| `/next_ai` | Move to the next task |
-| `/close_ai` | Save work log and finish |
+| `/next_ai` | Proceed to next task |
+| `/close_ai` | Save work log and exit |
 
 ## Project Structure
 
@@ -56,22 +56,22 @@ After setup, the AI manages the following documents:
 
 | File | Content |
 |------|---------|
-| `.aiprj/AI_PRJ_REQUIREMENTS.md` | Requirements definition |
-| `.aiprj/AI_PRJ_DESIGN.md` | Design specification |
-| `.aiprj/AI_PRJ_TASKS.md` | Implementation tasks and work instructions |
-| `.aiprj/AI_LOG/` | Work logs (`yyyy-MM-dd_NNN.md` format, sequential, no overwrites) |
+| `.aiprj/AI_PRJ_REQUIREMENTS.md` | Requirements document |
+| `.aiprj/AI_PRJ_DESIGN.md` | Design specification document |
+| `.aiprj/AI_PRJ_TASKS.md` | Implementation tasks and work instruction list |
+| `.aiprj/AI_LOG/` | Work logs (`yyyy-MM-dd_NNN.md` format, sequential, no overwriting) |
 
-## AI Behavioral Guidelines
+## AI Operation Guidelines
 
 The AI operates according to the following guidelines:
 
-1. Before commencing any task, formulate a comprehensive work plan
-2. Do not distort, alter, or reinterpret the AI Operation Guidelines
-3. Do not take detours or modify the approach beyond what the user has explicitly instructed
-4. Do not optimize, rewrite, or reinterpret user instructions
-5. Do not stop execution until the user's instructions are fully completed
-6. Store work logs in `.aiprj/AI_LOG/` using `yyyy-MM-dd_NNN.md` format (sequential, no overwrites)
-7. Include the full content of `.aiprj/instructions.md` in each work log
+1. Must formulate a work plan before starting any task
+2. Distorting or reinterpreting the AI Operation Guidelines is prohibited
+3. Taking detours or modifying the approach beyond user instructions is prohibited
+4. Optimizing, rewriting, or reinterpreting user instructions is prohibited
+5. Must not stop until the user's instructions are fully completed
+6. Work logs must be saved to `.aiprj/AI_LOG/` in `yyyy-MM-dd_NNN.md` format (sequential, no overwriting)
+7. Work logs must include the contents of `.aiprj/instructions.md`
 
 ## File Structure
 
@@ -81,12 +81,12 @@ aiprj/
 ├── .mcp.json                # MCP configuration
 ├── .gitignore.aiprj         # gitignore template
 ├── .aiprj/
-│   ├── instructions.md.org  # Instruction template
+│   ├── instructions.md.org  # Instructions template
 │   └── rules/
 │       ├── setup_project.md  # Setup rules
 │       ├── exec_job.md       # Task execution rules
 │       ├── update_project.md # Update rules
-│       └── close_ai.md       # Closing rules
+│       └── close_ai.md       # Exit rules
 └── .claude/
     ├── settings.json        # Claude Code settings
     └── commands/            # Slash command definitions
@@ -100,10 +100,10 @@ aiprj/
 ## Requirements
 
 - `curl` (for setup)
-- `tar` (fallback for one-liner) or `git`
+- `tar` (for one-liner fallback), or `git`
 - Claude Code CLI
 - Node.js / `npx` (for MCP integration)
 
 ## License
 
-MIT License
+[MIT License](./LICENSE.md)

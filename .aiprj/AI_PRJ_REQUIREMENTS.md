@@ -4,178 +4,146 @@
 
 ### 1.1 Project Name
 
-Context-efficiency features for agent-cli (persistent session / prompt cache /
-history-window management), plus the opencode wire-correctness follow-ups
-required to make the cloud path usable with DeepSeek.
+Configurable llama.cpp sampling parameters — let the user set generation knobs
+such as `-n` (max tokens), `--repeat-penalty`, and `--top_k` for the llama.cpp
+backend instead of relying on hard-coded defaults.
 
 ### 1.2 Background
 
-`.aiprj/instructions.md` (2026-05-16) requests three opt-in context-efficiency
-features. agent-cli currently replays the full conversation history to every
-provider on every send (stateless), which grows cost/latency unbounded and has
-no context-window management. The previous project (the `opencode` provider)
-is complete; this builds on it.
+`.aiprj/instructions.md` shows the user driving a model via the `llama-cli`
+binary with explicit sampling flags:
 
-Live use of the opencode cloud path against DeepSeek then surfaced two
-protocol bugs that made the feature set unusable in practice (every
-tool-calling turn HTTP 400'd). They are in-scope follow-ups: the
-context-efficiency work is moot if the provider cannot complete a turn.
+```
+./build/bin/llama-cli -m models/LFM2.5-8B-A1B-BF16.gguf -p "…" \
+  -n 1024 --temp 0.2 --top_k 80 --repeat-penalty 1.05
+```
 
-### 1.3 Scope Decision (confirmed with user, 2026-05-16)
+The user wants the same parameters (`-n 1024`, `--repeat-penalty 1.05`, etc.)
+to be configurable when running through agent-cli, and asks for a proposal.
 
-- **#3 history management strategy = Hybrid:** summarize the oldest turns via
-  the LLM into one summary message; if still over budget, drop the oldest
-  remaining turns.
-- **Rollout = all opt-in:** every context-efficiency feature is gated by a
-  config flag, **default OFF**. With all flags off, behavior is byte-for-byte
-  unchanged.
-- **Wire-correctness follow-ups (FR-04/FR-05) are NOT opt-in:** they are
-  unconditional protocol fixes, made additive (serde `default` +
-  `skip_serializing_if`) so the wire shape is unchanged when there is no
-  tool call / reasoning content.
+agent-cli's llama.cpp backend (`LlamaCppProvider`) does **not** spawn
+`llama-cli`; it talks to a running **llama.cpp server** over the
+OpenAI-compatible `/v1/chat/completions` endpoint (`doc/providers/llamacpp.md`).
+Today the request body forwards only `model`, `messages`, `stream`, optional
+`tools`, and optional `temperature` (`src/ai/llamacpp.rs`). Every other
+sampling knob is left at the server's default, so the `llama-cli` flags above
+have no agent-cli equivalent. The llama.cpp server accepts these same knobs as
+request-body fields, so they can be surfaced through config and forwarded.
 
-### 1.4 Objectives
+### 1.3 Flag → server-field mapping
 
-Implement the three context-efficiency features:
+`llama-cli` CLI flags map onto llama.cpp server request-body fields:
 
-1. **opencode local persistent session** — reuse one OpenCode `session_id`
-   across turns and send only new user/tool turns; reset on history clear or
-   system-prompt change.
-2. **Claude prompt caching** — Anthropic `cache_control` breakpoints on the
-   system prompt, tools, and the conversation tail.
-3. **Hybrid history-window management** — summarize-then-drop when estimated
-   context exceeds a configurable budget, always keeping the system/persona
-   prefix and the most recent N turns verbatim.
+| `llama-cli` flag | Server request field | Meaning |
+|------------------|----------------------|---------|
+| `-n, --n-predict` | `max_tokens` (alias `n_predict`) | Max tokens to generate |
+| `--temp` | `temperature` | Sampling temperature (already supported) |
+| `--top-k` | `top_k` | Top-K sampling |
+| `--top-p` | `top_p` | Top-P (nucleus) sampling |
+| `--min-p` | `min_p` | Min-P sampling |
+| `--repeat-penalty` | `repeat_penalty` | Repetition penalty |
+| `--repeat-last-n` | `repeat_last_n` | Window for the repeat penalty |
+| `--seed` | `seed` | RNG seed (reproducibility) |
 
-Plus the opencode cloud (OpenAI-compatible) wire-correctness follow-ups:
+`top_k`, `min_p`, `repeat_penalty`, `repeat_last_n`, and `seed` are llama.cpp
+extensions to the OpenAI schema; the llama.cpp server honors them on
+`/v1/chat/completions`.
 
-4. **Assistant `tool_calls` echo** — record and re-emit the assistant turn's
-   tool calls so a following `role:"tool"` message has a qualifying
-   predecessor.
-5. **Assistant `reasoning_content` echo** — capture DeepSeek thinking-mode
-   chain-of-thought and echo it back on the prior assistant turn.
+### 1.4 Scope Decision (proposal)
 
-### 1.5 Non-Objectives
+- **Surface as explicit typed config fields** on the llama.cpp provider entry,
+  mirroring the existing per-provider field pattern (`prompt_cache`,
+  `persistent_session`, `api`). Each is `Option<…>`, `#[serde(default)]`.
+- **Opt-in / additive:** every field absent ⇒ omitted from the request body ⇒
+  the llama.cpp server applies its own default ⇒ **behavior byte-for-byte
+  unchanged** from today.
+- **Scope to the llama.cpp backend only.** Other providers (claude/codex/
+  ollama/opencode) are untouched. `temperature` is already shared and keeps
+  working.
 
-- No change to the `Provider` trait signature or `ProviderEvent` variants
-  (FR-05 reuses the existing `Thinking` event).
-- No behavior change when all context-efficiency flags are off; the FR-04/05
-  fixes are wire-shape-preserving when there are no tool calls / reasoning.
-- No tokenizer dependency (token estimate is a cheap heuristic).
-- No persistence to disk / conversation resume (out of scope here).
-- opencode cloud Anthropic-API path and other providers' session handling
-  unchanged; FR-04/05 are implemented on the shipped opencode OpenAI path
-  (claude/codex/llamacpp/ollama get the new `Message` field only as a
-  compile-only match arm — documented latent residual).
+### 1.5 Objectives
+
+1. Add llama.cpp sampling config fields: `max_tokens`, `top_k`, `top_p`,
+   `min_p`, `repeat_penalty`, `repeat_last_n`, `seed`.
+2. Forward each present field into the `/v1/chat/completions` request body in
+   `LlamaCppProvider::complete_stream`.
+3. Document the fields (default config template + `doc/providers/llamacpp.md`).
+
+### 1.6 Non-Objectives
+
+- No spawning of / dependency on the `llama-cli` binary; the server transport
+  is unchanged.
+- No new sampling parameters beyond the table in §1.3 (e.g. `mirostat`,
+  `tfs_z`, grammar) — out of scope unless requested.
+- No per-turn / interactive override (CLI flag or slash command) of these
+  values; configuration is via the config file.
+- No change to other providers or to the shared `temperature` handling.
+- No client-side validation of value ranges beyond TOML type parsing; invalid
+  values are the server's to reject.
 
 ## 2. Terminology
 
 | Term | Definition |
 |------|-----------|
-| Persistent session | Reusing a server-side OpenCode `session_id` across turns |
-| Prompt cache | Anthropic `cache_control: {type:"ephemeral"}` breakpoints |
-| Compaction | Summarize-then-drop of the old history span |
-| Old span | History after the system prefix and before the last N turns |
-| Estimated tokens | `sum(content chars) / 4` heuristic |
-| Tool-only turn | An assistant turn with tool calls but no prose (`content` empty) |
+| llama.cpp server | A running `llama-server` exposing `/v1/chat/completions` |
+| Sampling field | A generation knob forwarded in the request body |
+| `n_predict` | llama.cpp's native name for the `-n` / `max_tokens` limit |
+| Present field | A config value that is `Some(..)` and therefore serialized |
 
 ## 3. Functional Requirements
 
-### 3.1 opencode Persistent Session (FR-01)
+### 3.1 Sampling config fields (FR-01)
 
-- Config `[provider.opencode] persistent_session` (bool, default false).
-  Effective only in local mode (no API key); ignored in cloud mode.
-- When enabled: create the session once, cache `session_id`, and on each turn
-  send only the new `User`/`ToolResult` turns (skip `Assistant`; `System` via
-  the session). `sent_count` tracks delivered history length.
-- Reset (recreate session, resend from scratch) when: no session yet, history
-  shrank (e.g. `/clear`), or the system prompt changed.
-- A stale-session HTTP response (404/400/410) triggers exactly one transparent
-  session recreate + resend.
-- Disabled: existing ephemeral-session-per-turn behavior, unchanged.
+- `[provider."llama.cpp"]` accepts optional keys: `max_tokens` (int),
+  `top_k` (int), `top_p` (float), `min_p` (float), `repeat_penalty` (float),
+  `repeat_last_n` (int), `seed` (int).
+- All `#[serde(default)]` ⇒ omitting any/all of them still parses every
+  existing config unchanged.
 
-### 3.2 Claude Prompt Caching (FR-02)
+### 3.2 Request-body forwarding (FR-02)
 
-- Config `[provider.claude] prompt_cache` (bool, default false).
-- When enabled, add `cache_control` to: the system prompt (as a text block),
-  the last tool definition, and the last message's last content block
-  (≤ 3 of Anthropic's 4 allowed breakpoints).
-- String content is converted to block form only when caching; tool_result
-  array content gets the marker on its last block.
-- Disabled: request body identical to today (plain strings).
+- `LlamaCppProvider::complete_stream` adds each **present** sampling field to
+  the JSON body using its server field name (`max_tokens`, `top_k`, `top_p`,
+  `min_p`, `repeat_penalty`, `repeat_last_n`, `seed`).
+- An **absent** field is not written to the body, so the server default applies
+  (current behavior). `temperature` continues to be forwarded as today.
 
-### 3.3 Hybrid History-Window Management (FR-03)
+### 3.3 Documentation (FR-03)
 
-- Config `[history]`: `enabled` (bool, default false),
-  `max_context_tokens` (default 24000), `keep_recent_turns` (default 6).
-- Before each provider call, if enabled and estimated tokens exceed
-  `max_context_tokens`: summarize the old span via the LLM into one
-  `System` summary message replacing that span; if still over budget, drop the
-  oldest old-span messages one at a time.
-- The leading system/persona prefix and the last `keep_recent_turns` messages
-  are never summarized or dropped.
-- **old_span boundary guard:** the span boundary must not split an
-  `Assistant(tool_calls)` → `ToolResult` pair; if the recent-turns cut would
-  orphan a `ToolResult`, the boundary moves back to keep the pair intact (so
-  compaction can never produce an unanswerable `role:"tool"` on the wire).
-- Best-effort: a summarization-call failure degrades to drop-only and must
-  never fail the user's turn. An `Info` event reports what was compacted.
-- Disabled: full history replayed verbatim, unchanged.
-
-### 3.4 Assistant `tool_calls` Echo (FR-04, unconditional)
-
-- `Message::Assistant` carries `tool_calls: Vec<ToolCall>`
-  (`#[serde(default, skip_serializing_if = "Vec::is_empty")]`).
-- The agent records the assistant turn **with its tool calls** before pushing
-  the `ToolResult`(s), including the previously-dropped tool-only (no-prose)
-  case.
-- The opencode OpenAI serializer emits `tool_calls[]` (`id`/`type`/`function`,
-  `arguments` as a JSON string) and `content: null` for a tool-only turn, so a
-  following `role:"tool"` message always has a qualifying `tool_calls`
-  predecessor. Eliminates the DeepSeek HTTP 400 "Messages with role 'tool'
-  must be a response to a preceding message with 'tool_calls'".
-- Wire-shape-preserving: no `tool_calls` ⇒ key omitted, byte-identical to
-  before.
-
-### 3.5 Assistant `reasoning_content` Echo (FR-05, unconditional)
-
-- `Message::Assistant` carries `reasoning_content: Option<String>`
-  (`#[serde(default, skip_serializing_if = "Option::is_none")]`).
-- opencode SSE handling surfaces `delta.reasoning_content` as the existing
-  `ProviderEvent::Thinking`; the agent accumulates it and stores it on the
-  assistant message, and the opencode OpenAI serializer echoes it back on that
-  turn. Eliminates the DeepSeek HTTP 400 "The `reasoning_content` in the
-  thinking mode must be passed back to the API."
-- Wire-shape-preserving: `None` ⇒ key omitted, byte-identical to before.
+- `DEFAULT_CONFIG` template gains commented example lines for the new fields
+  under `[provider."llama.cpp"]`.
+- `doc/providers/llamacpp.md` documents each field with its `llama-cli`
+  equivalent (the §1.3 mapping) and notes that omitted fields fall back to the
+  server default.
 
 ## 4. Non-Functional Requirements
 
 - **NFR-01** Docs in English; Requirements/Design/Tasks mutually consistent.
-- **NFR-02** `cargo build` / `cargo test` / `cargo clippy` clean; new logic
-  unit-tested.
-- **NFR-03** Additive, non-breaking config and message shape
-  (`#[serde(default)]` / `skip_serializing_if`); all existing tests still
-  pass; default behavior unchanged.
-- **NFR-04** Summarization must not recurse into compaction.
-- **NFR-05** FR-04/FR-05 are protocol fixes verified live against DeepSeek
-  (via opencode), not only by unit tests.
+- **NFR-02** `cargo build` / `cargo test` / `cargo clippy` clean; the new
+  body-building logic unit-tested.
+- **NFR-03** Additive, non-breaking config (`Option` + `#[serde(default)]`):
+  all existing configs still parse; with no sampling fields set, the request
+  body is byte-identical to today.
+- **NFR-04** Field names on the wire match what the llama.cpp server expects
+  (verified against the server's documented OpenAI-compatible fields).
 
 ## 5. Constraints
 
-- Context-efficiency source changes: `src/config.rs`, `src/ai/claude.rs`,
-  `src/ai/opencode.rs`, new `src/history.rs`, `src/agent.rs`, `src/main.rs`
-  (module decl), plus the embedded default config template.
-- FR-04/FR-05 additionally touch `src/ai/mod.rs` (the `ToolCall` struct and
-  the two new `Message::Assistant` fields) and add compile-only match arms in
-  `src/ai/claude.rs`, `src/ai/codex.rs`, `src/ai/llamacpp.rs`,
-  `src/ai/ollama.rs` (those providers' wire output unchanged).
+- Source changes confined to `src/config.rs` (new optional fields on
+  `ProviderEntry` + default template) and `src/ai/llamacpp.rs` (body
+  building + tests). Docs: `doc/providers/llamacpp.md`.
+- `ProviderEntry` is the shared provider struct; the new fields are llama.cpp
+  -specific but live there to match the existing per-provider-field pattern
+  (`prompt_cache`/`persistent_session`/`api`), keeping them inert for other
+  providers.
 
 ## 6. Acceptance Criteria
 
-- Three config flags exist, default OFF; all-off ⇒ context-efficiency
-  behavior unchanged.
-- FR-01..FR-05 implemented with unit tests for the pure logic; FR-04/05
-  additionally verified live against DeepSeek.
-- `cargo build`/`test`/`clippy` green; existing tests unaffected;
-  `cargo test` **102/102**.
-- Requirements/Design/Tasks consistent.
+- The seven sampling fields parse from `[provider."llama.cpp"]`; omitting them
+  leaves the request body unchanged from today.
+- Present fields appear in the `/v1/chat/completions` body under their server
+  names; absent fields do not.
+- A unit test asserts body construction (present ⇒ included with correct name,
+  absent ⇒ omitted).
+- `cargo build`/`test`/`clippy` green; existing tests unaffected.
+- Requirements/Design/Tasks consistent; llama.cpp provider doc updated.

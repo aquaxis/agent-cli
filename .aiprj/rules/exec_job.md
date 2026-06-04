@@ -10,6 +10,7 @@ Article 4: The AI must not optimize, rewrite, or reinterpret user instructions.
 Article 5: The AI must not stop execution until the user's instructions are fully completed.
 Article 6: All work logs must be stored in the `.aiprj/AI_LOG/` directory using the filename format `YYYY-MM-DD_NNN.md`, where `NNN` is a zero-padded sequential number starting from `000`. Overwriting existing log files is strictly prohibited.
 Article 7: Each work log must include the full content of `.aiprj/instructions.md` at the time of execution.
+Article 8: The AI must not leave any trace of its involvement in generated or updated files.
 
 ---
 name: AI Coding Guidelines
@@ -26,4 +27,4 @@ description: Task-specific instructions for this session.
 ---
 
 Task: Execute the instructions listed in `.aiprj/instructions.md`.
-Output language: English.
+Thiinkg & Output language: English
