@@ -1,5 +1,14 @@
+.aiprj
+AI_LOG/
+AI_PRJ_REQUIREMENTS.md
+AI_PRJ_DESIGN.md
+AI_PRJ_TASKS.md
 .aiprj/AI_LOG
 .aiprj/instructions.md
+
+# AI tools
+.claude
+.mcp.json
 
 # Rust
 /target

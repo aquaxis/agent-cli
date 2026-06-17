@@ -10,9 +10,8 @@ use crate::ai::Message;
 
 fn message_len(m: &Message) -> usize {
     match m {
-        Message::System { content }
-        | Message::User { content }
-        | Message::Assistant { content } => content.len(),
+        Message::System { content } | Message::User { content } => content.len(),
+        Message::Assistant { content, .. } => content.len(),
         Message::ToolResult { content, .. } => content.len(),
     }
 }
@@ -42,7 +41,17 @@ pub fn old_span(
         return None;
     }
     let recent = keep_recent_turns.min(total - start);
-    let end = total - recent;
+    let mut end = total - recent;
+    // Never let the kept (un-summarized) tail begin with a `ToolResult`:
+    // splitting an `Assistant { tool_calls }` from its following tool
+    // result(s) would leave an orphan `tool` message with no qualifying
+    // predecessor, which OpenAI-shaped providers (DeepSeek via opencode)
+    // reject with HTTP 400. Pull the boundary back so the whole
+    // assistant/tool-result group stays together in the kept tail (and is
+    // not what gets collapsed into the summary).
+    while end > start && end < total && matches!(messages[end], Message::ToolResult { .. }) {
+        end -= 1;
+    }
     if end > start {
         Some(start..end)
     } else {
@@ -57,7 +66,7 @@ pub fn render_transcript(messages: &[Message]) -> String {
         let (tag, c) = match m {
             Message::System { content } => ("System", content),
             Message::User { content } => ("User", content),
-            Message::Assistant { content } => ("Assistant", content),
+            Message::Assistant { content, .. } => ("Assistant", content),
             Message::ToolResult { content, .. } => ("ToolResult", content),
         };
         s.push_str(tag);
@@ -79,7 +88,11 @@ mod tests {
         Message::User { content: s.into() }
     }
     fn asst(s: &str) -> Message {
-        Message::Assistant { content: s.into() }
+        Message::Assistant {
+            content: s.into(),
+            tool_calls: vec![],
+            reasoning_content: None,
+        }
     }
 
     #[test]
@@ -114,5 +127,59 @@ mod tests {
     fn render_transcript_tags_roles() {
         let t = render_transcript(&[user("hi"), asst("yo")]);
         assert_eq!(t, "User: hi\n\nAssistant: yo");
+    }
+
+    fn asst_call(content: &str, id: &str) -> Message {
+        Message::Assistant {
+            content: content.into(),
+            tool_calls: vec![crate::ai::ToolCall {
+                id: id.into(),
+                name: "shell".into(),
+                arguments: serde_json::json!({}),
+            }],
+            reasoning_content: None,
+        }
+    }
+    fn tr(id: &str) -> Message {
+        Message::ToolResult {
+            tool_use_id: id.into(),
+            content: "ok".into(),
+            is_error: false,
+        }
+    }
+
+    #[test]
+    fn old_span_does_not_split_assistant_toolresult_pair() {
+        // Without the boundary guard, keep=1 would put the span end at index
+        // 3 (the ToolResult), summarizing away its Assistant{tool_calls} at
+        // index 2 and orphaning the tool message. The guard must pull `end`
+        // back to 2 so the pair stays in the kept tail.
+        let msgs = vec![
+            sys("persona"),     // 0
+            user("u1"),         // 1
+            asst_call("a", "c1"), // 2  (Assistant with tool_calls)
+            tr("c1"),           // 3  (its ToolResult)
+        ];
+        let span = old_span(&msgs, 1).expect("span");
+        assert_eq!(span, 1..2, "boundary pulled back before the pair");
+        // The kept tail [2..] starts with the Assistant, not the ToolResult.
+        assert!(matches!(
+            msgs[span.end],
+            Message::Assistant { .. }
+        ));
+    }
+
+    #[test]
+    fn old_span_walks_back_over_multiple_tool_results() {
+        let msgs = vec![
+            sys("p"),             // 0
+            user("u"),            // 1
+            asst_call("a", "c1"), // 2
+            tr("c1"),             // 3
+            tr("c2"),             // 4  (multi-tool turn)
+        ];
+        // keep=1 → raw end=4 (tr c2); guard walks 4→3→2.
+        let span = old_span(&msgs, 1).expect("span");
+        assert_eq!(span, 1..2);
     }
 }

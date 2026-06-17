@@ -47,7 +47,7 @@ src/
 │   ├── claude.rs        ... Anthropic Messages (SSE, thinking, tool_use)
 │   ├── codex.rs         ... OpenAI Chat Completions (SSE, function calling)
 │   ├── ollama.rs        ... Ollama /api/chat (NDJSON, tool_calls)
-│   ├── opencode.rs      ... OpenCode local session API / Zen cloud (OpenAI-compatible)
+│   ├── opencode.rs      ... OpenCode local session API / Zen cloud (OpenAI- or Anthropic-compatible via `api`)
 │   ├── llamacpp.rs      ... llama.cpp /v1/chat/completions (OpenAI-compatible)
 │   ├── tool_bridge.rs   ... tool definition format conversion
 │   └── stream.rs        ... SSE frame assembly

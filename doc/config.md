@@ -76,6 +76,7 @@ agent-cli --config ./project-a.toml config path
 | `thinking` | bool | `true` (only meaningful for claude) | Cond. | Enable thinking blocks (`claude` only) |
 | `prompt_cache` | bool | `false` (**claude only**) | No | Opt-in Anthropic prompt caching (`cache_control` on system / tools / conversation tail). See §11 |
 | `persistent_session` | bool | `false` (**opencode local only**) | No | Opt-in: reuse one OpenCode server session across turns. See §11 |
+| `api` | string | `"openai"` (**opencode cloud only**) | No | Cloud wire format: `"openai"` → `{base}/chat/completions`; `"anthropic"` → `{base}/messages`. Pair with the matching `base_url` (e.g. `https://opencode.ai/zen/go/v1`) |
 | `request_timeout_secs` | int | `900` | No | Total HTTP timeout incl. streaming |
 
 Per-backend defaults:

@@ -2,10 +2,13 @@
 //!
 //! Supports two modes selected by configuration (see AI_PRJ_DESIGN.md 3.1):
 //!
-//! * **Cloud (OpenCode Zen)** — when an API key is resolved. Talks to the
-//!   OpenAI-compatible endpoint `POST {base_url}/chat/completions` with
-//!   `Authorization: Bearer <key>` and SSE streaming terminated by `[DONE]`.
-//!   Default cloud `base_url` is `https://opencode.ai/zen/v1`.
+//! * **Cloud (OpenCode Zen)** — when an API key is resolved. Two wire formats
+//!   selected by `[provider.opencode] api`: `"openai"` (default) →
+//!   `POST {base_url}/chat/completions` (`[DONE]` SSE); `"anthropic"` →
+//!   `POST {base_url}/messages` (Anthropic SSE, reuses the Claude parser).
+//!   `Authorization: Bearer <key>` either way. Default cloud `base_url` is
+//!   `https://opencode.ai/zen/v1` (use `https://opencode.ai/zen/go/v1` for
+//!   the "go" endpoints).
 //! * **Local (`opencode serve`)** — when no API key is resolved. Performs the
 //!   native session handshake: `POST /session` then `POST /session/:id/message`
 //!   which returns a synchronous JSON body `{ info, parts }`. No auth header.
@@ -22,14 +25,46 @@ use async_trait::async_trait;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
+use crate::ai::claude::{handle_frame, to_anthropic_messages, ClaudeParseState};
 use crate::ai::stream::SseAccumulator;
-use crate::ai::tool_bridge::to_openai_tools;
+use crate::ai::tool_bridge::{to_anthropic_tools, to_openai_tools};
 use crate::ai::{
     extract_request_id, Capabilities, EventStream, Message, Provider, ProviderContext,
     ProviderError, ProviderEvent, ToolSpec,
 };
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
+
+/// Cloud-mode wire format / endpoint (opencode Zen). Selected by
+/// `[provider.opencode] api`; ignored in local mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloudApi {
+    /// OpenAI-compatible `{base}/chat/completions` (default).
+    OpenAi,
+    /// Anthropic-compatible `{base}/messages`.
+    Anthropic,
+}
+
+impl CloudApi {
+    fn parse(s: Option<&str>) -> Self {
+        match s.map(|x| x.trim().to_ascii_lowercase()).as_deref() {
+            Some("anthropic") | Some("messages") => CloudApi::Anthropic,
+            _ => CloudApi::OpenAi,
+        }
+    }
+
+    fn path(self) -> &'static str {
+        match self {
+            CloudApi::OpenAi => "/chat/completions",
+            CloudApi::Anthropic => "/messages",
+        }
+    }
+}
+
+/// Cloud endpoint URL for `base` under the selected API style.
+fn cloud_url(base: &str, api: CloudApi) -> String {
+    format!("{}{}", base.trim_end_matches('/'), api.path())
+}
 
 /// Cached local-mode session state (opt-in `persistent_session`).
 #[derive(Default)]
@@ -50,6 +85,8 @@ pub struct OpenCodeProvider {
     pub temperature: Option<f32>,
     /// Opt-in: reuse one server session across turns (local mode only).
     pub persistent_session: bool,
+    /// Cloud wire format (OpenAI vs Anthropic compatible). Local mode ignores.
+    pub(crate) cloud_api: CloudApi,
     pub client: reqwest::Client,
     pub context: ProviderContext,
     /// Persistent-session bookkeeping. `tokio::sync::Mutex` because it is
@@ -92,6 +129,7 @@ impl OpenCodeProvider {
             model,
             temperature: entry.temperature,
             persistent_session: entry.persistent_session.unwrap_or(false),
+            cloud_api: CloudApi::parse(entry.api.as_deref()),
             client,
             context,
             session: tokio::sync::Mutex::new(PersistState::default()),
@@ -112,8 +150,22 @@ impl OpenCodeProvider {
             .into_app_error()
     }
 
-    /// Cloud (OpenCode Zen) — OpenAI-compatible streaming chat completions.
+    /// Cloud (OpenCode Zen) dispatcher — picks the OpenAI- or
+    /// Anthropic-compatible endpoint per `[provider.opencode] api`.
     async fn complete_stream_cloud(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+    ) -> Result<EventStream<'_>> {
+        match self.cloud_api {
+            CloudApi::OpenAi => self.complete_stream_cloud_openai(messages, tools).await,
+            CloudApi::Anthropic => self.complete_stream_cloud_anthropic(messages, tools).await,
+        }
+    }
+
+    /// Cloud — OpenAI-compatible streaming chat completions
+    /// (`{base}/chat/completions`, `[DONE]`-terminated SSE).
+    async fn complete_stream_cloud_openai(
         &self,
         messages: &[Message],
         tools: &[ToolSpec],
@@ -129,7 +181,7 @@ impl OpenCodeProvider {
         if let Some(t) = self.temperature {
             body["temperature"] = json!(t);
         }
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = cloud_url(&self.base_url, CloudApi::OpenAi);
         let mut req = self
             .client
             .post(url)
@@ -159,6 +211,81 @@ impl OpenCodeProvider {
                         acc.push(&s);
                         for frame in acc.drain_frames() {
                             let outcome = handle_opencode_frame(&frame, &mut state);
+                            for ev in outcome.events {
+                                yield ev;
+                            }
+                            if outcome.done {
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        yield ProviderEvent::Error { message: e.to_string() };
+                        return;
+                    }
+                }
+            }
+            yield ProviderEvent::Done;
+        };
+        Ok(Box::pin(stream))
+    }
+
+    /// Cloud — Anthropic-compatible streaming messages
+    /// (`{base}/messages`). Reuses the Claude request/SSE machinery; auth is
+    /// sent as both `Authorization: Bearer` (Zen convention) and `x-api-key`
+    /// (native Anthropic), plus `anthropic-version`, for gateway compatibility.
+    async fn complete_stream_cloud_anthropic(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSpec],
+    ) -> Result<EventStream<'_>> {
+        let (system, msgs) = to_anthropic_messages(messages);
+        let mut body = json!({
+            "model": self.model,
+            "max_tokens": 1024,
+            "stream": true,
+            "messages": msgs,
+        });
+        if let Some(sys) = system {
+            body["system"] = Value::String(sys);
+        }
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(to_anthropic_tools(tools));
+        }
+        if let Some(t) = self.temperature {
+            body["temperature"] = json!(t);
+        }
+        let url = cloud_url(&self.base_url, CloudApi::Anthropic);
+        let mut req = self
+            .client
+            .post(url)
+            .header("content-type", "application/json")
+            .header("anthropic-version", "2023-06-01")
+            .json(&body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key).header("x-api-key", key);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let text = resp.text().await.unwrap_or_default();
+            tracing::debug!(target: "agent_cli::ai::opencode", status = %status, body = %text, "provider HTTP error");
+            return Err(self.provider_error(status, &headers, text));
+        }
+
+        let byte_stream = resp.bytes_stream();
+        let stream = async_stream::stream! {
+            let mut acc = SseAccumulator::new();
+            let mut state = ClaudeParseState::default();
+            let mut byte_stream = Box::pin(byte_stream);
+            while let Some(chunk) = byte_stream.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        let s = String::from_utf8_lossy(&bytes);
+                        acc.push(&s);
+                        for frame in acc.drain_frames() {
+                            let outcome = handle_frame(&frame, &mut state);
                             for ev in outcome.events {
                                 yield ev;
                             }
@@ -395,8 +522,49 @@ fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
             Message::User { content } => {
                 out.push(json!({"role": "user", "content": content}));
             }
-            Message::Assistant { content } => {
-                out.push(json!({"role": "assistant", "content": content}));
+            Message::Assistant {
+                content,
+                tool_calls,
+                reasoning_content,
+            } => {
+                let mut msg = serde_json::Map::new();
+                msg.insert("role".into(), json!("assistant"));
+                // DeepSeek thinking mode requires the prior assistant turn's
+                // chain-of-thought echoed back, else HTTP 400 "The
+                // `reasoning_content` in the thinking mode must be passed
+                // back to the API."
+                if let Some(r) = reasoning_content {
+                    msg.insert("reasoning_content".into(), json!(r));
+                }
+                // OpenAI/DeepSeek accept null content alongside tool_calls;
+                // a tool-only turn has no prose.
+                msg.insert(
+                    "content".into(),
+                    if content.is_empty() {
+                        Value::Null
+                    } else {
+                        json!(content)
+                    },
+                );
+                if !tool_calls.is_empty() {
+                    let calls: Vec<Value> = tool_calls
+                        .iter()
+                        .map(|tc| {
+                            json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    // OpenAI requires `arguments` as a JSON string.
+                                    "arguments": serde_json::to_string(&tc.arguments)
+                                        .unwrap_or_else(|_| "{}".to_string()),
+                                }
+                            })
+                        })
+                        .collect();
+                    msg.insert("tool_calls".into(), Value::Array(calls));
+                }
+                out.push(Value::Object(msg));
             }
             Message::ToolResult {
                 tool_use_id,
@@ -434,7 +602,9 @@ fn flatten_history(messages: &[Message]) -> (Option<String>, String) {
                 body.push_str(content);
                 body.push_str("\n\n");
             }
-            Message::Assistant { content } => {
+            // Local session-API path (not the shipped cloud config); tool
+            // calls are not represented in this flat text form.
+            Message::Assistant { content, .. } => {
                 body.push_str("Assistant: ");
                 body.push_str(content);
                 body.push_str("\n\n");
@@ -494,6 +664,17 @@ pub(crate) fn handle_opencode_frame(frame: &str, state: &mut OpenCodeParseState)
         .cloned()
         .unwrap_or(Value::Null);
     let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
+    // DeepSeek thinking mode streams chain-of-thought as
+    // `delta.reasoning_content`. Surface it as a Thinking event so
+    // process_turn can accumulate and echo it back (the endpoint rejects
+    // the next request if the prior assistant turn omits it).
+    if let Some(r) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+        if !r.is_empty() {
+            events.push(ProviderEvent::Thinking {
+                text: r.to_string(),
+            });
+        }
+    }
     if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
         if !text.is_empty() {
             events.push(ProviderEvent::Text {
@@ -740,11 +921,177 @@ mod tests {
             },
             Message::Assistant {
                 content: "hello".into(),
+                tool_calls: vec![],
+                reasoning_content: None,
             },
         ];
         let (system, prompt) = flatten_history(&msgs);
         assert_eq!(system.as_deref(), Some("be terse"));
         assert!(prompt.contains("User: hi"));
         assert!(prompt.contains("Assistant: hello"));
+    }
+
+    #[test]
+    fn to_openai_messages_emits_tool_calls_before_tool_result() {
+        // The exact invariant DeepSeek (via opencode) enforces: a
+        // `role:"tool"` message must be immediately preceded by an
+        // `assistant` message carrying a matching `tool_calls[].id`.
+        // Regression guard for the HTTP 400
+        // "Messages with role 'tool' must be a response to a preceding
+        //  message with 'tool_calls'".
+        let msgs = vec![
+            Message::System {
+                content: "sys".into(),
+            },
+            Message::User {
+                content: "do it".into(),
+            },
+            Message::Assistant {
+                content: String::new(), // tool-only turn: no prose
+                tool_calls: vec![crate::ai::ToolCall {
+                    id: "call_abc".into(),
+                    name: "shell".into(),
+                    arguments: json!({"cmd": "ls -la"}),
+                }],
+                reasoning_content: None,
+            },
+            Message::ToolResult {
+                tool_use_id: "call_abc".into(),
+                content: "total 0".into(),
+                is_error: false,
+            },
+        ];
+        let out = to_openai_messages(&msgs);
+        // [system, user, assistant(tool_calls), tool]
+        let asst = &out[2];
+        assert_eq!(asst["role"], "assistant");
+        assert!(asst["content"].is_null(), "tool-only turn ⇒ null content");
+        let calls = asst["tool_calls"].as_array().expect("tool_calls array");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "call_abc");
+        assert_eq!(calls[0]["type"], "function");
+        assert_eq!(calls[0]["function"]["name"], "shell");
+        // OpenAI requires `arguments` as a JSON *string*.
+        assert_eq!(
+            calls[0]["function"]["arguments"],
+            json!(r#"{"cmd":"ls -la"}"#)
+        );
+        let tool = &out[3];
+        assert_eq!(tool["role"], "tool");
+        assert_eq!(
+            tool["tool_call_id"], calls[0]["id"],
+            "tool_call_id must match the preceding assistant tool_calls[].id"
+        );
+    }
+
+    #[test]
+    fn to_openai_messages_assistant_with_text_and_calls() {
+        let msgs = vec![
+            Message::Assistant {
+                content: "I'll run it".into(),
+                tool_calls: vec![crate::ai::ToolCall {
+                    id: "c1".into(),
+                    name: "shell".into(),
+                    arguments: json!({}),
+                }],
+                reasoning_content: None,
+            },
+            Message::ToolResult {
+                tool_use_id: "c1".into(),
+                content: "ok".into(),
+                is_error: false,
+            },
+        ];
+        let out = to_openai_messages(&msgs);
+        assert_eq!(out[0]["content"], "I'll run it");
+        assert_eq!(out[0]["tool_calls"][0]["id"], "c1");
+        assert_eq!(out[1]["tool_call_id"], "c1");
+    }
+
+    #[test]
+    fn to_openai_messages_plain_assistant_has_no_tool_calls_key() {
+        let out = to_openai_messages(&[Message::Assistant {
+            content: "hi".into(),
+            tool_calls: vec![],
+            reasoning_content: None,
+        }]);
+        assert_eq!(out[0]["content"], "hi");
+        assert!(
+            out[0].get("tool_calls").is_none(),
+            "no tool_calls key for a plain text reply"
+        );
+        assert!(
+            out[0].get("reasoning_content").is_none(),
+            "no reasoning_content key when None"
+        );
+    }
+
+    #[test]
+    fn to_openai_messages_echoes_reasoning_content() {
+        // The exact invariant DeepSeek thinking mode enforces: the prior
+        // assistant turn must carry its `reasoning_content` back, else
+        // HTTP 400 "The `reasoning_content` in the thinking mode must be
+        // passed back to the API." Regression guard.
+        let msgs = vec![
+            Message::Assistant {
+                content: String::new(), // reasoning + tool call, no prose
+                tool_calls: vec![crate::ai::ToolCall {
+                    id: "c9".into(),
+                    name: "shell".into(),
+                    arguments: json!({"cmd": "ls"}),
+                }],
+                reasoning_content: Some("let me inspect the workspace".into()),
+            },
+            Message::ToolResult {
+                tool_use_id: "c9".into(),
+                content: "ok".into(),
+                is_error: false,
+            },
+        ];
+        let out = to_openai_messages(&msgs);
+        let asst = &out[0];
+        assert_eq!(asst["role"], "assistant");
+        assert_eq!(
+            asst["reasoning_content"], "let me inspect the workspace",
+            "thinking-mode reasoning must be echoed back"
+        );
+        // Prior-cycle invariants still hold alongside reasoning_content.
+        assert!(asst["content"].is_null());
+        assert_eq!(asst["tool_calls"][0]["id"], "c9");
+        assert_eq!(out[1]["role"], "tool");
+        assert_eq!(out[1]["tool_call_id"], "c9");
+    }
+
+    #[test]
+    fn to_openai_messages_reasoning_only_assistant() {
+        let out = to_openai_messages(&[Message::Assistant {
+            content: "the answer is 42".into(),
+            tool_calls: vec![],
+            reasoning_content: Some("42 by deduction".into()),
+        }]);
+        assert_eq!(out[0]["content"], "the answer is 42");
+        assert_eq!(out[0]["reasoning_content"], "42 by deduction");
+        assert!(out[0].get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn cloud_api_parse_defaults_to_openai() {
+        assert_eq!(CloudApi::parse(None), CloudApi::OpenAi);
+        assert_eq!(CloudApi::parse(Some("openai")), CloudApi::OpenAi);
+        assert_eq!(CloudApi::parse(Some("bogus")), CloudApi::OpenAi);
+        assert_eq!(CloudApi::parse(Some("  Anthropic ")), CloudApi::Anthropic);
+        assert_eq!(CloudApi::parse(Some("messages")), CloudApi::Anthropic);
+    }
+
+    #[test]
+    fn cloud_url_picks_endpoint_and_trims_slash() {
+        assert_eq!(
+            cloud_url("https://opencode.ai/zen/go/v1/", CloudApi::OpenAi),
+            "https://opencode.ai/zen/go/v1/chat/completions"
+        );
+        assert_eq!(
+            cloud_url("https://opencode.ai/zen/go/v1", CloudApi::Anthropic),
+            "https://opencode.ai/zen/go/v1/messages"
+        );
     }
 }

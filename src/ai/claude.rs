@@ -72,7 +72,7 @@ impl ClaudeProvider {
     }
 }
 
-fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
+pub(crate) fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
     let mut system: Option<String> = None;
     let mut out: Vec<Value> = Vec::new();
     for m in messages {
@@ -88,7 +88,10 @@ fn to_anthropic_messages(messages: &[Message]) -> (Option<String>, Vec<Value>) {
             Message::User { content } => {
                 out.push(json!({"role": "user", "content": content}));
             }
-            Message::Assistant { content } => {
+            // Anthropic cloud path (CloudApi::Anthropic) — NOT the shipped
+            // config (`api="openai"`). Tool calls are not rendered as
+            // tool_use blocks here; deferred to an Anthropic-path cycle.
+            Message::Assistant { content, .. } => {
                 out.push(json!({"role": "assistant", "content": content}));
             }
             Message::ToolResult {

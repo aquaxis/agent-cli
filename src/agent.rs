@@ -5,7 +5,7 @@ use futures::stream::StreamExt;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::ai::{Message, Provider, ProviderEvent};
+use crate::ai::{Message, Provider, ProviderEvent, ToolCall};
 use crate::config::Config;
 use crate::error::Result;
 use crate::id::AgentId;
@@ -204,6 +204,7 @@ impl Agent {
             };
 
             let mut assistant_text = String::new();
+            let mut reasoning = String::new();
             let mut pending_tools: Vec<(String, String, Value)> = Vec::new();
             let mut had_error = false;
 
@@ -213,6 +214,10 @@ impl Agent {
                         if let Some(l) = log {
                             l.write(LogEvent::Thinking { text: &text }).await.ok();
                         }
+                        // Accumulate before the send moves `text`. Stored on
+                        // the assistant message and echoed back next request
+                        // (DeepSeek thinking mode requires it).
+                        reasoning.push_str(&text);
                         let _ = event_tx.send(AgentEvent::Thinking { text }).await;
                     }
                     ProviderEvent::Text { delta } => {
@@ -234,7 +239,32 @@ impl Agent {
                 }
             }
 
-            if !assistant_text.is_empty() {
+            // Record the assistant turn (with the tool calls it made) BEFORE
+            // any ToolResult is appended. A tool-only turn has empty text but
+            // must still produce an assistant message carrying `tool_calls`,
+            // otherwise the following `tool` message has no qualifying
+            // predecessor and OpenAI-shaped providers (DeepSeek via opencode)
+            // reject the next request with HTTP 400. Build from a borrow —
+            // `pending_tools` is moved by the tool-execution loop below.
+            let tool_calls: Vec<ToolCall> = pending_tools
+                .iter()
+                .map(|(id, name, args)| ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                })
+                .collect();
+
+            let reasoning_content = if reasoning.is_empty() {
+                None
+            } else {
+                Some(reasoning.clone())
+            };
+
+            if !assistant_text.is_empty()
+                || !tool_calls.is_empty()
+                || reasoning_content.is_some()
+            {
                 if let Some(l) = log {
                     l.write(LogEvent::Assistant {
                         text: &assistant_text,
@@ -244,6 +274,8 @@ impl Agent {
                 }
                 self.history.push(Message::Assistant {
                     content: assistant_text.clone(),
+                    tool_calls,
+                    reasoning_content,
                 });
             }
 

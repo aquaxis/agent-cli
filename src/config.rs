@@ -36,12 +36,26 @@ model    = "claude-sonnet-4-5"
 base_url = "http://127.0.0.1:4096"
 # api_key_env = "OPENCODE_API_KEY"
 # base_url    = "https://opencode.ai/zen/v1"
+# Cloud wire format: "openai" (default, /chat/completions) or
+# "anthropic" (/messages). Use the matching base_url (e.g. the "go" endpoints
+# https://opencode.ai/zen/go/v1).
+# api = "anthropic"
 # Opt-in (local mode only): reuse one server session across turns.
 # persistent_session = true
 
 [provider."llama.cpp"]
 model    = "default"
 base_url = "http://127.0.0.1:8080"
+# Optional sampling knobs (omit any => the llama.cpp server's own default).
+# Names mirror the llama-cli flags shown after each comment.
+# max_tokens     = 1024   # -n / --n-predict
+# temperature    = 0.2    # --temp
+# top_k          = 80     # --top-k
+# top_p          = 0.95   # --top-p
+# min_p          = 0.05   # --min-p
+# repeat_penalty = 1.05   # --repeat-penalty
+# repeat_last_n  = 64     # --repeat-last-n
+# seed           = 0      # --seed
 
 [runtime]
 auto_approve_tools = false
@@ -126,6 +140,41 @@ pub struct ProviderEntry {
     /// `None`/absent => disabled (ephemeral session per turn, unchanged).
     #[serde(default)]
     pub persistent_session: Option<bool>,
+    /// opencode **cloud** mode only: wire format / endpoint to use.
+    /// `"openai"` (default) → OpenAI-compatible `{base}/chat/completions`;
+    /// `"anthropic"` → Anthropic-compatible `{base}/messages`. Ignored in
+    /// local mode and by other providers.
+    #[serde(default)]
+    pub api: Option<String>,
+    /// llama.cpp only: max tokens to generate (`llama-cli -n / --n-predict`),
+    /// forwarded as `max_tokens`. `None`/absent => server default (unchanged).
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    /// llama.cpp only: Top-K sampling (`llama-cli --top-k`), forwarded as
+    /// `top_k`. `None`/absent => server default.
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    /// llama.cpp only: Top-P (nucleus) sampling (`llama-cli --top-p`),
+    /// forwarded as `top_p`. `None`/absent => server default.
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    /// llama.cpp only: Min-P sampling (`llama-cli --min-p`), forwarded as
+    /// `min_p`. `None`/absent => server default.
+    #[serde(default)]
+    pub min_p: Option<f32>,
+    /// llama.cpp only: repetition penalty (`llama-cli --repeat-penalty`),
+    /// forwarded as `repeat_penalty`. `None`/absent => server default.
+    #[serde(default)]
+    pub repeat_penalty: Option<f32>,
+    /// llama.cpp only: window for the repeat penalty
+    /// (`llama-cli --repeat-last-n`), forwarded as `repeat_last_n`.
+    /// `None`/absent => server default.
+    #[serde(default)]
+    pub repeat_last_n: Option<i32>,
+    /// llama.cpp only: RNG seed (`llama-cli --seed`), forwarded as `seed`.
+    /// `None`/absent => server default (non-deterministic).
+    #[serde(default)]
+    pub seed: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

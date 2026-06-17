@@ -8,6 +8,7 @@ mod cli;
 mod commands;
 mod config;
 mod error;
+mod editor;
 mod history;
 mod id;
 mod ipc;
