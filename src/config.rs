@@ -130,6 +130,11 @@ pub struct ProviderEntry {
     /// before content do not get aborted mid-stream.
     #[serde(default)]
     pub request_timeout_secs: Option<u64>,
+    /// ollama only: how many times to retry a transient provider error (HTTP 503
+    /// or an "overloaded" / "please retry" body) with exponential backoff before
+    /// surfacing it. Optional — falls back to a small default. `0` disables retry.
+    #[serde(default)]
+    pub max_retries: Option<u64>,
     /// Claude only: enable Anthropic prompt caching (`cache_control`
     /// breakpoints on system / tools / conversation tail). Opt-in;
     /// `None`/absent => disabled (behavior unchanged).
