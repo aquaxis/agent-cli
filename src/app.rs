@@ -5,6 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::terminal::{self, ClearType};
+use crossterm::ExecutableCommand;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 
@@ -12,6 +15,7 @@ use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest};
 use crate::ai;
 use crate::cli::RunArgs;
 use crate::config::{Config, ConfigSource, ShowThinkingMode};
+use crate::editor::InputState;
 use crate::error::Result;
 use crate::id::AgentId;
 use crate::ipc::registry::{RegistryEntry, RegistryHandle};
@@ -333,22 +337,420 @@ impl PromptState {
     }
 }
 
+/// RAII guard that enables crossterm raw mode on creation and disables it on drop.
+/// Ensures the terminal is restored even on panic or early return (NFR-04).
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> std::io::Result<Self> {
+        terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+/// Redraw the prompt line: clear current line, print `> ` prefix and the editor content,
+/// and position the cursor at the correct column.
+fn redraw_prompt(stdout: &mut std::io::Stdout, state: &InputState) {
+    use crossterm::cursor::MoveToColumn;
+    use crossterm::style::Print;
+    let prompt: &str = "> ";
+    // Move to start of line, clear from cursor to end of line
+    let _ = stdout.execute(MoveToColumn(0));
+    let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
+    // Print prompt prefix + line content
+    let _ = stdout.execute(Print(format!("{}{}", prompt, state.line)));
+    // Position cursor: prompt length + cursor offset
+    let col = prompt.len() + state.cursor;
+    let _ = stdout.execute(MoveToColumn(col as u16));
+    let _ = stdout.flush();
+}
+
+/// Redraw the prompt line in approval mode: show `approve? [y/N]: ` with the current content.
+fn redraw_approval_prompt(stdout: &mut std::io::Stdout, state: &InputState) {
+    use crossterm::cursor::MoveToColumn;
+    use crossterm::style::Print;
+    let prompt: &str = "approve? [y/N]: ";
+    let _ = stdout.execute(MoveToColumn(0));
+    let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
+    let _ = stdout.execute(Print(format!("{}{}", prompt, state.line)));
+    let col = prompt.len() + state.cursor;
+    let _ = stdout.execute(MoveToColumn(col as u16));
+    let _ = stdout.flush();
+}
+
+/// Handle a single key event in interactive (raw-mode) editing.
+/// Returns `Some(action)` indicating what to do next.
+enum KeyAction {
+    /// Continue editing (prompt was redrawn).
+    Continue,
+    /// Submit the current line content.
+    Submit(String),
+    /// Clear the current line (Ctrl+C or Escape).
+    ClearLine,
+    /// EOF / quit signal.
+    Eof,
+}
+
+/// Navigate history up and return the history entries for `InputState`.
+/// This function needs the history slice, which we read from `ReplState`.
+fn handle_key(key_event: KeyEvent, input: &mut InputState, history: &[String]) -> Option<KeyAction> {
+    // Ignore key release events (Windows sends both press and release)
+    if key_event.kind == crossterm::event::KeyEventKind::Release {
+        return None;
+    }
+
+    let ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+
+    match key_event.code {
+        KeyCode::Enter => {
+            let line = input.submit();
+            Some(KeyAction::Submit(line))
+        }
+        KeyCode::Char(c) if ctrl => match c {
+            'a' => {
+                input.move_home();
+                Some(KeyAction::Continue)
+            }
+            'e' => {
+                input.move_end();
+                Some(KeyAction::Continue)
+            }
+            'c' => {
+                // Ctrl+C: clear current line
+                input.clear_line();
+                Some(KeyAction::ClearLine)
+            }
+            'd' => {
+                // Ctrl+D: EOF if line is empty, otherwise no-op
+                if input.line.is_empty() {
+                    Some(KeyAction::Eof)
+                } else {
+                    Some(KeyAction::Continue)
+                }
+            }
+            _ => None,
+        },
+        KeyCode::Char(c) => {
+            input.insert_char(c);
+            Some(KeyAction::Continue)
+        }
+        KeyCode::Backspace => {
+            input.backspace();
+            Some(KeyAction::Continue)
+        }
+        KeyCode::Delete => {
+            input.delete();
+            Some(KeyAction::Continue)
+        }
+        KeyCode::Left => {
+            input.move_left();
+            Some(KeyAction::Continue)
+        }
+        KeyCode::Right => {
+            input.move_right();
+            Some(KeyAction::Continue)
+        }
+        KeyCode::Home => {
+            input.move_home();
+            Some(KeyAction::Continue)
+        }
+        KeyCode::End => {
+            input.move_end();
+            Some(KeyAction::Continue)
+        }
+        KeyCode::Up => {
+            // History navigation: move to older entry (FR-03)
+            input.navigate_up(history);
+            Some(KeyAction::Continue)
+        }
+        KeyCode::Down => {
+            // History navigation: move to newer entry (FR-03)
+            input.navigate_down(history);
+            Some(KeyAction::Continue)
+        }
+        KeyCode::Esc => {
+            // Escape: exit history browse if browsing, otherwise clear line
+            if input.history_index.is_some() {
+                input.exit_history();
+                Some(KeyAction::Continue)
+            } else {
+                input.clear_line();
+                Some(KeyAction::ClearLine)
+            }
+        }
+        KeyCode::Tab => {
+            // No tab completion for now; ignore
+            Some(KeyAction::Continue)
+        }
+        _ => None,
+    }
+}
+
+/// Check if stdin is a TTY (for deciding whether to enable raw mode).
+fn stdin_is_tty() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
+}
+
 /// Main loop that converts line input from stdin (or any `AsyncRead`) into `AgentInput`.
 ///
-/// Responsibilities:
-/// - FR-13 "App termination" input-side endpoint:
-///   - When `/quit` is received, sends `true` to `shutdown_tx` and terminates.
-///   - When `lines.next_line()` returns `Ok(None)` (EOF = Ctrl+D), same behavior.
-///   - When `shutdown_rx` notification arrives (external route such as SIGINT), also terminates immediately.
-/// - FR-03-2 "REPL I/O cycle" prompt synchronization:
-///   - After sending user input, enters `Pending` state and does not read stdin until
-///     receiving an AI response completion notification (`Done` event) from `agent_idle_rx`.
-///     This prevents mixing streaming output with input echo.
-///
-/// Only draws a prompt (`> `) when `interactive` is `true`.
-/// Unit tests use `interactive = false` to avoid polluting stdout.
+/// When `interactive` is `true` and stdin is a TTY, uses crossterm raw-mode input
+/// with history navigation (up/down arrows) and line editing (FR-01/FR-02/FR-03).
+/// When `interactive` is `false` (tests, piped input), falls back to line-oriented
+/// `BufReader::lines()` reading (original behaviour).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_input_loop<R>(
+    reader: R,
+    input_tx: mpsc::Sender<AgentInput>,
+    state: Arc<ReplState>,
+    shutdown_tx: watch::Sender<bool>,
+    shutdown_rx: watch::Receiver<bool>,
+    agent_idle_rx: mpsc::Receiver<()>,
+    approval_rx: mpsc::Receiver<ApprovalRequest>,
+    interactive: bool,
+) where
+    R: AsyncRead + Unpin,
+{
+    // Determine whether to use crossterm raw mode
+    let use_raw_mode = interactive && stdin_is_tty();
+
+    if use_raw_mode {
+        run_input_loop_raw(
+            input_tx,
+            state,
+            shutdown_tx,
+            shutdown_rx,
+            agent_idle_rx,
+            approval_rx,
+        )
+        .await;
+    } else {
+        run_input_loop_line(
+            reader,
+            input_tx,
+            state,
+            shutdown_tx,
+            shutdown_rx,
+            agent_idle_rx,
+            approval_rx,
+            interactive,
+        )
+        .await;
+    }
+}
+
+/// Raw-mode input loop with crossterm (FR-01/FR-02/FR-03).
+/// Uses `crossterm::event::poll` + `read()` for key events inside `tokio::select!`.
+#[allow(clippy::too_many_arguments)]
+async fn run_input_loop_raw(
+    input_tx: mpsc::Sender<AgentInput>,
+    state: Arc<ReplState>,
+    shutdown_tx: watch::Sender<bool>,
+    shutdown_rx: watch::Receiver<bool>,
+    agent_idle_rx: mpsc::Receiver<()>,
+    approval_rx: mpsc::Receiver<ApprovalRequest>,
+) {
+    // Enable raw mode; guard restores on drop (NFR-04)
+    let _raw_guard = match RawModeGuard::enable() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!("failed to enable raw mode: {e}");
+            // Fall back to non-raw mode — but we can't do history navigation without raw mode.
+            // Just proceed with line-oriented input using stdin.
+            let stdin = tokio::io::stdin();
+            run_input_loop_line(
+                stdin,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                agent_idle_rx,
+                approval_rx,
+                true,
+            )
+            .await;
+            return;
+        }
+    };
+
+    let mut input_state = InputState::new();
+    let mut prompt_state = PromptState::Ready;
+    let mut approval_rx: Option<mpsc::Receiver<ApprovalRequest>> = Some(approval_rx);
+    let mut stdout = std::io::stdout();
+    let mut shutdown_rx = shutdown_rx;
+    let mut agent_idle_rx = agent_idle_rx;
+
+    // Draw initial prompt
+    redraw_prompt(&mut stdout, &input_state);
+
+    loop {
+        // Read current history for navigation
+        let history_snapshot: Vec<String> = {
+            let h = state.history.read().await;
+            h.clone()
+        };
+
+        // Decide if we should poll for terminal events
+        let can_read = prompt_state.is_ready() || prompt_state.is_awaiting_approval();
+
+        tokio::select! {
+            biased;
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+            // Only wait for AI response completion when in Pending state (stdin is paused)
+            res = agent_idle_rx.recv(), if prompt_state.is_pending() => {
+                match res {
+                    Some(()) => {
+                        prompt_state = PromptState::Ready;
+                        // Redraw prompt after AI response
+                        redraw_prompt(&mut stdout, &input_state);
+                    }
+                    None => break,
+                }
+            }
+            // Approval request arrived (only when not AwaitingApproval). FR-04-1
+            req = async {
+                match approval_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending::<Option<ApprovalRequest>>().await,
+                }
+            }, if !prompt_state.is_awaiting_approval() && approval_rx.is_some() => {
+                match req {
+                    Some(req) => {
+                        // Print approval request (go to new line since we're in raw mode)
+                        let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
+                        let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
+                        println!("[tool approval] {} {}", req.tool_name, req.args);
+                        // Reset input state for the approval prompt
+                        input_state = InputState::new();
+                        prompt_state = PromptState::AwaitingApproval(req.response);
+                        redraw_approval_prompt(&mut stdout, &input_state);
+                    }
+                    None => {
+                        approval_rx = None;
+                    }
+                }
+            }
+            // Poll for crossterm key events when Ready or AwaitingApproval
+            _ = tokio::task::spawn_blocking(move || {
+                // This blocks the calling thread until a key event or timeout.
+                // We use a short timeout so tokio::select! can check other branches frequently.
+                let _ = event::poll(Duration::from_millis(50));
+            }), if can_read => {
+                // Drain all pending key events
+                while event::poll(Duration::from_millis(0)).unwrap_or(false) {
+                    if let Ok(CtEvent::Key(key_event)) = event::read() {
+                        let is_awaiting_approval = prompt_state.is_awaiting_approval();
+                        if let Some(action) = handle_key(key_event, &mut input_state, &history_snapshot) {
+                            match action {
+                                KeyAction::Submit(line) => {
+                                    let trimmed = line.trim().to_string();
+
+                                    if is_awaiting_approval {
+                                        // Approval response: y/N
+                                        let approved = matches!(
+                                            trimmed.to_ascii_lowercase().as_str(),
+                                            "y" | "yes"
+                                        );
+                                        let prev = std::mem::replace(&mut prompt_state, PromptState::Pending);
+                                        if let PromptState::AwaitingApproval(resp_tx) = prev {
+                                            let _ = resp_tx.send(approved);
+                                        }
+                                        // Drain stale idle notifications
+                                        while agent_idle_rx.try_recv().is_ok() {}
+                                        // Clear the approval line and move to next line
+                                        let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
+                                        let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
+                                        println!();
+                                        continue;
+                                    }
+
+                                    // Clear the current prompt line and move to next line
+                                    let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
+                                    let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
+                                    println!();
+
+                                    if let Some(rest) = trimmed.strip_prefix('/') {
+                                        if !handle_repl_command(rest, &input_tx, &state).await {
+                                            break;
+                                        }
+                                        // Redraw prompt after command
+                                        redraw_prompt(&mut stdout, &input_state);
+                                        continue;
+                                    }
+                                    if trimmed.is_empty() {
+                                        // Blank line: just redraw prompt
+                                        redraw_prompt(&mut stdout, &input_state);
+                                        continue;
+                                    }
+
+                                    // Save to history (persistent + in-memory)
+                                    append_history(&state.history_path, &trimmed);
+                                    {
+                                        let mut h = state.history.write().await;
+                                        h.push(trimmed.clone());
+                                        let len = h.len();
+                                        if len > HISTORY_LIMIT {
+                                            h.drain(..len - HISTORY_LIMIT);
+                                        }
+                                    }
+
+                                    if input_tx.send(AgentInput::UserPrompt(trimmed)).await.is_err() {
+                                        break;
+                                    }
+                                    // Discard stale idle notifications from past peer prompts, then enter Pending
+                                    while agent_idle_rx.try_recv().is_ok() {}
+                                    prompt_state = PromptState::Pending;
+                                }
+                                KeyAction::ClearLine => {
+                                    // Redraw prompt with cleared state
+                                    redraw_prompt(&mut stdout, &input_state);
+                                }
+                                KeyAction::Eof => {
+                                    break;
+                                }
+                                KeyAction::Continue => {
+                                    if prompt_state.is_awaiting_approval() {
+                                        redraw_approval_prompt(&mut stdout, &input_state);
+                                    } else {
+                                        redraw_prompt(&mut stdout, &input_state);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Ignore resize and other events in this inner loop
+                }
+            }
+        }
+    }
+
+    // When exiting AwaitingApproval via the shutdown route, send false (deny) to the
+    // agent's oneshot::Receiver to avoid leaving it dangling (design doc 4.3A).
+    if let PromptState::AwaitingApproval(resp_tx) =
+        std::mem::replace(&mut prompt_state, PromptState::Ready)
+    {
+        let _ = resp_tx.send(false);
+    }
+    // Ensure prompt line is cleaned up before exit
+    let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
+    let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
+    let _ = shutdown_tx.send(true);
+    // _raw_guard dropped here: terminal mode restored
+}
+
+/// Line-oriented input loop (original behaviour, used for non-interactive / test mode).
+#[allow(clippy::too_many_arguments)]
+async fn run_input_loop_line<R>(
     reader: R,
     input_tx: mpsc::Sender<AgentInput>,
     state: Arc<ReplState>,
@@ -793,7 +1195,7 @@ fn print_persona(persona: &Persona) {
     if let Some(d) = &persona.frontmatter.description {
         println!("description : {d}");
     }
-    if let Some(t) = persona.frontmatter.temperature {
+    if let Some(t) = &persona.frontmatter.temperature {
         println!("temperature : {t}");
     }
     if let Some(allow) = &persona.frontmatter.allowed_tools {
@@ -874,16 +1276,134 @@ fn peer_summary(arg: &str, registry_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
-    //! Regression tests for FR-13 "App termination" input loop (`/quit` and Ctrl+D=EOF).
+    //! Regression tests for FR-13 "App termination" input loop (`/quit` and Ctrl+D=EOF),
+    //! plus unit tests for InputState history navigation (FR-03).
     use super::*;
     use crate::persona::Persona;
     use std::time::Duration;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
 
+    /// InputState unit tests (FR-03 / FR-04: history navigation and draft preservation).
+    #[test]
+    fn input_state_navigate_up_from_empty_history() {
+        let mut s = InputState::new();
+        s.line = "hello".to_string();
+        s.navigate_up(&[]);
+        assert_eq!(s.line, "hello");
+        assert!(s.history_index.is_none());
+        assert!(s.saved_draft.is_none());
+    }
+
+    #[test]
+    fn input_state_navigate_up_saves_draft_and_moves_to_newest() {
+        let history = vec!["cmd1".to_string(), "cmd2".to_string(), "cmd3".to_string()];
+        let mut s = InputState::new();
+        s.line = "current draft".to_string();
+        s.navigate_up(&history);
+        assert_eq!(s.line, "cmd3");
+        assert_eq!(s.history_index, Some(2));
+        assert_eq!(s.saved_draft, Some("current draft".to_string()));
+    }
+
+    #[test]
+    fn input_state_navigate_up_then_down_restores_draft() {
+        let history = vec!["cmd1".to_string(), "cmd2".to_string()];
+        let mut s = InputState::new();
+        s.line = "my draft".to_string();
+        s.navigate_up(&history);
+        assert_eq!(s.line, "cmd2");
+        s.navigate_down(&history);
+        assert_eq!(s.line, "my draft");
+        assert!(s.history_index.is_none());
+    }
+
+    #[test]
+    fn input_state_navigate_up_twice_then_enter_submits_correct_entry() {
+        let history = vec!["first".to_string(), "second".to_string(), "third".to_string()];
+        let mut s = InputState::new();
+        s.line = String::new();
+        s.navigate_up(&history);
+        assert_eq!(s.line, "third");
+        s.navigate_up(&history);
+        assert_eq!(s.line, "second");
+        s.navigate_up(&history);
+        assert_eq!(s.line, "first");
+        s.navigate_up(&history);
+        assert_eq!(s.line, "first");
+        assert_eq!(s.history_index, Some(0));
+    }
+
+    #[test]
+    fn input_state_down_at_bottom_is_noop() {
+        let history = vec!["cmd1".to_string()];
+        let mut s = InputState::new();
+        s.line = "hello".to_string();
+        s.navigate_down(&history);
+        assert_eq!(s.line, "hello");
+        assert!(s.history_index.is_none());
+    }
+
+    #[test]
+    fn input_state_escape_exits_history_and_restores_draft() {
+        let history = vec!["old".to_string()];
+        let mut s = InputState::new();
+        s.line = "typing".to_string();
+        s.navigate_up(&history);
+        assert_eq!(s.line, "old");
+        s.exit_history();
+        assert_eq!(s.line, "typing");
+        assert!(s.history_index.is_none());
+    }
+
+    #[test]
+    fn input_state_insert_char_at_cursor() {
+        let mut s = InputState::new();
+        s.line = "ac".to_string();
+        s.cursor = 1;
+        s.insert_char('b');
+        assert_eq!(s.line, "abc");
+        assert_eq!(s.cursor, 2);
+    }
+
+    #[test]
+    fn input_state_backspace_deletes_before_cursor() {
+        let mut s = InputState::new();
+        s.line = "abc".to_string();
+        s.cursor = 2;
+        s.backspace();
+        assert_eq!(s.line, "ac");
+        assert_eq!(s.cursor, 1);
+    }
+
+    #[test]
+    fn input_state_delete_deletes_at_cursor() {
+        let mut s = InputState::new();
+        s.line = "abc".to_string();
+        s.cursor = 1;
+        s.delete();
+        assert_eq!(s.line, "ac");
+        assert_eq!(s.cursor, 1);
+    }
+
+    #[test]
+    fn input_state_cursor_movement() {
+        let mut s = InputState::new();
+        s.line = "hello".to_string();
+        s.cursor = 3;
+        s.move_left();
+        assert_eq!(s.cursor, 2);
+        s.move_right();
+        assert_eq!(s.cursor, 3);
+        s.move_home();
+        assert_eq!(s.cursor, 0);
+        s.move_end();
+        assert_eq!(s.cursor, 5);
+    }
+
+    // --- Existing integration tests (non-interactive, line-oriented mode) ---
+
     /// FR-03-1-2 / design doc 4.3C: `collapse_thinking_text` behavior.
-    /// Ensures that `[ui] show_thinking = "collapsed"` truncates thinking delta
-    /// to 80 characters + newline in a single line.
     #[test]
     fn collapse_thinking_text_keeps_short_single_line_intact() {
         assert_eq!(collapse_thinking_text("hello"), "hello");
@@ -894,7 +1414,6 @@ mod tests {
         let long: String = std::iter::repeat_n('a', 200).collect();
         let collapsed = collapse_thinking_text(&long);
         assert!(collapsed.ends_with("..."));
-        // Body text excluding trailing "..." is 80 characters.
         assert_eq!(collapsed.chars().count(), 83);
     }
 
@@ -934,7 +1453,6 @@ mod tests {
 
     #[tokio::test]
     async fn input_loop_terminates_on_eof() {
-        // Empty stdin (immediate EOF) -> run_input_loop breaks and sends shutdown_tx.send(true).
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
@@ -942,7 +1460,6 @@ mod tests {
         let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
         let shutdown_observer = shutdown_rx.clone();
 
-        // Reader that immediately produces EOF
         let reader = tokio::io::empty();
 
         let handle = tokio::spawn(async move {
@@ -961,7 +1478,6 @@ mod tests {
 
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
         assert!(result.is_ok(), "input loop should terminate on EOF");
-        // After loop exits, shutdown_tx.send(true) should have been sent
         assert!(
             *shutdown_observer.borrow(),
             "EOF should propagate as shutdown=true"
@@ -970,7 +1486,6 @@ mod tests {
 
     #[tokio::test]
     async fn input_loop_terminates_on_quit_command() {
-        // Feed /quit -> break and send shutdown_tx.send(true).
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
@@ -980,7 +1495,6 @@ mod tests {
 
         let (mut writer, reader) = tokio::io::duplex(64);
         writer.write_all(b"/quit\n").await.unwrap();
-        // Don't drop writer (test confirms termination via /quit)
 
         let handle = tokio::spawn(async move {
             run_input_loop(
@@ -1006,14 +1520,12 @@ mod tests {
 
     #[tokio::test]
     async fn input_loop_responds_to_external_shutdown() {
-        // External shutdown (SIGINT assumed) -> loop breaks.
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
 
-        // Reader that neither produces EOF nor input (keep duplex writer side alive)
         let (_writer, reader) = tokio::io::duplex(64);
 
         let shutdown_tx_clone = shutdown_tx.clone();
@@ -1031,7 +1543,6 @@ mod tests {
             .await;
         });
 
-        // Send external shutdown notification after 100ms
         tokio::time::sleep(Duration::from_millis(100)).await;
         shutdown_tx_clone.send(true).unwrap();
 
@@ -1044,8 +1555,6 @@ mod tests {
 
     #[tokio::test]
     async fn input_loop_waits_for_agent_idle_between_user_prompts() {
-        // FR-03-2 / design doc 4.2A:
-        // Send 1st user input -> Pending -> 2nd input does not reach agent until idle is received.
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
@@ -1053,7 +1562,6 @@ mod tests {
         let (idle_tx, idle_rx) = mpsc::channel::<()>(8);
 
         let (mut writer, reader) = tokio::io::duplex(1024);
-        // Submit 2 entries at once
         writer.write_all(b"first\nsecond\n").await.unwrap();
 
         let handle = tokio::spawn(async move {
@@ -1070,7 +1578,6 @@ mod tests {
             .await;
         });
 
-        // First entry arrives quickly
         let msg1 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
             .expect("first prompt timeout")
@@ -1080,14 +1587,12 @@ mod tests {
             other => panic!("expected UserPrompt(\"first\"), got {:?}", other),
         }
 
-        // Second entry does not arrive until idle notification (Pending state suppresses stdin)
         let blocked = tokio::time::timeout(Duration::from_millis(300), input_rx.recv()).await;
         assert!(
             blocked.is_err(),
             "second prompt should not arrive while input loop is Pending"
         );
 
-        // Issue idle -> input loop returns to Ready and reads the 2nd entry
         idle_tx.send(()).await.unwrap();
 
         let msg2 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
@@ -1099,23 +1604,18 @@ mod tests {
             other => panic!("expected UserPrompt(\"second\"), got {:?}", other),
         }
 
-        // Cleanup
         drop(writer);
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
     #[tokio::test]
     async fn stale_idle_signal_is_drained_before_pending() {
-        // Even if idle signals accumulate from agent independently emitting Done (e.g. peer prompt),
-        // they should not be mistakenly consumed right after the next user input, which would
-        // immediately release Pending state.
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (idle_tx, idle_rx) = mpsc::channel::<()>(8);
 
-        // Pre-load stale idle notifications
         idle_tx.send(()).await.unwrap();
         idle_tx.send(()).await.unwrap();
 
@@ -1136,7 +1636,6 @@ mod tests {
             .await;
         });
 
-        // 1 input entry arrives
         let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
             .expect("prompt timeout")
@@ -1146,7 +1645,6 @@ mod tests {
             other => panic!("unexpected: {:?}", other),
         }
 
-        // Stale idle has been drained, so no more idle signals arrive (Pending, stdin unread)
         writer.write_all(b"should-not-pass\n").await.unwrap();
         let blocked = tokio::time::timeout(Duration::from_millis(300), input_rx.recv()).await;
         assert!(
@@ -1154,7 +1652,6 @@ mod tests {
             "stale idle signals should have been drained, leaving the loop Pending"
         );
 
-        // Issuing a new idle releases the 2nd entry
         idle_tx.send(()).await.unwrap();
         let msg2 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
@@ -1216,7 +1713,6 @@ mod tests {
         let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(4);
 
         let (mut writer, reader) = tokio::io::duplex(1024);
-        // Will submit "y" later
 
         let handle = tokio::spawn(async move {
             run_input_loop(
@@ -1232,7 +1728,6 @@ mod tests {
             .await;
         });
 
-        // Send approval request
         let (resp_tx, resp_rx) = oneshot::channel::<bool>();
         approval_tx
             .send(ApprovalRequest {
@@ -1243,25 +1738,20 @@ mod tests {
             .await
             .unwrap();
 
-        // Wait briefly for state to transition to AwaitingApproval
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // At this point, text the user thinks is normal input should be
-        // interpreted as y/N, not forwarded to the agent as UserPrompt.
         writer.write_all(b"some text\n").await.unwrap();
         let leaked = tokio::time::timeout(Duration::from_millis(200), input_rx.recv()).await;
         assert!(
             leaked.is_err(),
             "approval-mode input must not reach agent as UserPrompt"
         );
-        // "some text" submitted above does not match y/yes, so oneshot has already received false
         let approved = tokio::time::timeout(Duration::from_secs(2), resp_rx)
             .await
             .expect("oneshot timeout")
             .expect("oneshot dropped");
         assert!(!approved, "non-y input should resolve to false");
 
-        // Another approval request -> this time submit "y" -> resolves to true
         let (resp_tx2, resp_rx2) = oneshot::channel::<bool>();
         approval_tx
             .send(ApprovalRequest {
@@ -1279,7 +1769,6 @@ mod tests {
             .expect("oneshot2 dropped");
         assert!(approved2, "'y' should resolve to true");
 
-        // After approval, Pending -> idle returns to Ready and accepts normal input
         idle_tx.send(()).await.unwrap();
         writer.write_all(b"after\n").await.unwrap();
         let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
@@ -1323,7 +1812,6 @@ mod tests {
             .await;
         });
 
-        // Send an approval request to transition to AwaitingApproval
         let (resp_tx, resp_rx) = oneshot::channel::<bool>();
         approval_tx
             .send(ApprovalRequest {
@@ -1335,10 +1823,8 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // Fire shutdown
         shutdown_clone.send(true).unwrap();
 
-        // oneshot resolves to false (agent side does not dangle)
         let resp = tokio::time::timeout(Duration::from_secs(2), resp_rx)
             .await
             .expect("oneshot timeout");
