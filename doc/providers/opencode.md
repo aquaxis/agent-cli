@@ -19,7 +19,38 @@ selected automatically by **API-key presence**:
 
 ## Configuration
 
-Local mode:
+### Convenience: `kind = "opencode-go"`
+
+If you have an **OpenCode Go** subscription, set `kind = "opencode-go"` instead of
+`kind = "opencode"`. This auto-populates the Go-specific defaults
+(`base_url`, `api`, `model`, `api_key_env`) so you only need:
+
+```toml
+[provider]
+kind = "opencode-go"
+
+[provider.opencode]
+api_key_env = "OPENCODE_API_KEY"
+```
+
+This is equivalent to:
+
+```toml
+[provider]
+kind = "opencode"
+
+[provider.opencode]
+base_url    = "https://opencode.ai/zen/go/v1"
+api         = "anthropic"
+api_key_env = "OPENCODE_API_KEY"
+model       = "claude-sonnet-4-5"
+```
+
+You can still override individual defaults by setting them explicitly in
+`[provider.opencode]`. Using `kind = "opencode-go"` also works with
+`--provider opencode-go` on the command line.
+
+### Local mode:
 
 ```toml
 [provider]

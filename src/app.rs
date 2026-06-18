@@ -164,7 +164,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     );
 
     // Build provider (pre-connection validation)
-    let provider = ai::build(&config, &source)?;
+    let provider = ai::build(&mut config, &source)?;
     let caps = provider.capabilities();
 
     let registry_dir = config.registry_dir()?;
@@ -555,6 +555,15 @@ impl PromptRenderer {
     }
 }
 
+/// Classify whether a key event should trigger a cancel during the Pending state
+/// (LLM executing / tool running). Returns `true` for ESC and Ctrl-C, `false` for
+/// all other keys. This is a pure function so it can be unit-tested without a TTY.
+fn is_cancel_key(key_event: &KeyEvent) -> bool {
+    matches!(key_event.code, KeyCode::Esc)
+        || (key_event.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key_event.code, KeyCode::Char('c')))
+}
+
 /// Handle a single key event in interactive (raw-mode) editing.
 /// Returns `Some(action)` indicating what to do next.
 enum KeyAction {
@@ -777,8 +786,8 @@ async fn run_input_loop_raw(
             dedup_consecutive(&h)
         };
 
-        // Decide if we should poll for terminal events
-        let can_read = prompt_state.is_ready() || prompt_state.is_awaiting_approval();
+        // Key events are polled in all states (Ready, Pending, AwaitingApproval)
+        // so the user can interrupt LLM execution with ESC or Ctrl-C.
 
         tokio::select! {
             biased;
@@ -787,7 +796,7 @@ async fn run_input_loop_raw(
                     break;
                 }
             }
-            // Only wait for AI response completion when in Pending state (stdin is paused)
+            // Only wait for AI response completion when in Pending state
             res = agent_idle_rx.recv(), if prompt_state.is_pending() => {
                 match res {
                     Some(()) => {
@@ -823,12 +832,13 @@ async fn run_input_loop_raw(
                     }
                 }
             }
-            // Poll for crossterm key events when Ready or AwaitingApproval
+            // Poll for crossterm key events in all states (Ready, Pending, AwaitingApproval).
+            // During Pending, ESC and Ctrl-C send AgentInput::Cancel; other keys are ignored.
             _ = tokio::task::spawn_blocking(move || {
                 // This blocks the calling thread until a key event or timeout.
                 // We use a short timeout so tokio::select! can check other branches frequently.
                 let _ = event::poll(Duration::from_millis(50));
-            }), if can_read => {
+            }) => {
                 // Drain all pending key events. `exit_loop` lets an inner break
                 // (quit/exit command, EOF, closed channel) propagate out of the
                 // event-drain `while` to terminate the outer input loop — a plain
@@ -836,6 +846,17 @@ async fn run_input_loop_raw(
                 let mut exit_loop = false;
                 while event::poll(Duration::from_millis(0)).unwrap_or(false) {
                     if let Ok(CtEvent::Key(key_event)) = event::read() {
+                        // During Pending, only ESC and Ctrl-C are honoured (cancel).
+                        // Other key events are ignored to avoid corrupting the edit
+                        // buffer while the agent is processing.
+                        if prompt_state.is_pending() {
+                            if is_cancel_key(&key_event) {
+                                let _ = input_tx.send(AgentInput::Cancel).await;
+                                raw_eprintln(true, "[cancelling...]");
+                            }
+                            // All other keys during Pending are ignored.
+                            continue;
+                        }
                         let is_awaiting_approval = prompt_state.is_awaiting_approval();
                         if let Some(action) = handle_key(key_event, &mut input_state, &history_snapshot) {
                             match action {
@@ -2217,5 +2238,39 @@ mod tests {
         assert!(matches!(action, Some(KeyAction::Continue)));
         assert_eq!(s.line, "d"); // draft restored
         assert!(s.history_index.is_none());
+    }
+
+    // --- Pending-state cancel key classification ---
+
+    #[test]
+    fn is_cancel_key_esc_returns_true() {
+        assert!(is_cancel_key(&key(KeyCode::Esc, false)));
+    }
+
+    #[test]
+    fn is_cancel_key_ctrl_c_returns_true() {
+        assert!(is_cancel_key(&key(KeyCode::Char('c'), true)));
+    }
+
+    #[test]
+    fn is_cancel_key_other_keys_return_false() {
+        assert!(!is_cancel_key(&key(KeyCode::Char('a'), false)));
+        assert!(!is_cancel_key(&key(KeyCode::Char('c'), false)));
+        assert!(!is_cancel_key(&key(KeyCode::Enter, false)));
+        assert!(!is_cancel_key(&key(KeyCode::Backspace, false)));
+        assert!(!is_cancel_key(&key(KeyCode::Char('d'), true)));
+    }
+
+    #[test]
+    fn handle_key_eof_on_empty_line_is_state_independent() {
+        // handle_key is stateless — it does not know about PromptState.
+        // Ctrl-C on empty line always returns Eof regardless of caller state.
+        let mut s = InputState::new();
+        let action = handle_key(key(KeyCode::Char('c'), true), &mut s, &[]);
+        assert!(matches!(action, Some(KeyAction::Eof)));
+        // Verify it does not depend on history content
+        let mut s2 = InputState::new();
+        let action2 = handle_key(key(KeyCode::Char('c'), true), &mut s2, &["cmd".to_string()]);
+        assert!(matches!(action2, Some(KeyAction::Eof)));
     }
 }

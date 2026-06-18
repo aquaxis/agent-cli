@@ -8,7 +8,7 @@ use crate::error::{AppError, Result};
 const DEFAULT_CONFIG: &str = r#"# agent-cli configuration
 
 [provider]
-# Backend to use: "claude" | "codex" | "ollama" | "opencode" | "llama.cpp"
+# Backend to use: "claude" | "codex" | "ollama" | "opencode" | "opencode-go" | "llama.cpp"
 kind = "claude"
 
 [provider.claude]
@@ -29,13 +29,21 @@ model    = "glm-5.1:cloud"
 base_url = "http://127.0.0.1:11434"
 
 [provider.opencode]
-# Local: point base_url at a running `opencode serve` (no api_key_env needed).
-# Cloud (OpenCode Zen): set base_url to the Zen endpoint and api_key_env to the
-# environment variable holding your key. A resolved key selects cloud mode.
+# --- Local mode ---
+# Point base_url at a running `opencode serve` (no api_key_env needed).
 model    = "claude-sonnet-4-5"
 base_url = "http://127.0.0.1:4096"
+# --- Cloud mode (OpenCode Zen) ---
+# Set api_key_env to the environment variable holding your key.
+# A resolved key selects cloud mode automatically.
 # api_key_env = "OPENCODE_API_KEY"
 # base_url    = "https://opencode.ai/zen/v1"
+# --- Cloud mode (OpenCode Go) ---
+# Shortcut: set kind = "opencode-go" above — base_url, api, and
+# api_key_env are auto-populated. Or set them manually:
+# api_key_env = "OPENCODE_API_KEY"
+# base_url    = "https://opencode.ai/zen/go/v1"
+# api         = "anthropic"
 # Cloud wire format: "openai" (default, /chat/completions) or
 # "anthropic" (/messages). Use the matching base_url (e.g. the "go" endpoints
 # https://opencode.ai/zen/go/v1).
@@ -429,7 +437,7 @@ impl Config {
             "claude" => self.provider.claude.as_ref(),
             "codex" => self.provider.codex.as_ref(),
             "ollama" => self.provider.ollama.as_ref(),
-            "opencode" => self.provider.opencode.as_ref(),
+            "opencode" | "opencode-go" => self.provider.opencode.as_ref(),
             "llama.cpp" => self.provider.llamacpp.as_ref(),
             _ => None,
         }
@@ -463,7 +471,7 @@ impl Config {
             "claude" => Some(self.provider.claude.get_or_insert_with(Default::default)),
             "codex" => Some(self.provider.codex.get_or_insert_with(Default::default)),
             "ollama" => Some(self.provider.ollama.get_or_insert_with(Default::default)),
-            "opencode" => Some(self.provider.opencode.get_or_insert_with(Default::default)),
+            "opencode" | "opencode-go" => Some(self.provider.opencode.get_or_insert_with(Default::default)),
             "llama.cpp" => Some(self.provider.llamacpp.get_or_insert_with(Default::default)),
             _ => None,
         }
@@ -487,6 +495,30 @@ impl Config {
 
     pub fn agents_dir(&self) -> Result<PathBuf> {
         expand_path(&self.runtime.agents_dir)
+    }
+
+    /// When `provider.kind` is `"opencode-go"`, apply Go-specific defaults to
+    /// the `[provider.opencode]` entry (filling `None` fields) and normalize
+    /// the kind to `"opencode"`. When the kind is not `"opencode-go"`, this is
+    /// a no-op.
+    pub fn apply_opencode_go_defaults(&mut self) {
+        if self.provider.kind != "opencode-go" {
+            return;
+        }
+        let entry = self.provider.opencode.get_or_insert_with(Default::default);
+        if entry.base_url.is_none() {
+            entry.base_url = Some("https://opencode.ai/zen/go/v1".to_string());
+        }
+        if entry.api.is_none() {
+            entry.api = Some("anthropic".to_string());
+        }
+        if entry.model.is_none() {
+            entry.model = Some("claude-sonnet-4-5".to_string());
+        }
+        if entry.api_key_env.is_none() {
+            entry.api_key_env = Some("OPENCODE_API_KEY".to_string());
+        }
+        self.provider.kind = "opencode".to_string();
     }
 }
 
@@ -719,5 +751,97 @@ show_thinking = "expanded"
                 "unknown tool name in DEFAULT_CONFIG: {name}"
             );
         }
+    }
+
+    #[test]
+    fn provider_entry_opencode_go_returns_opencode_entry() {
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let entry = cfg.provider_entry("opencode-go");
+        assert!(entry.is_some(), "opencode-go should resolve to opencode entry");
+        assert_eq!(
+            entry.unwrap().model.as_deref(),
+            Some("claude-sonnet-4-5"),
+            "opencode-go should share the opencode entry"
+        );
+    }
+
+    #[test]
+    fn provider_entry_mut_opencode_go_returns_opencode_entry() {
+        let mut cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        let entry = cfg.provider_entry_mut("opencode-go");
+        assert!(entry.is_some(), "opencode-go should resolve to opencode entry_mut");
+        let entry = entry.unwrap();
+        entry.model = Some("custom-model".to_string());
+        assert_eq!(
+            cfg.provider.opencode.as_ref().unwrap().model.as_deref(),
+            Some("custom-model"),
+            "opencode-go should mutate the opencode entry"
+        );
+    }
+
+    #[test]
+    fn apply_opencode_go_defaults_minimal_config() {
+        let toml_src = r#"
+[provider]
+kind = "opencode-go"
+
+[provider.opencode]
+api_key_env = "OPENCODE_API_KEY"
+"#;
+        let mut cfg: Config = toml::from_str(toml_src).unwrap();
+        cfg.apply_opencode_go_defaults();
+        assert_eq!(cfg.provider.kind, "opencode");
+        let entry = cfg.provider.opencode.as_ref().unwrap();
+        assert_eq!(entry.base_url.as_deref(), Some("https://opencode.ai/zen/go/v1"));
+        assert_eq!(entry.api.as_deref(), Some("anthropic"));
+        assert_eq!(entry.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(entry.api_key_env.as_deref(), Some("OPENCODE_API_KEY"));
+    }
+
+    #[test]
+    fn apply_opencode_go_defaults_all_defaults_applied() {
+        let toml_src = r#"
+[provider]
+kind = "opencode-go"
+"#;
+        let mut cfg: Config = toml::from_str(toml_src).unwrap();
+        cfg.apply_opencode_go_defaults();
+        assert_eq!(cfg.provider.kind, "opencode");
+        let entry = cfg.provider.opencode.as_ref().unwrap();
+        assert_eq!(entry.base_url.as_deref(), Some("https://opencode.ai/zen/go/v1"));
+        assert_eq!(entry.api.as_deref(), Some("anthropic"));
+        assert_eq!(entry.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(entry.api_key_env.as_deref(), Some("OPENCODE_API_KEY"));
+    }
+
+    #[test]
+    fn apply_opencode_go_defaults_preserves_explicit_values() {
+        let toml_src = r#"
+[provider]
+kind = "opencode-go"
+
+[provider.opencode]
+api_key_env = "MY_CUSTOM_KEY"
+model       = "gpt-5"
+base_url    = "https://custom.example.com/v1"
+api         = "openai"
+"#;
+        let mut cfg: Config = toml::from_str(toml_src).unwrap();
+        cfg.apply_opencode_go_defaults();
+        assert_eq!(cfg.provider.kind, "opencode");
+        let entry = cfg.provider.opencode.as_ref().unwrap();
+        assert_eq!(entry.api_key_env.as_deref(), Some("MY_CUSTOM_KEY"));
+        assert_eq!(entry.model.as_deref(), Some("gpt-5"));
+        assert_eq!(entry.base_url.as_deref(), Some("https://custom.example.com/v1"));
+        assert_eq!(entry.api.as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn apply_opencode_go_defaults_noop_for_opencode() {
+        let mut cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert_eq!(cfg.provider.kind, "claude");
+        let kind_before = cfg.provider.kind.clone();
+        cfg.apply_opencode_go_defaults();
+        assert_eq!(cfg.provider.kind, kind_before, "no-op for non-opencode-go kind");
     }
 }

@@ -64,9 +64,9 @@ agent-cli --config ./project-a.toml config path
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
-| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"codex"` / `"ollama"` / `"opencode"` / `"llama.cpp"` |
+| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"codex"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
 
-### `[provider.claude]` / `[provider.codex]` / `[provider.ollama]` / `[provider.opencode]` / `[provider."llama.cpp"]`
+### `[provider.claude]` / `[provider.codex]` / `[provider.ollama]` / `[provider.opencode]` / `[provider.opencode-go]` / `[provider."llama.cpp"]`
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
@@ -87,9 +87,10 @@ Per-backend defaults:
 | codex | `gpt-4.1` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | ollama | `glm-5.1:cloud` | `http://127.0.0.1:11434` | (not needed) |
 | opencode | `claude-sonnet-4-5` | `http://127.0.0.1:4096` (local) / `https://opencode.ai/zen/v1` (when key set) | (none = local; set = cloud, e.g. `OPENCODE_API_KEY`) |
+| opencode-go | `claude-sonnet-4-5` | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
 | llama.cpp | `default` | `http://127.0.0.1:8080` | (optional) |
 
-`opencode` runs in two modes selected by **API-key presence**: no resolved key → **local** mode against a running `opencode serve` (native session API); key resolved → **cloud** mode against OpenCode Zen (OpenAI-compatible). See [`doc/providers/opencode.md`](providers/opencode.md).
+`opencode` runs in two modes selected by **API-key presence**: no resolved key → **local** mode against a running `opencode serve` (native session API); key resolved → **cloud** mode against OpenCode Zen (OpenAI-compatible). `opencode-go` is a convenience alias that sets `base_url` to the Go endpoint, `api` to `"anthropic"`, and `api_key_env` to `"OPENCODE_API_KEY"`. It still uses `[provider.opencode]` for overrides. See [`doc/providers/opencode.md`](providers/opencode.md).
 
 ### `[runtime]`
 
@@ -180,6 +181,16 @@ kind = "claude"
 
 [provider.claude]
 api_key_env = "ANTHROPIC_API_KEY"
+```
+
+### 4.1b Minimal Configuration (OpenCode Go)
+
+```toml
+[provider]
+kind = "opencode-go"
+
+[provider.opencode]
+api_key_env = "OPENCODE_API_KEY"
 ```
 
 ### 4.2 Recommended Configuration (claude as primary, ollama reserved for verification)

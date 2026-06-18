@@ -128,7 +128,8 @@ pub trait Provider: Send + Sync {
     ) -> Result<EventStream<'_>>;
 }
 
-pub fn build(cfg: &Config, source: &ConfigSource) -> Result<Box<dyn Provider>> {
+pub fn build(cfg: &mut Config, source: &ConfigSource) -> Result<Box<dyn Provider>> {
+    cfg.apply_opencode_go_defaults();
     let kind = cfg.provider.kind.as_str();
     match kind {
         "claude" => Ok(Box::new(claude::ClaudeProvider::from_config(cfg, source)?)),
@@ -144,7 +145,7 @@ pub fn build(cfg: &Config, source: &ConfigSource) -> Result<Box<dyn Provider>> {
     }
 }
 
-pub const SUPPORTED: &[&str] = &["claude", "codex", "ollama", "opencode", "llama.cpp"];
+pub const SUPPORTED: &[&str] = &["claude", "codex", "ollama", "opencode", "opencode-go", "llama.cpp"];
 
 /// Diagnostic information for provider HTTP errors (FR-09-3 / design doc 5.1).
 ///

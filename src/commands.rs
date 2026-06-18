@@ -105,12 +105,12 @@ pub async fn providers(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-pub async fn doctor(cfg: &Config, source: &ConfigSource) -> Result<()> {
+pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
     let mut all_ok = true;
     println!("[doctor] config path     : {}", source.path.display());
     println!("[doctor] config explicit : {}", source.from_explicit);
 
-    // Provider check
+    // Provider check (before normalization so opencode-go appears as-is)
     let kind = cfg.provider.kind.as_str();
     print!("[doctor] provider kind   : {kind} ... ");
     match ai::SUPPORTED.contains(&kind) {
@@ -121,7 +121,11 @@ pub async fn doctor(cfg: &Config, source: &ConfigSource) -> Result<()> {
         }
     }
 
+    // Normalize opencode-go → opencode with Go defaults before further checks
+    cfg.apply_opencode_go_defaults();
+
     // API key check (if applicable)
+    let kind = cfg.provider.kind.as_str();
     if let Some(entry) = cfg.provider_entry(kind) {
         if let Some(env) = &entry.api_key_env {
             print!("[doctor] api key env     : {env} ... ");
@@ -249,11 +253,12 @@ pub async fn selftest(
     if let Some(p) = provider_override {
         cfg.apply_overrides(Some(p), None);
     }
+    cfg.apply_opencode_go_defaults();
     let mut all_ok = true;
     let mut stage1_ok = false;
 
     println!("[selftest] stage 1 (provider OK round-trip)");
-    match stage_provider_ok(&cfg, source).await {
+    match stage_provider_ok(&mut cfg, source).await {
         Ok(()) => stage1_ok = true,
         Err(e) => {
             print_provider_error("[selftest]   ", &e);
@@ -296,7 +301,7 @@ pub async fn selftest(
     }
 }
 
-async fn stage_provider_ok(cfg: &Config, source: &ConfigSource) -> Result<()> {
+async fn stage_provider_ok(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
     use futures::StreamExt;
     let provider = ai::build(cfg, source)?;
     let messages = vec![

@@ -8,7 +8,7 @@
 
 - スタンドアロン — tmux 不要。`agent-cli` を実行するだけです（引数なしは `agent-cli run` と等価）。
 - ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（`claude` CLI を呼び出しません）。
-- 5 つのバックエンド: `claude` / `codex` / `ollama` / `opencode` / `llama.cpp`。
+- 6 つのバックエンド: `claude` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
 - マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します。
 - ペルソナファイル（YAML フロントマター + Markdown 本文）でロール、スキル、ツールの許可/拒否リスト、モデル、temperature を定義します。
 - 組み込みツール: `shell` / `fs_read` / `fs_write` / `send_to`。承認モードは実行中に `/auto on` で切り替えられます。
@@ -27,6 +27,7 @@
 | codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
 | opencode | OpenCode — デュアルモード（下記参照） | `claude-sonnet-4-5` |
+| opencode-go | OpenCode Go クラウド（自動設定ショートカット） | `claude-sonnet-4-5` |
 | llama.cpp | OpenAI 互換 `/v1/chat/completions` (SSE) | `default` |
 
 `opencode` は API キーの有無でモードを選択します:
@@ -39,8 +40,14 @@
   ワイヤ形式は `[provider.opencode] api` で選択できます: `"openai"`（デフォルト）→
   `POST {base_url}/chat/completions`（SSE, `[DONE]`）、`"anthropic"` →
   `POST {base_url}/messages`（Anthropic SSE）。対応する `base_url`（例: "go" エンドポイント
-  `https://opencode.ai/zen/go/v1`）と組み合わせてください。
-  [`doc/providers/opencode.md`](doc/providers/opencode.md) を参照。
+`https://opencode.ai/zen/go/v1`）と組み合わせてください。
+   [`doc/providers/opencode.md`](doc/providers/opencode.md) を参照。
+
+**`opencode-go`** は、Go 固有のデフォルト値が自動設定される OpenCode の便利なエイリアスです。
+`kind = "opencode-go"` と `api_key_env` だけを設定すれば、`base_url`
+（`https://opencode.ai/zen/go/v1`）、`api`（`"anthropic"`）、`model`
+（`claude-sonnet-4-5`）が自動的に埋められます。`[provider.opencode]`
+で個別に上書きすることもできます。下記の設定例を参照してください。
 
 必須の検証対象は `claude` と `ollama`（モデル `glm-5.1:cloud`）です。
 
@@ -49,6 +56,8 @@
 | ストリーミング | ✓ | ✓ | ✓ | ✓（クラウド SSE / ローカルはバッファ） | ✓ |
 | ツール使用 | ✓ | ✓（function calling） | ✓（モデル依存） | ✓ クラウド / ✗ ローカル (v1) | ✓（サーバービルド依存） |
 | 思考 | ✓ (`thinking_delta`) | ✗ | ✓（モデル依存, `message.thinking`） | ✗ | ✗ |
+
+`opencode-go` の機能は `opencode`（クラウドモード）と同じです。設定のショートカットであり、別のバックエンドではありません。
 
 ## インストール
 
@@ -174,6 +183,17 @@ model    = "claude-sonnet-4-5"
 # api_key_env = "OPENCODE_API_KEY"
 # api         = "anthropic"   # クラウドのワイヤ形式: "openai"（デフォルト）| "anthropic"
 #                             # 対応する base_url（例: .../zen/go/v1）と組み合わせる
+```
+
+**opencode-go** — OpenCode Go クラウドの便利な kind。`base_url`、`api`、`model` が自動設定されます:
+
+```toml
+[provider]
+kind = "opencode-go"
+
+[provider.opencode]
+api_key_env = "OPENCODE_API_KEY"   # 必須フィールドはこれだけ
+# base_url、api、model は自動設定; 必要に応じて [provider.opencode] で上書き可能
 ```
 
 **llama.cpp** — `llama-server` の OpenAI 互換 `/v1/chat/completions`。TOML キーにドットを含むため `"llama.cpp"` を引用符で囲みます。サンプリングのパラメータは `llama-cli` のフラグに対応しており、すべて省略可能です（省略すると → サーバー自身のデフォルト）:
