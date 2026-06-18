@@ -12,10 +12,15 @@ use crate::ai::{
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 
+/// Default number of retries for transient errors when not configured.
+const DEFAULT_MAX_RETRIES: u32 = 3;
+
 pub struct OllamaProvider {
     pub base_url: String,
     pub model: String,
     pub temperature: Option<f32>,
+    /// How many times to retry a transient error before surfacing it (FR-13).
+    pub max_retries: u32,
     pub client: reqwest::Client,
     pub context: ProviderContext,
 }
@@ -49,14 +54,61 @@ impl OllamaProvider {
         let key_env = entry.api_key_env.clone();
         let key_value = key_env.as_ref().and_then(|k| std::env::var(k).ok());
         let context = ProviderContext::new(source, key_env, key_value.as_deref());
+        let max_retries = entry.max_retries.map(|n| n as u32).unwrap_or(DEFAULT_MAX_RETRIES);
         Ok(Self {
             base_url,
             model,
             temperature: entry.temperature,
+            max_retries,
             client,
             context,
         })
     }
+}
+
+/// Build the `/api/chat` request body. Pure so the request shape (notably the
+/// `model` name, which must keep any `:cloud` tag verbatim — FR-12) is testable
+/// without a network call.
+fn build_chat_body(
+    model: &str,
+    messages: &[Message],
+    tools: &[ToolSpec],
+    temperature: Option<f32>,
+) -> Value {
+    let mut body = json!({
+        "model": model,
+        "stream": true,
+        "messages": to_ollama_messages(messages),
+    });
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(to_ollama_tools(tools));
+    }
+    if let Some(t) = temperature {
+        body["options"] = json!({ "temperature": t });
+    }
+    body
+}
+
+/// Classify an Ollama HTTP failure as transient (worth retrying). Transient =
+/// HTTP 503/429/500/502/504, or a body indicating the model is temporarily
+/// unavailable ("overloaded" / "temporarily" / "please retry" / "try again").
+/// Non-transient failures (e.g. 400/404 model-not-found) are not retried (FR-13).
+fn is_transient(status: u16, body: &str) -> bool {
+    if matches!(status, 503 | 429 | 500 | 502 | 504) {
+        return true;
+    }
+    let b = body.to_ascii_lowercase();
+    b.contains("overloaded")
+        || b.contains("temporarily")
+        || b.contains("please retry")
+        || b.contains("try again")
+}
+
+/// Exponential backoff in milliseconds for retry `attempt` (0-based): ~1s, 2s,
+/// 4s, … capped at 8s. Pure and deterministic so it is unit-testable (NFR-05).
+fn backoff_delay_ms(attempt: u32) -> u64 {
+    let ms = 1000u64.saturating_mul(1u64 << attempt.min(3));
+    ms.min(8000)
 }
 
 fn to_ollama_messages(messages: &[Message]) -> Vec<Value> {
@@ -116,42 +168,77 @@ impl Provider for OllamaProvider {
         messages: &[Message],
         tools: &[ToolSpec],
     ) -> Result<EventStream<'_>> {
-        let mut body = json!({
-            "model": self.model,
-            "stream": true,
-            "messages": to_ollama_messages(messages),
-        });
-        if !tools.is_empty() {
-            body["tools"] = Value::Array(to_ollama_tools(tools));
-        }
-        if let Some(t) = self.temperature {
-            body["options"] = json!({ "temperature": t });
-        }
+        let body = build_chat_body(&self.model, messages, tools, self.temperature);
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
-        let resp = self
-            .client
-            .post(url)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let headers = resp.headers().clone();
-            let text = resp.text().await.unwrap_or_default();
-            tracing::debug!(target: "agent_cli::ai::ollama", status = %status, body = %text, "provider HTTP error");
-            let request_id = extract_request_id(&headers, &text);
-            return Err(ProviderError::new("ollama")
-                .with_http(
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("").to_string(),
-                )
-                .with_body(text)
-                .with_request_id(request_id)
-                .with_context(&self.context)
-                .detect_hint()
-                .into_app_error());
-        }
+
+        // Establish the request, retrying transient errors (e.g. cloud cold-start
+        // / "temporarily overloaded" 503s) with bounded exponential backoff before
+        // surfacing the error. `ollama run` tolerates these; we mirror that (FR-13).
+        // Only the initial request/status is retried — not a stream already begun.
+        let mut attempt: u32 = 0;
+        let resp = loop {
+            let send_result = self
+                .client
+                .post(url.as_str())
+                .header("content-type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+
+            match send_result {
+                Ok(resp) if resp.status().is_success() => break resp,
+                Ok(resp) => {
+                    let status = resp.status();
+                    let headers = resp.headers().clone();
+                    let text = resp.text().await.unwrap_or_default();
+                    tracing::debug!(target: "agent_cli::ai::ollama", status = %status, body = %text, "provider HTTP error");
+                    if attempt < self.max_retries && is_transient(status.as_u16(), &text) {
+                        let delay = backoff_delay_ms(attempt);
+                        tracing::warn!(
+                            target: "agent_cli::ai::ollama",
+                            attempt = attempt + 1,
+                            max_retries = self.max_retries,
+                            status = %status,
+                            delay_ms = delay,
+                            "transient ollama error; retrying"
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    let request_id = extract_request_id(&headers, &text);
+                    return Err(ProviderError::new("ollama")
+                        .with_http(
+                            status.as_u16(),
+                            status.canonical_reason().unwrap_or("").to_string(),
+                        )
+                        .with_body(text)
+                        .with_request_id(request_id)
+                        .with_context(&self.context)
+                        .detect_hint()
+                        .into_app_error());
+                }
+                Err(e) => {
+                    // Network-level failure: retry connect/timeout errors, which
+                    // are also transient for a waking cloud route.
+                    if attempt < self.max_retries && (e.is_timeout() || e.is_connect()) {
+                        let delay = backoff_delay_ms(attempt);
+                        tracing::warn!(
+                            target: "agent_cli::ai::ollama",
+                            attempt = attempt + 1,
+                            max_retries = self.max_retries,
+                            delay_ms = delay,
+                            error = %e,
+                            "transient ollama network error; retrying"
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(e.into());
+                }
+            }
+        };
 
         let byte_stream = resp.bytes_stream();
         let stream = async_stream::stream! {
@@ -378,5 +465,84 @@ mod tests {
             &outcome.events[0],
             ProviderEvent::Thinking { text } if text == "step 1: ..."
         ));
+    }
+
+    // --- Request body: model name preserved verbatim (FR-12 / Task 10) ---
+
+    #[test]
+    fn build_chat_body_preserves_cloud_tag() {
+        let msgs = vec![Message::User {
+            content: "hi".into(),
+        }];
+        let body = build_chat_body("glm-5.2:cloud", &msgs, &[], None);
+        assert_eq!(
+            body.get("model").and_then(|v| v.as_str()),
+            Some("glm-5.2:cloud"),
+            "the :cloud tag must be sent verbatim"
+        );
+        assert_eq!(body.get("stream").and_then(|v| v.as_bool()), Some(true));
+        // No tools provided -> no tools key.
+        assert!(body.get("tools").is_none());
+        // No temperature -> no options key.
+        assert!(body.get("options").is_none());
+    }
+
+    #[test]
+    fn build_chat_body_includes_temperature_when_set() {
+        let msgs = vec![Message::User {
+            content: "hi".into(),
+        }];
+        let body = build_chat_body("glm-5.2:cloud", &msgs, &[], Some(0.5));
+        assert!(body.get("options").is_some());
+    }
+
+    // --- Transient-error classification (FR-13 / Task 12) ---
+
+    #[test]
+    fn is_transient_503_overloaded_is_true() {
+        assert!(is_transient(
+            503,
+            r#"{"error":"model 'glm-5.2' is temporarily overloaded, please retry shortly"}"#
+        ));
+    }
+
+    #[test]
+    fn is_transient_503_generic_is_true() {
+        assert!(is_transient(503, "service unavailable"));
+    }
+
+    #[test]
+    fn is_transient_retryable_statuses() {
+        assert!(is_transient(429, ""));
+        assert!(is_transient(500, ""));
+        assert!(is_transient(502, ""));
+        assert!(is_transient(504, ""));
+    }
+
+    #[test]
+    fn is_transient_400_404_is_false() {
+        assert!(!is_transient(400, "bad request"));
+        assert!(!is_transient(404, r#"{"error":"model not found"}"#));
+    }
+
+    #[test]
+    fn is_transient_matches_body_phrases_case_insensitive() {
+        assert!(is_transient(400, "Please Retry shortly"));
+        assert!(is_transient(403, "the model is OVERLOADED"));
+        assert!(!is_transient(400, "permanent configuration error"));
+    }
+
+    // --- Backoff schedule is bounded (NFR-05 / Task 12) ---
+
+    #[test]
+    fn backoff_delay_is_exponential_and_capped() {
+        assert_eq!(backoff_delay_ms(0), 1000);
+        assert_eq!(backoff_delay_ms(1), 2000);
+        assert_eq!(backoff_delay_ms(2), 4000);
+        assert_eq!(backoff_delay_ms(3), 8000);
+        // Capped at 8s for all higher attempts; never overflows.
+        assert_eq!(backoff_delay_ms(4), 8000);
+        assert_eq!(backoff_delay_ms(10), 8000);
+        assert_eq!(backoff_delay_ms(64), 8000);
     }
 }

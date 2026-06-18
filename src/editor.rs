@@ -5,6 +5,16 @@
 //! redrawing) lives in `app.rs`; this module only manages the edit buffer and
 //! history cursor.
 
+/// Display width (number of terminal columns) of an arbitrary string. Full-width
+/// CJK characters count as 2 columns; zero-width / combining marks as 0. Unknown
+/// characters default to 1. This is the single source of column math shared by
+/// the editor and the raw-mode renderer.
+pub fn str_display_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1))
+        .sum()
+}
+
 /// State for the in-terminal line editor.
 ///
 /// `history_index` is `None` when the user is editing a new line (not browsing
@@ -107,6 +117,19 @@ impl InputState {
             .unwrap_or(self.line.len());
         self.cursor = next;
         true
+    }
+
+    /// Compute the display width (number of terminal columns) of the text
+    /// before the cursor position. This accounts for full-width CJK characters
+    /// and other Unicode characters that occupy 2 columns on a terminal.
+    pub fn display_cursor(&self) -> usize {
+        str_display_width(&self.line[..self.cursor])
+    }
+
+    /// Compute the total display width (number of terminal columns) of the
+    /// entire line content.
+    pub fn display_width(&self) -> usize {
+        str_display_width(&self.line)
     }
 
     /// Navigate up (older) in the history. Saves the current line as a draft
@@ -397,5 +420,120 @@ mod tests {
         s.exit_history();
         assert_eq!(s.line, "x");
         assert!(s.history_index.is_none());
+    }
+
+    // Task 4: Tests for consecutive-duplicate dedup during navigation
+    // These tests verify that navigate_up/navigate_down work correctly with
+    // deduplicated history snapshots (as constructed by app.rs's dedup_consecutive).
+
+    #[test]
+    fn navigate_up_skips_consecutive_duplicates() {
+        // After dedup_consecutive, ["a", "a", "b"] becomes ["a", "b"]
+        let mut s = InputState::new();
+        let history = vec!["a".into(), "b".into()]; // already deduplicated
+        s.navigate_up(&history);
+        assert_eq!(s.line, "b");
+        s.navigate_up(&history);
+        assert_eq!(s.line, "a");
+        // "a" appears only once in the deduplicated snapshot
+    }
+
+    #[test]
+    fn navigate_up_all_same_entries() {
+        // After dedup_consecutive, ["x", "x", "x"] becomes ["x"]
+        let mut s = InputState::new();
+        let history = vec!["x".into()]; // already deduplicated
+        s.insert_char('d');
+        s.navigate_up(&history);
+        assert_eq!(s.line, "x");
+        // Pressing up again stays at the only entry
+        s.navigate_up(&history);
+        assert_eq!(s.line, "x");
+        assert_eq!(s.history_index, Some(0));
+    }
+
+    // display_cursor tests
+
+    #[test]
+    fn display_cursor_ascii() {
+        let mut s = InputState::new();
+        s.insert_char('a');
+        s.insert_char('b');
+        s.insert_char('c');
+        assert_eq!(s.display_cursor(), 3);
+    }
+
+    #[test]
+    fn display_cursor_midline_ascii() {
+        let mut s = InputState::new();
+        s.insert_char('a');
+        s.insert_char('b');
+        s.insert_char('c');
+        s.cursor = 1; // between 'a' and 'b'
+        assert_eq!(s.display_cursor(), 1);
+    }
+
+    #[test]
+    fn display_cursor_cjk_fullwidth() {
+        let mut s = InputState::new();
+        // CJK character 'あ' is 3 bytes in UTF-8, display width 2
+        s.line = "あb".to_string();
+        s.cursor = 3; // byte offset after 'あ' (3 bytes), before 'b'
+        assert_eq!(s.display_cursor(), 2); // 'あ' occupies 2 columns
+    }
+
+    #[test]
+    fn display_cursor_cjk_at_beginning() {
+        let mut s = InputState::new();
+        s.line = "あb".to_string();
+        s.cursor = 0;
+        assert_eq!(s.display_cursor(), 0);
+    }
+
+    #[test]
+    fn display_cursor_cjk_at_end() {
+        let mut s = InputState::new();
+        s.line = "あb".to_string();
+        s.cursor = s.line.len(); // after 'b'
+        assert_eq!(s.display_cursor(), 3); // 2 (あ) + 1 (b) = 3
+    }
+
+    #[test]
+    fn display_cursor_multiple_cjk() {
+        let mut s = InputState::new();
+        s.line = "あい".to_string(); // two CJK chars, each width 2
+        s.cursor = 3; // after 'あ', before 'い'
+        assert_eq!(s.display_cursor(), 2);
+    }
+
+    #[test]
+    fn display_width_ascii() {
+        let mut s = InputState::new();
+        s.line = "abc".to_string();
+        assert_eq!(s.display_width(), 3);
+    }
+
+    #[test]
+    fn display_width_cjk() {
+        let mut s = InputState::new();
+        s.line = "あい".to_string();
+        assert_eq!(s.display_width(), 4); // 2 chars × 2 columns each
+    }
+
+    #[test]
+    fn str_display_width_ascii_cjk_and_mixed() {
+        assert_eq!(str_display_width(""), 0);
+        assert_eq!(str_display_width("> "), 2);
+        assert_eq!(str_display_width("hello"), 5);
+        assert_eq!(str_display_width("あいう"), 6); // 3 × 2
+        assert_eq!(str_display_width("aあb"), 4); // 1 + 2 + 1
+    }
+
+    #[test]
+    fn display_width_mixed_ascii_and_cjk() {
+        let mut s = InputState::new();
+        s.line = "ab漢字cd".to_string();
+        // a,b = 2 ; 漢,字 = 4 ; c,d = 2 => 8
+        assert_eq!(s.display_width(), 8);
     }
 }

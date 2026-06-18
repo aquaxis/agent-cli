@@ -24,6 +24,55 @@ use crate::ipc::IpcMessage;
 use crate::log::ConversationLog;
 use crate::persona::{self, Persona, PersonaResolution};
 use crate::tools::ToolRegistry;
+/// In raw mode, the terminal does not convert LF to CR+LF. These helpers ensure
+/// line endings include CR so the cursor returns to column 0 after each newline.
+
+/// Print a string to stdout, replacing LF with CR+LF, then append CR+LF.
+fn raw_println(raw: bool, msg: &str) {
+    if raw {
+        let out = msg.replace('\n', "\r\n");
+        let _ = std::io::stdout().write_all(out.as_bytes());
+        let _ = std::io::stdout().write_all(b"\r\n");
+        let _ = std::io::stdout().flush();
+    } else {
+        println!("{}", msg);
+    }
+}
+
+/// Print a string to stdout, replacing LF with CR+LF (no trailing newline added).
+fn raw_print_str(raw: bool, msg: &str) {
+    if raw {
+        let out = msg.replace('\n', "\r\n");
+        let _ = std::io::stdout().write_all(out.as_bytes());
+        let _ = std::io::stdout().flush();
+    } else {
+        print!("{}", msg);
+        let _ = std::io::stdout().flush();
+    }
+}
+
+/// Print a string to stderr, replacing LF with CR+LF, then append CR+LF.
+fn raw_eprintln(raw: bool, msg: &str) {
+    if raw {
+        let out = msg.replace('\n', "\r\n");
+        let _ = std::io::stderr().write_all(out.as_bytes());
+        let _ = std::io::stderr().write_all(b"\r\n");
+        let _ = std::io::stderr().flush();
+    } else {
+        eprintln!("{}", msg);
+    }
+}
+
+/// Print a string to stderr, replacing LF with CR+LF (no trailing newline added).
+fn raw_eprint(raw: bool, msg: &str) {
+    if raw {
+        let out = msg.replace('\n', "\r\n");
+        let _ = std::io::stderr().write_all(out.as_bytes());
+        let _ = std::io::stderr().flush();
+    } else {
+        eprint!("{}", msg);
+    }
+}
 
 /// Shared state referenced by REPL command handlers.
 pub(crate) struct ReplState {
@@ -59,7 +108,13 @@ fn load_history(path: &Path) -> Vec<String> {
     lines
 }
 
-fn append_history(path: &Path, line: &str) {
+fn append_history(path: &Path, line: &str, last_line: Option<&str>) {
+    // Skip consecutive duplicate (bash HISTCONTROL=ignoredups behaviour)
+    if let Some(last) = last_line {
+        if last == line {
+            return;
+        }
+    }
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -71,6 +126,18 @@ fn append_history(path: &Path, line: &str) {
     {
         let _ = writeln!(f, "{line}");
     }
+}
+
+/// Remove consecutive duplicate entries from a history slice, preserving order.
+/// Non-consecutive duplicates are kept (e.g., ["a", "b", "a"] stays as-is).
+fn dedup_consecutive(history: &[String]) -> Vec<String> {
+    let mut result = Vec::with_capacity(history.len());
+    for entry in history {
+        if result.last().map(|l: &String| l.as_str()) != Some(entry.as_str()) {
+            result.push(entry.clone());
+        }
+    }
+    result
 }
 
 pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Result<()> {
@@ -97,7 +164,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     );
 
     // Build provider (pre-connection validation)
-    let provider = ai::build(&config, &source)?;
+    let provider = ai::build(&mut config, &source)?;
     let caps = provider.capabilities();
 
     let registry_dir = config.registry_dir()?;
@@ -259,7 +326,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // getting stuck in Pending forever if Provider construction fails without a `Done`.
     let show_thinking = config.ui.show_thinking_mode();
     let display_task = tokio::spawn(async move {
-        let mut display_state = DisplayState::new();
+        let mut display_state = DisplayState::new(stdin_is_tty());
         while let Some(ev) = event_rx.recv().await {
             let is_idle = matches!(ev, AgentEvent::Done | AgentEvent::Error { .. });
             display_event(ev, show_thinking, &mut display_state);
@@ -354,34 +421,147 @@ impl Drop for RawModeGuard {
     }
 }
 
-/// Redraw the prompt line: clear current line, print `> ` prefix and the editor content,
-/// and position the cursor at the correct column.
-fn redraw_prompt(stdout: &mut std::io::Stdout, state: &InputState) {
-    use crossterm::cursor::MoveToColumn;
-    use crossterm::style::Print;
-    let prompt: &str = "> ";
-    // Move to start of line, clear from cursor to end of line
-    let _ = stdout.execute(MoveToColumn(0));
-    let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
-    // Print prompt prefix + line content
-    let _ = stdout.execute(Print(format!("{}{}", prompt, state.line)));
-    // Position cursor: prompt length + cursor offset
-    let col = prompt.len() + state.cursor;
-    let _ = stdout.execute(MoveToColumn(col as u16));
-    let _ = stdout.flush();
+/// Compute the rendered layout of a prompt + edit buffer for a terminal of the
+/// given width. Returns `(end_row, cursor_row, cursor_col)`, all measured in
+/// terminal cells relative to the top-left of the rendered block:
+///
+/// - `end_row`: the physical row the cursor sits on after the whole content is
+///   printed (accounting for the "phantom" last-column wrap, where a line that
+///   exactly fills the width leaves the cursor on the same row rather than the
+///   next one).
+/// - `cursor_row` / `cursor_col`: where the logical cursor should be placed.
+///
+/// `prompt_cols` is the display width of the prompt prefix, `cursor_cols` the
+/// display width of the text before the cursor, and `total_cols` the display
+/// width of the prompt + entire line. `width` is the terminal width in columns
+/// (clamped to at least 1 by the caller).
+fn layout_cursor(
+    prompt_cols: usize,
+    cursor_cols: usize,
+    total_cols: usize,
+    width: usize,
+) -> (usize, usize, usize) {
+    let w = width.max(1);
+    let cursor_abs = prompt_cols + cursor_cols;
+    // Physical row of the cursor after printing all content. When the content
+    // fills the final row exactly, the terminal keeps the cursor on that row
+    // (pending-wrap) instead of advancing, so subtract one in that case.
+    let end_row = if total_cols == 0 {
+        0
+    } else if total_cols.is_multiple_of(w) {
+        total_cols / w - 1
+    } else {
+        total_cols / w
+    };
+    let cursor_row = cursor_abs / w;
+    let cursor_col = cursor_abs % w;
+    (end_row, cursor_row, cursor_col)
 }
 
-/// Redraw the prompt line in approval mode: show `approve? [y/N]: ` with the current content.
-fn redraw_approval_prompt(stdout: &mut std::io::Stdout, state: &InputState) {
-    use crossterm::cursor::MoveToColumn;
-    use crossterm::style::Print;
-    let prompt: &str = "approve? [y/N]: ";
-    let _ = stdout.execute(MoveToColumn(0));
-    let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
-    let _ = stdout.execute(Print(format!("{}{}", prompt, state.line)));
-    let col = prompt.len() + state.cursor;
-    let _ = stdout.execute(MoveToColumn(col as u16));
-    let _ = stdout.flush();
+/// Stateful, wrap-aware renderer for the raw-mode prompt line.
+///
+/// In raw mode the terminal performs no cursor or wrap bookkeeping for us, so the
+/// renderer tracks how many physical rows down from the top of the rendered block
+/// the cursor currently sits (`cursor_row`). On each render it moves back up to the
+/// top of the previous block, clears it (including any wrapped rows), reprints the
+/// prompt + line, and positions the cursor at the correct (row, column) computed
+/// from display widths — fixing both multibyte cursor drift and line wrapping.
+struct PromptRenderer {
+    /// Physical row offset of the cursor from the top of the last rendered block.
+    cursor_row: u16,
+}
+
+impl PromptRenderer {
+    fn new() -> Self {
+        Self { cursor_row: 0 }
+    }
+
+    /// Mark the cursor as being on a fresh, empty line (no previous block above).
+    /// Call this after emitting a newline outside the renderer (e.g. after submit
+    /// or printing an out-of-band message).
+    fn reset(&mut self) {
+        self.cursor_row = 0;
+    }
+
+    fn terminal_width() -> usize {
+        terminal::size().map(|(w, _)| w as usize).unwrap_or(80).max(1)
+    }
+
+    /// Move to the top-left of the previously rendered block and clear it
+    /// (including any wrapped rows below). Leaves the cursor at column 0 and
+    /// resets the tracked row to 0.
+    fn clear_block(&mut self, stdout: &mut std::io::Stdout) {
+        use crossterm::cursor::{MoveToColumn, MoveUp};
+        if self.cursor_row > 0 {
+            let _ = stdout.execute(MoveUp(self.cursor_row));
+        }
+        let _ = stdout.execute(MoveToColumn(0));
+        let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
+        self.cursor_row = 0;
+        let _ = stdout.flush();
+    }
+
+    /// Finalize a submitted line: clear the in-progress (cursor-positioned)
+    /// render, then re-emit `prompt` + the submitted `line` as a static, fully
+    /// visible line followed by a newline — like a normal shell echoing input on
+    /// Enter. Leaves the cursor at column 0 of a fresh line.
+    fn finish_line(&mut self, stdout: &mut std::io::Stdout, prompt: &str, line: &str) {
+        use crossterm::style::Print;
+        // Remove the interactive render (cursor may be mid-line) before echoing.
+        self.clear_block(stdout);
+        let _ = stdout.execute(Print(prompt));
+        let _ = stdout.execute(Print(line));
+        // Advance to a fresh line; CR+LF is required in raw mode.
+        let _ = stdout.execute(Print("\r\n"));
+        self.cursor_row = 0;
+        let _ = stdout.flush();
+    }
+
+    /// Render `prompt` + the editor buffer, wrapping correctly and positioning the
+    /// cursor at the logical insertion point.
+    fn render(&mut self, stdout: &mut std::io::Stdout, prompt: &str, state: &InputState) {
+        use crossterm::cursor::{MoveDown, MoveToColumn, MoveUp};
+        use crossterm::style::Print;
+
+        let width = Self::terminal_width();
+
+        // 1. Clear the previous block (handles multi-row renders).
+        self.clear_block(stdout);
+
+        // 2. Print prompt + line; the terminal auto-wraps long content.
+        let _ = stdout.execute(Print(prompt));
+        let _ = stdout.execute(Print(&state.line));
+
+        // 3. Compute the target cursor position.
+        let prompt_cols = crate::editor::str_display_width(prompt);
+        let total_cols = prompt_cols + state.display_width();
+        let cursor_cols = state.display_cursor();
+        let (end_row, cursor_row, cursor_col) =
+            layout_cursor(prompt_cols, cursor_cols, total_cols, width);
+
+        // 4. Move from the post-print position (end_row) to the cursor row.
+        if end_row > cursor_row {
+            let _ = stdout.execute(MoveUp((end_row - cursor_row) as u16));
+        } else if cursor_row > end_row {
+            // Cursor belongs on a fresh wrapped row past the printed content
+            // (cursor at the end of a line that exactly fills the width).
+            let _ = stdout.execute(MoveDown((cursor_row - end_row) as u16));
+        }
+        let _ = stdout.execute(MoveToColumn(cursor_col as u16));
+
+        // 5. Remember where the cursor ended up for the next render.
+        self.cursor_row = cursor_row as u16;
+        let _ = stdout.flush();
+    }
+}
+
+/// Classify whether a key event should trigger a cancel during the Pending state
+/// (LLM executing / tool running). Returns `true` for ESC and Ctrl-C, `false` for
+/// all other keys. This is a pure function so it can be unit-tested without a TTY.
+fn is_cancel_key(key_event: &KeyEvent) -> bool {
+    matches!(key_event.code, KeyCode::Esc)
+        || (key_event.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key_event.code, KeyCode::Char('c')))
 }
 
 /// Handle a single key event in interactive (raw-mode) editing.
@@ -422,9 +602,16 @@ fn handle_key(key_event: KeyEvent, input: &mut InputState, history: &[String]) -
                 Some(KeyAction::Continue)
             }
             'c' => {
-                // Ctrl+C: clear current line
-                input.clear_line();
-                Some(KeyAction::ClearLine)
+                // Ctrl+C: raw mode suppresses the terminal's SIGINT, so handle it
+                // explicitly. With pending input, first clear the line; on an empty
+                // line, exit cleanly (matches the documented "Ctrl+C ... exit" and
+                // the previous cooked-mode SIGINT behavior).
+                if input.line.is_empty() {
+                    Some(KeyAction::Eof)
+                } else {
+                    input.clear_line();
+                    Some(KeyAction::ClearLine)
+                }
             }
             'd' => {
                 // Ctrl+D: EOF if line is empty, otherwise no-op
@@ -585,19 +772,22 @@ async fn run_input_loop_raw(
     let mut stdout = std::io::stdout();
     let mut shutdown_rx = shutdown_rx;
     let mut agent_idle_rx = agent_idle_rx;
+    let mut renderer = PromptRenderer::new();
+    const PROMPT: &str = "> ";
+    const APPROVAL_PROMPT: &str = "approve? [y/N]: ";
 
     // Draw initial prompt
-    redraw_prompt(&mut stdout, &input_state);
+    renderer.render(&mut stdout, PROMPT, &input_state);
 
     loop {
-        // Read current history for navigation
+        // Read current history for navigation (deduplicated for smooth up/down browsing)
         let history_snapshot: Vec<String> = {
             let h = state.history.read().await;
-            h.clone()
+            dedup_consecutive(&h)
         };
 
-        // Decide if we should poll for terminal events
-        let can_read = prompt_state.is_ready() || prompt_state.is_awaiting_approval();
+        // Key events are polled in all states (Ready, Pending, AwaitingApproval)
+        // so the user can interrupt LLM execution with ESC or Ctrl-C.
 
         tokio::select! {
             biased;
@@ -606,13 +796,14 @@ async fn run_input_loop_raw(
                     break;
                 }
             }
-            // Only wait for AI response completion when in Pending state (stdin is paused)
+            // Only wait for AI response completion when in Pending state
             res = agent_idle_rx.recv(), if prompt_state.is_pending() => {
                 match res {
                     Some(()) => {
                         prompt_state = PromptState::Ready;
-                        // Redraw prompt after AI response
-                        redraw_prompt(&mut stdout, &input_state);
+                        // Redraw prompt after AI response on a fresh line
+                        renderer.reset();
+                        renderer.render(&mut stdout, PROMPT, &input_state);
                     }
                     None => break,
                 }
@@ -626,29 +817,46 @@ async fn run_input_loop_raw(
             }, if !prompt_state.is_awaiting_approval() && approval_rx.is_some() => {
                 match req {
                     Some(req) => {
-                        // Print approval request (go to new line since we're in raw mode)
-                        let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
-                        let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
-                        println!("[tool approval] {} {}", req.tool_name, req.args);
+                        // Clear the current (possibly wrapped) prompt block, then print
+                        // the approval request on a fresh line.
+                        renderer.clear_block(&mut stdout);
+                        raw_println(true, &format!("[tool approval] {} {}", req.tool_name, req.args));
+                        renderer.reset();
                         // Reset input state for the approval prompt
                         input_state = InputState::new();
                         prompt_state = PromptState::AwaitingApproval(req.response);
-                        redraw_approval_prompt(&mut stdout, &input_state);
+                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state);
                     }
                     None => {
                         approval_rx = None;
                     }
                 }
             }
-            // Poll for crossterm key events when Ready or AwaitingApproval
+            // Poll for crossterm key events in all states (Ready, Pending, AwaitingApproval).
+            // During Pending, ESC and Ctrl-C send AgentInput::Cancel; other keys are ignored.
             _ = tokio::task::spawn_blocking(move || {
                 // This blocks the calling thread until a key event or timeout.
                 // We use a short timeout so tokio::select! can check other branches frequently.
                 let _ = event::poll(Duration::from_millis(50));
-            }), if can_read => {
-                // Drain all pending key events
+            }) => {
+                // Drain all pending key events. `exit_loop` lets an inner break
+                // (quit/exit command, EOF, closed channel) propagate out of the
+                // event-drain `while` to terminate the outer input loop — a plain
+                // `break` here would only stop draining events, not exit the REPL.
+                let mut exit_loop = false;
                 while event::poll(Duration::from_millis(0)).unwrap_or(false) {
                     if let Ok(CtEvent::Key(key_event)) = event::read() {
+                        // During Pending, only ESC and Ctrl-C are honoured (cancel).
+                        // Other key events are ignored to avoid corrupting the edit
+                        // buffer while the agent is processing.
+                        if prompt_state.is_pending() {
+                            if is_cancel_key(&key_event) {
+                                let _ = input_tx.send(AgentInput::Cancel).await;
+                                raw_eprintln(true, "[cancelling...]");
+                            }
+                            // All other keys during Pending are ignored.
+                            continue;
+                        }
                         let is_awaiting_approval = prompt_state.is_awaiting_approval();
                         if let Some(action) = handle_key(key_event, &mut input_state, &history_snapshot) {
                             match action {
@@ -667,44 +875,49 @@ async fn run_input_loop_raw(
                                         }
                                         // Drain stale idle notifications
                                         while agent_idle_rx.try_recv().is_ok() {}
-                                        // Clear the approval line and move to next line
-                                        let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
-                                        let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
-                                        println!();
+                                        // Echo the approval response, then move to next line
+                                        renderer.finish_line(&mut stdout, APPROVAL_PROMPT, &line);
                                         continue;
                                     }
 
-                                    // Clear the current prompt line and move to next line
-                                    let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
-                                    let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
-                                    println!();
+                                    // Echo the submitted line, then move to next line
+                                    renderer.finish_line(&mut stdout, PROMPT, &line);
 
                                     if let Some(rest) = trimmed.strip_prefix('/') {
-                                        if !handle_repl_command(rest, &input_tx, &state).await {
+                                        if !handle_repl_command(rest, &input_tx, &state, true).await {
+                                            exit_loop = true;
                                             break;
                                         }
                                         // Redraw prompt after command
-                                        redraw_prompt(&mut stdout, &input_state);
+                                        renderer.render(&mut stdout, PROMPT, &input_state);
                                         continue;
                                     }
                                     if trimmed.is_empty() {
                                         // Blank line: just redraw prompt
-                                        redraw_prompt(&mut stdout, &input_state);
+                                        renderer.render(&mut stdout, PROMPT, &input_state);
                                         continue;
                                     }
 
-                                    // Save to history (persistent + in-memory)
-                                    append_history(&state.history_path, &trimmed);
+                                    // Save to history (persistent + in-memory, skip consecutive duplicates)
+                                    {
+                                        let last_line = state.history.read().await.last().cloned();
+                                        append_history(&state.history_path, &trimmed, last_line.as_deref());
+                                    }
                                     {
                                         let mut h = state.history.write().await;
-                                        h.push(trimmed.clone());
-                                        let len = h.len();
-                                        if len > HISTORY_LIMIT {
-                                            h.drain(..len - HISTORY_LIMIT);
+                                        if h.last().map(|last| last == &trimmed).unwrap_or(false) {
+                                            // Skip consecutive duplicate
+                                        } else {
+                                            h.push(trimmed.clone());
+                                            let len = h.len();
+                                            if len > HISTORY_LIMIT {
+                                                h.drain(..len - HISTORY_LIMIT);
+                                            }
                                         }
                                     }
 
                                     if input_tx.send(AgentInput::UserPrompt(trimmed)).await.is_err() {
+                                        exit_loop = true;
                                         break;
                                     }
                                     // Discard stale idle notifications from past peer prompts, then enter Pending
@@ -713,22 +926,30 @@ async fn run_input_loop_raw(
                                 }
                                 KeyAction::ClearLine => {
                                     // Redraw prompt with cleared state
-                                    redraw_prompt(&mut stdout, &input_state);
+                                    if prompt_state.is_awaiting_approval() {
+                                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state);
+                                    } else {
+                                        renderer.render(&mut stdout, PROMPT, &input_state);
+                                    }
                                 }
                                 KeyAction::Eof => {
+                                    exit_loop = true;
                                     break;
                                 }
                                 KeyAction::Continue => {
                                     if prompt_state.is_awaiting_approval() {
-                                        redraw_approval_prompt(&mut stdout, &input_state);
+                                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state);
                                     } else {
-                                        redraw_prompt(&mut stdout, &input_state);
+                                        renderer.render(&mut stdout, PROMPT, &input_state);
                                     }
                                 }
                             }
                         }
                     }
                     // Ignore resize and other events in this inner loop
+                }
+                if exit_loop {
+                    break;
                 }
             }
         }
@@ -741,9 +962,8 @@ async fn run_input_loop_raw(
     {
         let _ = resp_tx.send(false);
     }
-    // Ensure prompt line is cleaned up before exit
-    let _ = stdout.execute(crossterm::cursor::MoveToColumn(0));
-    let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
+    // Ensure the prompt block (possibly wrapped) is cleaned up before exit
+    renderer.clear_block(&mut stdout);
     let _ = shutdown_tx.send(true);
     // _raw_guard dropped here: terminal mode restored
 }
@@ -798,7 +1018,7 @@ async fn run_input_loop_line<R>(
                 match req {
                     Some(req) => {
                         if interactive {
-                            println!();
+                            raw_println(false, "");
                             println!("[tool approval] {} {}", req.tool_name, req.args);
                             print!("approve? [y/N]: ");
                             let _ = std::io::stdout().flush();
@@ -834,7 +1054,7 @@ async fn run_input_loop_line<R>(
                         }
 
                         if let Some(rest) = trimmed.strip_prefix('/') {
-                            if !handle_repl_command(rest, &input_tx, &state).await {
+                            if !handle_repl_command(rest, &input_tx, &state, false).await {
                                 break;
                             }
                             continue;
@@ -842,14 +1062,21 @@ async fn run_input_loop_line<R>(
                         if trimmed.is_empty() {
                             continue;
                         }
-                        // Save to history (persistent + in-memory)
-                        append_history(&state.history_path, &trimmed);
+                        // Save to history (persistent + in-memory, skip consecutive duplicates)
+                        {
+                            let last_line = state.history.read().await.last().cloned();
+                            append_history(&state.history_path, &trimmed, last_line.as_deref());
+                        }
                         {
                             let mut h = state.history.write().await;
-                            h.push(trimmed.clone());
-                            let len = h.len();
-                            if len > HISTORY_LIMIT {
-                                h.drain(..len - HISTORY_LIMIT);
+                            if h.last().map(|last| last == &trimmed).unwrap_or(false) {
+                                // Skip consecutive duplicate
+                            } else {
+                                h.push(trimmed.clone());
+                                let len = h.len();
+                                if len > HISTORY_LIMIT {
+                                    h.drain(..len - HISTORY_LIMIT);
+                                }
                             }
                         }
                         if input_tx.send(AgentInput::UserPrompt(trimmed)).await.is_err() {
@@ -934,16 +1161,16 @@ fn print_header(
 }
 
 /// `/auto [on|off|status]` handler (FR-04-2 / design doc 4.3A).
-fn handle_auto_command(arg: &str, state: &Arc<ReplState>) {
+fn handle_auto_command(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
     let arg = arg.trim().to_ascii_lowercase();
     match arg.as_str() {
         "on" | "true" | "1" => {
             state.auto_approve.store(true, Ordering::SeqCst);
-            println!("[auto] tool approval: on (skipping y/N prompts)");
+            raw_println(raw_mode, "[auto] tool approval: on (skipping y/N prompts)");
         }
         "off" | "false" | "0" => {
             state.auto_approve.store(false, Ordering::SeqCst);
-            println!("[auto] tool approval: off (will ask y/N for each tool call)");
+            raw_println(raw_mode, "[auto] tool approval: off (will ask y/N for each tool call)");
         }
         "" | "status" => {
             let cur = if state.auto_approve.load(Ordering::SeqCst) {
@@ -951,10 +1178,10 @@ fn handle_auto_command(arg: &str, state: &Arc<ReplState>) {
             } else {
                 "off"
             };
-            println!("[auto] tool approval: {cur}");
+            raw_println(raw_mode, &format!("[auto] tool approval: {cur}"));
         }
         other => {
-            eprintln!("usage: /auto [on|off|status]  (got: {other})");
+            raw_eprintln(raw_mode, &format!("usage: /auto [on|off|status]  (got: {other})"));
         }
     }
 }
@@ -967,69 +1194,98 @@ fn print_prompt() {
 struct DisplayState {
     thinking_printed: bool,
     answer_printed: bool,
+    /// Whether any section header (`[answer]`/`[thinking]`/`[tool-call]`) has been
+    /// printed in the current turn. The first header of a turn is emitted without a
+    /// leading newline so it sits directly under the echoed input line, avoiding an
+    /// extra blank line (FR-15); subsequent headers keep the leading newline to
+    /// separate from preceding streamed content.
+    section_printed: bool,
+    /// When true, output is in crossterm raw mode and newlines must use CR+LF.
+    raw_mode: bool,
 }
 
 impl DisplayState {
-    fn new() -> Self {
+    fn new(raw_mode: bool) -> Self {
         Self {
             thinking_printed: false,
             answer_printed: false,
+            section_printed: false,
+            raw_mode,
         }
     }
 
     fn reset(&mut self) {
         self.thinking_printed = false;
         self.answer_printed = false;
+        self.section_printed = false;
+    }
+
+    /// Print a section header (e.g. `[answer]`), prefixing a newline only if a
+    /// previous section already printed this turn (FR-15).
+    fn section_header(&mut self, label: &str) {
+        raw_eprintln(self.raw_mode, &section_header_text(label, self.section_printed));
+        self.section_printed = true;
+    }
+}
+
+/// Build a section header line: prefix a newline only when a previous section has
+/// already printed this turn, so the first header sits directly under the echoed
+/// input with no extra blank line (FR-15 / Defect #7).
+fn section_header_text(label: &str, section_printed: bool) -> String {
+    if section_printed {
+        format!("\n{label}")
+    } else {
+        label.to_string()
     }
 }
 
 fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut DisplayState) {
+    let rm = state.raw_mode;
     match ev {
         AgentEvent::Text { delta } => {
             if !state.answer_printed {
-                eprintln!("\n[answer]");
+                state.section_header("[answer]");
                 state.answer_printed = true;
             }
-            print!("{delta}");
-            let _ = std::io::stdout().flush();
+            raw_print_str(rm, &delta);
         }
         AgentEvent::Thinking { text } => match show_thinking {
             ShowThinkingMode::Hidden => {}
             ShowThinkingMode::Collapsed => {
                 if !state.thinking_printed {
-                    eprintln!("\n[thinking]");
+                    state.section_header("[thinking]");
                     state.thinking_printed = true;
                 } else {
-                    eprint!(" ");
+                    raw_eprint(rm, " ");
                 }
                 let collapsed = collapse_thinking_text(&text);
-                eprint!("{collapsed}");
+                raw_eprint(rm, &collapsed);
             }
             ShowThinkingMode::Expanded => {
                 if !state.thinking_printed {
-                    eprintln!("\n[thinking]");
+                    state.section_header("[thinking]");
                     state.thinking_printed = true;
                 }
-                eprint!("{text}");
+                raw_eprint(rm, &text);
             }
         },
         AgentEvent::ToolCall { name, args } => {
-            eprintln!("\n[tool-call] {name} {args}");
+            state.section_header(&format!("[tool-call] {name} {args}"));
         }
         AgentEvent::ToolResult { name, ok, output } => {
             let mark = if ok { "ok" } else { "ERR" };
-            eprintln!("[tool-result {mark}] {name}: {output}");
+            raw_eprintln(rm, &format!("[tool-result {mark}] {name}: {output}"));
         }
         AgentEvent::Done => {
             state.reset();
-            println!();
+            raw_println(rm, "");
         }
         AgentEvent::Error { message } => {
             state.reset();
-            eprintln!("\n[error] {message}");
+            raw_eprintln(rm, &format!("\n[error] {message}"));
         }
         AgentEvent::Info { message } => {
-            eprintln!("[info] {message}");
+            raw_eprintln(rm, &format!("[info] {message}"));
         }
     }
 }
@@ -1057,6 +1313,7 @@ async fn handle_repl_command(
     rest: &str,
     input_tx: &mpsc::Sender<AgentInput>,
     state: &Arc<ReplState>,
+    raw_mode: bool,
 ) -> bool {
     let mut parts = rest.splitn(2, ' ');
     let cmd = parts.next().unwrap_or("").trim();
@@ -1064,32 +1321,32 @@ async fn handle_repl_command(
     match cmd {
         "quit" | "exit" => return false,
         "help" => {
-            println!("Commands:");
-            println!("  /list                       List currently running peers (id / name / provider / model / role).");
+            raw_println(raw_mode, "Commands:");
+            raw_println(raw_mode, "  /list                       List currently running peers (id / name / provider / model / role).");
             println!(
                 "  /send <peer> <text>         Send a one-shot prompt to a peer (id or name)."
             );
-            println!("  /tools                      List tools enabled for this agent.");
-            println!("  /persona                    Show this agent's persona (role / skills / source path).");
-            println!("  /reload-persona             Re-resolve and reload the persona; system prompt is replaced, history kept.");
-            println!("  /peer <id_or_name>          Show a peer's persona summary.");
-            println!("  /history [n]                Show last n (default 20) user inputs from this session.");
-            println!("  /clear, /reset              Clear conversation history (persona / system prompt are kept).");
-            println!("  /cancel                     Request cancel of the in-flight AI response or tool call.");
-            println!("  /auto [on|off|status]       Toggle tool-approval skip. No arg / 'status' shows current value.");
-            println!("  /help                       Show this help.");
-            println!("  /quit, /exit                Terminate (full aliases). Ctrl+D, Ctrl+C, SIGTERM also exit cleanly.");
-            println!();
-            println!("Tool approval can be skipped via:");
-            println!("  - REPL command  : /auto on  (toggleable at runtime)");
-            println!("  - CLI flag      : agent-cli run --auto-approve-tools");
-            println!("  - Config file   : [runtime] auto_approve_tools = true");
+            raw_println(raw_mode, "  /tools                      List tools enabled for this agent.");
+            raw_println(raw_mode, "  /persona                    Show this agent's persona (role / skills / source path).");
+            raw_println(raw_mode, "  /reload-persona             Re-resolve and reload the persona; system prompt is replaced, history kept.");
+            raw_println(raw_mode, "  /peer <id_or_name>          Show a peer's persona summary.");
+            raw_println(raw_mode, "  /history [n]                Show last n (default 20) user inputs from this session.");
+            raw_println(raw_mode, "  /clear, /reset              Clear conversation history (persona / system prompt are kept).");
+            raw_println(raw_mode, "  /cancel                     Request cancel of the in-flight AI response or tool call.");
+            raw_println(raw_mode, "  /auto [on|off|status]       Toggle tool-approval skip. No arg / 'status' shows current value.");
+            raw_println(raw_mode, "  /help                       Show this help.");
+            raw_println(raw_mode, "  /quit, /exit                Terminate (full aliases). Ctrl+D, Ctrl+C, SIGTERM also exit cleanly.");
+            raw_println(raw_mode, "");
+            raw_println(raw_mode, "Tool approval can be skipped via:");
+            raw_println(raw_mode, "  - REPL command  : /auto on  (toggleable at runtime)");
+            raw_println(raw_mode, "  - CLI flag      : agent-cli run --auto-approve-tools");
+            raw_println(raw_mode, "  - Config file   : [runtime] auto_approve_tools = true");
         }
-        "auto" => handle_auto_command(arg, state),
+        "auto" => handle_auto_command(arg, state, raw_mode),
         "clear" | "reset" => {
             // Clear conversation history (keep only system prompt).
             if input_tx.send(AgentInput::ClearHistory).await.is_err() {
-                eprintln!("[error] failed to send clear request");
+                raw_eprintln(raw_mode, "[error] failed to send clear request");
             }
         }
         "history" => {
@@ -1100,42 +1357,42 @@ async fn handle_repl_command(
             let total = hist.len();
             let start = total.saturating_sub(n);
             for (i, line) in hist.iter().enumerate().skip(start) {
-                println!("{:>4}  {}", i + 1, line);
+                raw_println(raw_mode, &format!("{:>4}  {}", i + 1, line));
             }
             if total == 0 {
-                println!("(empty)");
+                raw_println(raw_mode, "(empty)");
             }
         }
-        "list" => list_peers(&state.registry_dir),
-        "send" => send_to_peer(arg, &state.registry_dir).await,
+        "list" => list_peers(&state.registry_dir, raw_mode),
+        "send" => send_to_peer(arg, &state.registry_dir, raw_mode).await,
         "tools" => {
             if state.tool_names.is_empty() {
-                println!("(no tools enabled)");
+                raw_println(raw_mode, "(no tools enabled)");
             } else {
-                println!("tools: {}", state.tool_names.join(", "));
+                raw_println(raw_mode, &format!("tools: {}", state.tool_names.join(", ")));
             }
         }
         "persona" => {
             let p = state.persona.read().await;
-            print_persona(&p);
+            print_persona(&p, raw_mode);
         }
-        "reload-persona" => reload_persona(state, input_tx).await,
-        "peer" => peer_summary(arg, &state.registry_dir),
+        "reload-persona" => reload_persona(state, input_tx, raw_mode).await,
+        "peer" => peer_summary(arg, &state.registry_dir, raw_mode),
         "cancel" => {
             let _ = input_tx.send(AgentInput::Cancel).await;
         }
         _ => {
-            eprintln!("unknown command: {cmd}");
+            raw_eprintln(raw_mode, &format!("unknown command: {cmd}"));
         }
     }
     true
 }
 
-fn list_peers(registry_dir: &Path) {
+fn list_peers(registry_dir: &Path, raw_mode: bool) {
     match crate::ipc::registry::list_entries(registry_dir) {
         Ok(entries) => {
             if entries.is_empty() {
-                println!("(no agents running)");
+                raw_println(raw_mode, "(no agents running)");
                 return;
             }
             for e in entries {
@@ -1144,26 +1401,26 @@ fn list_peers(registry_dir: &Path) {
                     .as_ref()
                     .map(|p| p.role.clone())
                     .unwrap_or_default();
-                println!(
+                raw_println(raw_mode, &format!(
                     "{}\t{}\t{}\t{}\t{}",
                     e.id,
                     e.name.clone().unwrap_or_else(|| "-".into()),
                     e.provider,
                     e.model,
                     role
-                );
+                ));
             }
         }
-        Err(e) => eprintln!("[error] {e}"),
+        Err(e) => raw_eprintln(raw_mode, &format!("[error] {e}")),
     }
 }
 
-async fn send_to_peer(arg: &str, registry_dir: &Path) {
+async fn send_to_peer(arg: &str, registry_dir: &Path, raw_mode: bool) {
     let mut p = arg.splitn(2, ' ');
     let peer = p.next().unwrap_or("").trim();
     let text = p.next().unwrap_or("").trim();
     if peer.is_empty() || text.is_empty() {
-        eprintln!("usage: /send <peer> <text>");
+        raw_eprintln(raw_mode, "usage: /send <peer> <text>");
         return;
     }
     match crate::ipc::registry::resolve_peer(registry_dir, peer) {
@@ -1174,44 +1431,44 @@ async fn send_to_peer(arg: &str, registry_dir: &Path) {
                 text: text.to_string(),
             };
             if let Err(e) = crate::ipc::client::send(&p.socket, &msg).await {
-                eprintln!("[error] {e}");
+                raw_eprintln(raw_mode, &format!("[error] {e}"));
             } else {
-                println!("delivered to {}", p.id);
+                raw_println(raw_mode, &format!("delivered to {}", p.id));
             }
         }
-        Err(e) => eprintln!("[error] {e}"),
+        Err(e) => raw_eprintln(raw_mode, &format!("[error] {e}")),
     }
 }
 
-fn print_persona(persona: &Persona) {
-    println!(
+fn print_persona(persona: &Persona, raw_mode: bool) {
+    raw_println(raw_mode, &format!(
         "name        : {}",
         persona.frontmatter.name.as_deref().unwrap_or("-")
-    );
-    println!("role        : {}", persona.frontmatter.role);
+    ));
+    raw_println(raw_mode, &format!("role        : {}", persona.frontmatter.role));
     if !persona.frontmatter.skills.is_empty() {
-        println!("skills      : {}", persona.frontmatter.skills.join(", "));
+        raw_println(raw_mode, &format!("skills      : {}", persona.frontmatter.skills.join(", ")));
     }
     if let Some(d) = &persona.frontmatter.description {
-        println!("description : {d}");
+        raw_println(raw_mode, &format!("description : {d}"));
     }
     if let Some(t) = &persona.frontmatter.temperature {
-        println!("temperature : {t}");
+        raw_println(raw_mode, &format!("temperature : {t}"));
     }
     if let Some(allow) = &persona.frontmatter.allowed_tools {
-        println!("allowed     : {}", allow.join(", "));
+        raw_println(raw_mode, &format!("allowed     : {}", allow.join(", ")));
     }
     if let Some(deny) = &persona.frontmatter.denied_tools {
-        println!("denied      : {}", deny.join(", "));
+        raw_println(raw_mode, &format!("denied      : {}", deny.join(", ")));
     }
     if let Some(p) = &persona.source_path {
-        println!("source      : {}", p.display());
+        raw_println(raw_mode, &format!("source      : {}", p.display()));
     } else {
-        println!("source      : (builtin default)");
+        raw_println(raw_mode, "source      : (builtin default)");
     }
 }
 
-async fn reload_persona(state: &Arc<ReplState>, input_tx: &mpsc::Sender<AgentInput>) {
+async fn reload_persona(state: &Arc<ReplState>, input_tx: &mpsc::Sender<AgentInput>, raw_mode: bool) {
     let resolution = match persona::resolve(
         state.cli_persona_path.as_deref(),
         &state.persona_file_setting,
@@ -1220,7 +1477,7 @@ async fn reload_persona(state: &Arc<ReplState>, input_tx: &mpsc::Sender<AgentInp
     ) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[error] {e}");
+            raw_eprintln(raw_mode, &format!("[error] {e}"));
             return;
         }
     };
@@ -1230,23 +1487,23 @@ async fn reload_persona(state: &Arc<ReplState>, input_tx: &mpsc::Sender<AgentInp
         *guard = resolution.persona;
     }
     if let Err(e) = input_tx.send(AgentInput::SetSystemPrompt(prompt)).await {
-        eprintln!("[error] {e}");
+        raw_eprintln(raw_mode, &format!("[error] {e}"));
         return;
     }
     let p = state.persona.read().await;
-    println!(
+    raw_println(raw_mode, &format!(
         "persona reloaded from {}",
         match &p.source_path {
             Some(path) => path.display().to_string(),
             None => "(builtin default)".to_string(),
         }
-    );
+    ));
 }
 
-fn peer_summary(arg: &str, registry_dir: &Path) {
+fn peer_summary(arg: &str, registry_dir: &Path, raw_mode: bool) {
     let key = arg.trim();
     if key.is_empty() {
-        eprintln!("usage: /peer <id_or_name>");
+        raw_eprintln(raw_mode, "usage: /peer <id_or_name>");
         return;
     }
     match crate::ipc::registry::resolve_peer(registry_dir, key) {
@@ -1270,7 +1527,7 @@ fn peer_summary(arg: &str, registry_dir: &Path) {
                 println!("(no persona summary)");
             }
         }
-        Err(e) => eprintln!("[error] {e}"),
+        Err(e) => raw_eprintln(raw_mode, &format!("[error] {e}")),
     }
 }
 
@@ -1834,5 +2091,186 @@ mod tests {
         }
 
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    // --- Wrap-aware cursor layout (FR-01/FR-02/FR-03) ---
+
+    #[test]
+    fn layout_cursor_ascii_no_wrap() {
+        // prompt "> " (2) + "abc" (3); cursor after "abc" (3). width 80.
+        // total=5, cursor_abs=5 -> row 0, col 5.
+        let (end_row, row, col) = layout_cursor(2, 3, 5, 80);
+        assert_eq!((end_row, row, col), (0, 0, 5));
+    }
+
+    #[test]
+    fn layout_cursor_cjk_no_wrap() {
+        // prompt "> " (2) + "あいう" (6); cursor after first char (display 2).
+        // total=8, cursor_abs=2+2=4 -> row 0, col 4. Confirms width-based math.
+        let (end_row, row, col) = layout_cursor(2, 2, 8, 80);
+        assert_eq!((end_row, row, col), (0, 0, 4));
+    }
+
+    #[test]
+    fn layout_cursor_just_before_boundary() {
+        // width 10, total content 9 columns, cursor at end (9).
+        // total%w != 0 -> end_row = 0; cursor row 0 col 9.
+        let (end_row, row, col) = layout_cursor(2, 7, 9, 10);
+        assert_eq!((end_row, row, col), (0, 0, 9));
+    }
+
+    #[test]
+    fn layout_cursor_exactly_fills_width() {
+        // width 10, total content exactly 10 columns, cursor at end (10).
+        // Phantom last column: end_row = 0 (cursor stays on row 0).
+        // cursor_abs=10 -> cursor_row = 1, col 0 (fresh wrapped row).
+        let (end_row, row, col) = layout_cursor(2, 8, 10, 10);
+        assert_eq!((end_row, row, col), (0, 1, 0));
+    }
+
+    #[test]
+    fn layout_cursor_wraps_past_boundary() {
+        // width 10, total 23 columns, cursor at end (23).
+        // end_row = 23/10 = 2; cursor row 2, col 3.
+        let (end_row, row, col) = layout_cursor(2, 21, 23, 10);
+        assert_eq!((end_row, row, col), (2, 2, 3));
+    }
+
+    #[test]
+    fn layout_cursor_midline_on_wrapped_row() {
+        // width 10, total 23, cursor at absolute column 12 -> row 1, col 2.
+        let (end_row, row, col) = layout_cursor(2, 10, 23, 10);
+        assert_eq!((end_row, row, col), (2, 1, 2));
+    }
+
+    #[test]
+    fn layout_cursor_zero_width_terminal_is_safe() {
+        // width 0 is clamped to 1; must not divide by zero.
+        let (_end_row, _row, _col) = layout_cursor(2, 0, 2, 0);
+    }
+
+    #[test]
+    fn layout_cursor_empty_line() {
+        // Empty prompt + empty line.
+        let (end_row, row, col) = layout_cursor(0, 0, 0, 80);
+        assert_eq!((end_row, row, col), (0, 0, 0));
+    }
+
+    // --- handle_key control-key behavior (FR-07/FR-08) ---
+
+    fn key(code: KeyCode, ctrl: bool) -> KeyEvent {
+        let mods = if ctrl {
+            KeyModifiers::CONTROL
+        } else {
+            KeyModifiers::NONE
+        };
+        KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn ctrl_c_on_empty_line_signals_eof() {
+        // Raw mode suppresses SIGINT, so Ctrl-C on an empty line must exit.
+        let mut s = InputState::new();
+        let action = handle_key(key(KeyCode::Char('c'), true), &mut s, &[]);
+        assert!(matches!(action, Some(KeyAction::Eof)));
+    }
+
+    #[test]
+    fn ctrl_c_with_text_clears_line() {
+        // Ctrl-C with pending text clears the line instead of exiting.
+        let mut s = InputState::new();
+        s.insert_char('h');
+        s.insert_char('i');
+        let action = handle_key(key(KeyCode::Char('c'), true), &mut s, &[]);
+        assert!(matches!(action, Some(KeyAction::ClearLine)));
+        assert_eq!(s.line, "");
+    }
+
+    #[test]
+    fn ctrl_d_on_empty_line_signals_eof() {
+        let mut s = InputState::new();
+        let action = handle_key(key(KeyCode::Char('d'), true), &mut s, &[]);
+        assert!(matches!(action, Some(KeyAction::Eof)));
+    }
+
+    #[test]
+    fn esc_when_not_browsing_clears_line() {
+        let mut s = InputState::new();
+        s.insert_char('x');
+        let action = handle_key(key(KeyCode::Esc, false), &mut s, &[]);
+        assert!(matches!(action, Some(KeyAction::ClearLine)));
+        assert_eq!(s.line, "");
+    }
+
+    // --- First-section-header newline suppression (FR-15 / Defect #7) ---
+
+    #[test]
+    fn first_section_header_has_no_leading_newline() {
+        // First header of a turn sits directly under the echoed input.
+        assert_eq!(section_header_text("[answer]", false), "[answer]");
+        assert_eq!(section_header_text("[thinking]", false), "[thinking]");
+    }
+
+    #[test]
+    fn subsequent_section_headers_keep_leading_newline() {
+        // Later headers separate from preceding streamed content.
+        assert_eq!(section_header_text("[answer]", true), "\n[answer]");
+    }
+
+    #[test]
+    fn display_state_section_flag_resets_each_turn() {
+        let mut s = DisplayState::new(false);
+        assert!(!s.section_printed);
+        s.section_header("[answer]");
+        assert!(s.section_printed);
+        s.reset();
+        assert!(!s.section_printed);
+    }
+
+    #[test]
+    fn esc_when_browsing_exits_history_and_restores_draft() {
+        let history = vec!["old".to_string()];
+        let mut s = InputState::new();
+        s.insert_char('d');
+        s.navigate_up(&history);
+        assert_eq!(s.line, "old");
+        let action = handle_key(key(KeyCode::Esc, false), &mut s, &history);
+        assert!(matches!(action, Some(KeyAction::Continue)));
+        assert_eq!(s.line, "d"); // draft restored
+        assert!(s.history_index.is_none());
+    }
+
+    // --- Pending-state cancel key classification ---
+
+    #[test]
+    fn is_cancel_key_esc_returns_true() {
+        assert!(is_cancel_key(&key(KeyCode::Esc, false)));
+    }
+
+    #[test]
+    fn is_cancel_key_ctrl_c_returns_true() {
+        assert!(is_cancel_key(&key(KeyCode::Char('c'), true)));
+    }
+
+    #[test]
+    fn is_cancel_key_other_keys_return_false() {
+        assert!(!is_cancel_key(&key(KeyCode::Char('a'), false)));
+        assert!(!is_cancel_key(&key(KeyCode::Char('c'), false)));
+        assert!(!is_cancel_key(&key(KeyCode::Enter, false)));
+        assert!(!is_cancel_key(&key(KeyCode::Backspace, false)));
+        assert!(!is_cancel_key(&key(KeyCode::Char('d'), true)));
+    }
+
+    #[test]
+    fn handle_key_eof_on_empty_line_is_state_independent() {
+        // handle_key is stateless — it does not know about PromptState.
+        // Ctrl-C on empty line always returns Eof regardless of caller state.
+        let mut s = InputState::new();
+        let action = handle_key(key(KeyCode::Char('c'), true), &mut s, &[]);
+        assert!(matches!(action, Some(KeyAction::Eof)));
+        // Verify it does not depend on history content
+        let mut s2 = InputState::new();
+        let action2 = handle_key(key(KeyCode::Char('c'), true), &mut s2, &["cmd".to_string()]);
+        assert!(matches!(action2, Some(KeyAction::Eof)));
     }
 }

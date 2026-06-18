@@ -8,7 +8,7 @@
 
 - Standalone — no tmux required. Just run `agent-cli` (the no-arg form is equivalent to `agent-cli run`).
 - Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch (does not call out to the `claude` CLI).
-- Five backends: `claude` / `codex` / `ollama` / `opencode` / `llama.cpp`.
+- Six backends: `claude` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
 - Built-in tools: `shell` / `fs_read` / `fs_write` / `send_to`. Approval mode can be flipped at runtime with `/auto on`.
@@ -27,6 +27,7 @@
 | codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
 | opencode | OpenCode — dual mode (see below) | `claude-sonnet-4-5` |
+| opencode-go | OpenCode Go cloud (auto-configured shortcut) | `claude-sonnet-4-5` |
 | llama.cpp | OpenAI-compatible `/v1/chat/completions` (SSE) | `default` |
 
 `opencode` selects its mode by API-key presence:
@@ -43,6 +44,12 @@
   `base_url`, e.g. the "go" endpoints `https://opencode.ai/zen/go/v1`. See
   [`doc/providers/opencode.md`](doc/providers/opencode.md).
 
+**`opencode-go`** is a convenience alias for OpenCode with Go-specific defaults
+already filled in. Set `kind = "opencode-go"` and `api_key_env` only — the
+`base_url` (`https://opencode.ai/zen/go/v1`), `api` (`"anthropic"`), and
+`model` (`claude-sonnet-4-5`) are auto-populated. You can still override any
+field in `[provider.opencode]`. See the configuration example below.
+
 The mandatory verification targets are `claude` and `ollama` (with model `glm-5.1:cloud`).
 
 | Capability | claude | codex | ollama | opencode | llama.cpp |
@@ -50,6 +57,8 @@ The mandatory verification targets are `claude` and `ollama` (with model `glm-5.
 | Streaming  | ✓ | ✓ | ✓ | ✓ (cloud SSE; local buffered) | ✓ |
 | Tool use   | ✓ | ✓ (function calling) | ✓ (model-dependent) | ✓ cloud / ✗ local (v1) | ✓ (server-build dependent) |
 | Thinking   | ✓ (`thinking_delta`) | ✗ | ✓ (model-dependent, `message.thinking`) | ✗ | ✗ |
+
+`opencode-go` has the same capabilities as `opencode` (cloud mode); it is a config shortcut, not a separate backend.
 
 ## Install
 
@@ -175,6 +184,17 @@ model    = "claude-sonnet-4-5"
 # api_key_env = "OPENCODE_API_KEY"
 # api         = "anthropic"   # cloud wire format: "openai" (default) | "anthropic";
 #                             # pair with the matching base_url, e.g. .../zen/go/v1
+```
+
+**opencode-go** — convenience kind for OpenCode Go cloud. Auto-fills `base_url`, `api`, and `model`:
+
+```toml
+[provider]
+kind = "opencode-go"
+
+[provider.opencode]
+api_key_env = "OPENCODE_API_KEY"   # only required field
+# base_url, api, and model are auto-populated; override in [provider.opencode] if needed
 ```
 
 **llama.cpp** — OpenAI-compatible `/v1/chat/completions` of a `llama-server`. Quote `"llama.cpp"` because the TOML key contains a dot. Sampling knobs mirror the `llama-cli` flags and are all optional (omit any → the server's own default):

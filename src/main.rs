@@ -67,8 +67,8 @@ async fn run() -> Result<()> {
             commands::providers(&cfg).await
         }
         Command::Doctor => {
-            let cfg = config::load(&source)?;
-            commands::doctor(&cfg, &source).await
+            let mut cfg = config::load(&source)?;
+            commands::doctor(&mut cfg, &source).await
         }
         Command::Selftest { provider } => {
             let cfg = config::load(&source)?;
