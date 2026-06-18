@@ -62,6 +62,10 @@ async fn run() -> Result<()> {
             let cfg = config::load(&source)?;
             commands::send(&cfg, &peer, &text).await
         }
+        Command::Ask { peer, text, timeout } => {
+            let cfg = config::load(&source)?;
+            commands::ask(&cfg, &peer, &text, timeout).await
+        }
         Command::Providers => {
             let cfg = config::load(&source)?;
             commands::providers(&cfg).await
