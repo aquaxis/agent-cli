@@ -38,6 +38,17 @@ pub enum Command {
         text: String,
     },
 
+    /// Send a prompt to a running peer and print the response
+    Ask {
+        /// Destination agent-id or display name
+        peer: String,
+        /// Prompt text to send
+        text: String,
+        /// Reply timeout in seconds (default: 120)
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+    },
+
     /// Show available backends and configuration status
     Providers,
 
@@ -111,6 +122,7 @@ mod tests {
             "doctor",
             "selftest",
             "config",
+            "ask",
         ] {
             assert!(
                 names.iter().any(|n| n == required),
@@ -189,6 +201,34 @@ mod tests {
                 Some(Command::Config { .. }) => {}
                 other => panic!("expected Config, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn cli_parses_ask_subcommand() {
+        let cli = Cli::try_parse_from(["agent-cli", "ask", "alice", "hello"])
+            .expect("parse ask");
+        match cli.command {
+            Some(Command::Ask { peer, text, timeout }) => {
+                assert_eq!(peer, "alice");
+                assert_eq!(text, "hello");
+                assert_eq!(timeout, 120);
+            }
+            other => panic!("expected Ask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_ask_with_timeout() {
+        let cli = Cli::try_parse_from(["agent-cli", "ask", "--timeout", "30", "alice", "hi"])
+            .expect("parse ask with timeout");
+        match cli.command {
+            Some(Command::Ask { peer, text, timeout }) => {
+                assert_eq!(peer, "alice");
+                assert_eq!(text, "hi");
+                assert_eq!(timeout, 30);
+            }
+            other => panic!("expected Ask, got {other:?}"),
         }
     }
 }

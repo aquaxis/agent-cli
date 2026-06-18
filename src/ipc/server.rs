@@ -88,7 +88,7 @@ async fn handle_conn(stream: tokio::net::UnixStream, tx: mpsc::Sender<IpcMessage
         match serde_json::from_str::<IpcMessage>(&line) {
             Ok(msg) => {
                 let response = match &msg {
-                    IpcMessage::Prompt { .. } => Some(IpcMessage::Ack { id: 0 }),
+                    IpcMessage::Prompt { .. } | IpcMessage::PromptReply { .. } => Some(IpcMessage::Ack { id: 0 }),
                     IpcMessage::Ping => Some(IpcMessage::Pong),
                     _ => None,
                 };
@@ -134,6 +134,7 @@ mod tests {
             from: from.clone(),
             from_name: Some("tester".into()),
             text: "hello".into(),
+            reply_to: None,
         };
         let resp = client::send(&path, &msg).await.unwrap();
         assert!(matches!(resp, IpcMessage::Ack { .. }));
@@ -162,5 +163,34 @@ mod tests {
             "socket file should be removed by Drop, but {} still exists",
             path.display()
         );
+    }
+
+    #[tokio::test]
+    async fn server_responds_ack_to_prompt_reply() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("reply_test.sock");
+        let mut server = IpcServer::bind(path.clone()).await.unwrap();
+        let mut rx = server.take_rx().expect("rx not taken yet");
+
+        let msg = IpcMessage::PromptReply {
+            from: AgentId::new(),
+            text: "hello reply".into(),
+        };
+        let resp = client::send(&path, &msg).await.unwrap();
+        assert!(
+            matches!(resp, IpcMessage::Ack { .. }),
+            "expected Ack for PromptReply, got {:?}",
+            resp
+        );
+
+        // Verify the PromptReply is forwarded to the channel
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("recv timeout")
+            .expect("channel closed");
+        match received {
+            IpcMessage::PromptReply { text, .. } => assert_eq!(text, "hello reply"),
+            other => panic!("unexpected message: {:?}", other),
+        }
     }
 }

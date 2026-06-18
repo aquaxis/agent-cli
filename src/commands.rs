@@ -69,6 +69,7 @@ pub async fn send(cfg: &Config, peer: &str, text: &str) -> Result<()> {
         from: me,
         from_name: Some("cli-send".into()),
         text: text.to_string(),
+        reply_to: None,
     };
     match client::send(&target.socket, &msg).await? {
         IpcMessage::Ack { .. } => {
@@ -78,6 +79,60 @@ pub async fn send(cfg: &Config, peer: &str, text: &str) -> Result<()> {
         IpcMessage::Error { message } => Err(AppError::ipc(message)),
         other => Err(AppError::ipc(format!("unexpected response: {:?}", other))),
     }
+}
+
+pub async fn ask_and_receive(
+    cfg: &Config,
+    peer: &str,
+    text: &str,
+    timeout_secs: u64,
+) -> Result<String> {
+    use crate::ipc::server::IpcServer;
+
+    let dir = cfg.registry_dir()?;
+    let target = registry::resolve_peer(&dir, peer)?;
+    let me = AgentId::new();
+
+    let reply_dir = tempfile::tempdir()?;
+    let reply_socket = reply_dir.path().join("reply.sock");
+    let mut reply_server = IpcServer::bind(reply_socket.clone()).await?;
+    let mut reply_rx = reply_server.take_rx().expect("rx available after bind");
+
+    let msg = IpcMessage::Prompt {
+        from: me,
+        from_name: Some("cli-ask".into()),
+        text: text.to_string(),
+        reply_to: Some(reply_socket.clone()),
+    };
+    match client::send(&target.socket, &msg).await? {
+        IpcMessage::Ack { .. } => {}
+        IpcMessage::Error { message } => return Err(AppError::ipc(message)),
+        other => return Err(AppError::ipc(format!("unexpected response: {:?}", other))),
+    }
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        reply_rx.recv(),
+    )
+    .await;
+
+    drop(reply_server);
+    drop(reply_dir);
+
+    match result {
+        Ok(Some(IpcMessage::PromptReply { text, .. })) => Ok(text),
+        Ok(Some(other)) => Err(AppError::ipc(format!("unexpected reply: {:?}", other))),
+        Ok(None) => Err(AppError::ipc("reply channel closed without response")),
+        Err(_) => Err(AppError::ipc(format!(
+            "timed out waiting for reply after {timeout_secs}s"
+        ))),
+    }
+}
+
+pub async fn ask(cfg: &Config, peer: &str, text: &str, timeout_secs: u64) -> Result<()> {
+    let response = ask_and_receive(cfg, peer, text, timeout_secs).await?;
+    println!("{}", response);
+    Ok(())
 }
 
 pub async fn providers(cfg: &Config) -> Result<()> {
@@ -481,6 +536,7 @@ enabled = []
             from: crate::id::AgentId::new(),
             from_name: Some("selftest-driver".into()),
             text: "selftest-prompt".into(),
+            reply_to: None,
         },
     )
     .await;
@@ -608,6 +664,7 @@ async fn stage_subprocess_ai_response(cfg: &Config) -> Result<()> {
         from: crate::id::AgentId::new(),
         from_name: Some("selftest-driver".into()),
         text: "Reply with a single word: HELLO".into(),
+        reply_to: None,
     };
     let send_resp = client::send(&entry.socket, &prompt_msg).await;
 
@@ -688,4 +745,184 @@ pub fn config_edit(source: &ConfigSource) -> Result<()> {
         return Err(AppError::Other("editor exited with non-zero status".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ipc::server::IpcServer;
+    use crate::ipc::IpcMessage;
+    use crate::ipc::registry::RegistryEntry;
+    use chrono::Utc;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// Write a registry entry JSON file manually (without RegistryHandle, so it
+    /// is not cleaned up by Drop when the setup function returns).
+    fn write_registry_entry(dir: &PathBuf, entry: &RegistryEntry) {
+        let meta_path = dir.join(format!("{}.json", entry.id.as_str()));
+        let raw = serde_json::to_vec_pretty(entry).unwrap();
+        std::fs::write(&meta_path, raw).unwrap();
+    }
+
+    /// Create a mock peer that receives a Prompt and sends a PromptReply
+    /// back to the specified reply_to socket.
+    async fn setup_mock_peer(
+        registry_dir: &PathBuf,
+        name: &str,
+        reply_text: &str,
+    ) -> RegistryEntry {
+        let id = AgentId::new();
+        let socket_path = registry_dir.join(format!("{}.sock", id.as_str()));
+        let mut server = IpcServer::bind(socket_path.clone()).await.unwrap();
+        let mut rx = server.take_rx().unwrap();
+
+        let reply_text = reply_text.to_string();
+        tokio::spawn(async move {
+            let _server = server;
+            if let Some(msg) = rx.recv().await {
+                if let IpcMessage::Prompt {
+                    reply_to: Some(reply_socket),
+                    ..
+                } = msg
+                {
+                    let reply = IpcMessage::PromptReply {
+                        from: AgentId::new(),
+                        text: reply_text,
+                    };
+                    let _ = client::send(&reply_socket, &reply).await;
+                }
+            }
+        });
+
+        let entry = RegistryEntry {
+            id: id.clone(),
+            name: Some(name.into()),
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            provider: "mock".into(),
+            model: "mock".into(),
+            socket: socket_path,
+            persona: None,
+        };
+        write_registry_entry(registry_dir, &entry);
+        entry
+    }
+
+    #[tokio::test]
+    async fn ask_and_receive_with_mock_peer() {
+        let dir = TempDir::new().unwrap();
+        let registry_dir = dir.path().to_path_buf();
+        std::fs::create_dir_all(&registry_dir).unwrap();
+
+        let _entry = setup_mock_peer(&registry_dir, "mock-ask-peer", "HELLO from mock").await;
+
+        // Build a minimal config pointing to the temp registry dir
+        let cfg: Config = toml::from_str(&format!(
+            r#"[provider]
+kind = "ollama"
+
+[provider.ollama]
+model = "test"
+
+[runtime]
+registry_dir = {:?}
+"#,
+            registry_dir.display().to_string()
+        ))
+        .unwrap();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            ask_and_receive(&cfg, "mock-ask-peer", "Reply with HELLO", 30),
+        )
+        .await
+        .expect("ask_and_receive timeout");
+
+        assert!(result.is_ok(), "ask_and_receive should succeed: {:?}", result.err());
+        assert_eq!(result.unwrap(), "HELLO from mock");
+    }
+
+    #[tokio::test]
+    async fn ask_and_receive_times_out() {
+        let dir = TempDir::new().unwrap();
+        let registry_dir = dir.path().to_path_buf();
+        std::fs::create_dir_all(&registry_dir).unwrap();
+
+        // Create a mock peer that does NOT send a reply
+        let id = AgentId::new();
+        let socket_path = registry_dir.join(format!("{}.sock", id.as_str()));
+        let mut server = IpcServer::bind(socket_path.clone()).await.unwrap();
+        let mut rx = server.take_rx().unwrap();
+        tokio::spawn(async move {
+            let _server = server;
+            // Consume the message but don't reply
+            let _ = rx.recv().await;
+        });
+
+        let entry = RegistryEntry {
+            id: id.clone(),
+            name: Some("silent-peer".into()),
+            pid: std::process::id(),
+            started_at: Utc::now(),
+            provider: "mock".into(),
+            model: "mock".into(),
+            socket: socket_path,
+            persona: None,
+        };
+        write_registry_entry(&registry_dir, &entry);
+
+        let cfg: Config = toml::from_str(&format!(
+            r#"[provider]
+kind = "ollama"
+
+[provider.ollama]
+model = "test"
+
+[runtime]
+registry_dir = {:?}
+"#,
+            registry_dir.display().to_string()
+        ))
+        .unwrap();
+
+        // Use a 1-second timeout — should time out
+        let result = ask_and_receive(&cfg, "silent-peer", "hello", 1).await;
+
+        assert!(result.is_err(), "ask_and_receive should time out");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("timed out"),
+            "error should mention timeout, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_and_receive_peer_not_found() {
+        let dir = TempDir::new().unwrap();
+        let registry_dir = dir.path().to_path_buf();
+        std::fs::create_dir_all(&registry_dir).unwrap();
+
+        let cfg: Config = toml::from_str(&format!(
+            r#"[provider]
+kind = "ollama"
+
+[provider.ollama]
+model = "test"
+
+[runtime]
+registry_dir = {:?}
+"#,
+            registry_dir.display().to_string()
+        ))
+        .unwrap();
+
+        let result = ask_and_receive(&cfg, "nonexistent-peer", "hello", 5).await;
+        assert!(result.is_err(), "should error for non-existent peer");
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "error should mention peer not found"
+        );
+    }
 }

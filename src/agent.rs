@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::stream::StreamExt;
@@ -29,6 +30,7 @@ pub enum AgentInput {
         from: AgentId,
         from_name: Option<String>,
         text: String,
+        reply_to: Option<PathBuf>,
     },
     SetSystemPrompt(String),
     /// Initialize conversation history (keep only system prompt, remove all User/Assistant/ToolResult).
@@ -107,6 +109,7 @@ impl Agent {
                     from,
                     from_name,
                     text,
+                    reply_to,
                 } => {
                     if let Some(l) = &log {
                         l.write(LogEvent::PeerPrompt {
@@ -121,6 +124,7 @@ impl Agent {
                         None => format!("[peer prompt from {}]", from.as_str()),
                     };
                     let combined = format!("{header}\n{text}");
+                    let history_len_before = self.history.len();
                     self.history.push(Message::User { content: combined });
                     let _ = event_tx
                         .send(AgentEvent::Info {
@@ -128,6 +132,37 @@ impl Agent {
                         })
                         .await;
                     self.process_turn(&event_tx, log.as_ref()).await?;
+
+                    if let Some(reply_socket) = reply_to {
+                        let response_text: String = self.history[history_len_before..]
+                            .iter()
+                            .filter_map(|m| match m {
+                                Message::Assistant { content, .. } if !content.is_empty() => {
+                                    Some(content.as_str())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let response_text = if response_text.is_empty() {
+                            "(no text response)".to_string()
+                        } else {
+                            response_text
+                        };
+                        let reply = crate::ipc::IpcMessage::PromptReply {
+                            from: self.id.clone(),
+                            text: response_text,
+                        };
+                        if let Err(e) =
+                            crate::ipc::client::send(&reply_socket, &reply).await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "failed to send PromptReply to {}",
+                                reply_socket.display()
+                            );
+                        }
+                    }
                 }
                 AgentInput::SetSystemPrompt(prompt) => {
                     if matches!(self.history.first(), Some(Message::System { .. })) {
@@ -1068,6 +1103,241 @@ mod tests {
         );
 
         drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// Task 3: Agent sends a PromptReply when reply_to is set.
+    #[tokio::test]
+    async fn agent_sends_reply_for_peer_prompt_with_reply_to() {
+        use crate::ipc::server::IpcServer;
+
+        let scripts = vec![vec![
+            ProviderEvent::Text {
+                delta: "hello reply".into(),
+            },
+            ProviderEvent::Done,
+        ]];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = build_test_agent(scripts, history);
+
+        // Create a temporary reply socket
+        let reply_dir = tempfile::TempDir::new().unwrap();
+        let reply_socket = reply_dir.path().join("reply.sock");
+        let mut reply_server = IpcServer::bind(reply_socket.clone()).await.unwrap();
+        let mut reply_rx = reply_server.take_rx().expect("rx available after bind");
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("tester".into()),
+                text: "hello".into(),
+                reply_to: Some(reply_socket),
+            })
+            .await
+            .unwrap();
+
+        // Consume events until Done
+        while let Some(ev) = ev_rx.recv().await {
+            if matches!(ev, AgentEvent::Done) {
+                break;
+            }
+        }
+
+        // Verify the PromptReply arrives on the reply socket
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx.recv())
+            .await
+            .expect("recv timeout")
+            .expect("channel closed");
+        match received {
+            crate::ipc::IpcMessage::PromptReply { text, .. } => {
+                assert_eq!(text, "hello reply");
+            }
+            other => panic!("expected PromptReply, got {:?}", other),
+        }
+
+        drop(in_tx);
+        drop(reply_server);
+        let _ = handle.await;
+    }
+
+    /// Task 3: Agent does not send a reply when reply_to is None.
+    #[tokio::test]
+    async fn agent_does_not_send_reply_for_peer_prompt_without_reply_to() {
+        use crate::ipc::server::IpcServer;
+
+        let scripts = vec![vec![
+            ProviderEvent::Text {
+                delta: "hello no reply".into(),
+            },
+            ProviderEvent::Done,
+        ]];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = build_test_agent(scripts, history);
+
+        // Create a temporary reply socket to verify nothing arrives
+        let reply_dir = tempfile::TempDir::new().unwrap();
+        let reply_socket = reply_dir.path().join("reply.sock");
+        let mut reply_server = IpcServer::bind(reply_socket.clone()).await.unwrap();
+        let mut reply_rx = reply_server.take_rx().expect("rx available after bind");
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("tester".into()),
+                text: "hello".into(),
+                reply_to: None,
+            })
+            .await
+            .unwrap();
+
+        // Consume events until Done
+        while let Some(ev) = ev_rx.recv().await {
+            if matches!(ev, AgentEvent::Done) {
+                break;
+            }
+        }
+
+        // Verify no PromptReply arrives (timeout returns None)
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(500), reply_rx.recv()).await;
+        assert!(
+            result.is_err() || matches!(result, Ok(None)),
+            "no PromptReply should be sent when reply_to is None"
+        );
+
+        drop(in_tx);
+        drop(reply_server);
+        let _ = handle.await;
+    }
+
+    /// Task 3: Agent reply includes all assistant text from multi-iteration turns.
+    #[tokio::test]
+    async fn agent_reply_includes_all_assistant_text() {
+        use crate::ipc::server::IpcServer;
+
+        // Turn 1: text "part1" + tool call
+        // Turn 2: text "part2" + Done
+        let scripts = vec![
+            vec![
+                ProviderEvent::Text {
+                    delta: "part1".into(),
+                },
+                ProviderEvent::ToolUse {
+                    id: "call-1".into(),
+                    name: "shell".into(),
+                    args: serde_json::json!({"cmd": "echo ok"}),
+                },
+                ProviderEvent::Done,
+            ],
+            vec![
+                ProviderEvent::Text {
+                    delta: "part2".into(),
+                },
+                ProviderEvent::Done,
+            ],
+        ];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = build_test_agent(scripts, history);
+
+        let reply_dir = tempfile::TempDir::new().unwrap();
+        let reply_socket = reply_dir.path().join("reply.sock");
+        let mut reply_server = IpcServer::bind(reply_socket.clone()).await.unwrap();
+        let mut reply_rx = reply_server.take_rx().expect("rx available after bind");
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("tester".into()),
+                text: "hello".into(),
+                reply_to: Some(reply_socket),
+            })
+            .await
+            .unwrap();
+
+        // Consume events until Done
+        while let Some(ev) = ev_rx.recv().await {
+            if matches!(ev, AgentEvent::Done) {
+                break;
+            }
+        }
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx.recv())
+            .await
+            .expect("recv timeout")
+            .expect("channel closed");
+        match received {
+            crate::ipc::IpcMessage::PromptReply { text, .. } => {
+                assert_eq!(text, "part1\npart2");
+            }
+            other => panic!("expected PromptReply, got {:?}", other),
+        }
+
+        drop(in_tx);
+        drop(reply_server);
+        let _ = handle.await;
+    }
+
+    /// Task 3: Agent reply for empty response is "(no text response)".
+    #[tokio::test]
+    async fn agent_reply_for_empty_response() {
+        use crate::ipc::server::IpcServer;
+
+        // Turn with only Done (no text)
+        let scripts = vec![vec![ProviderEvent::Done]];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = build_test_agent(scripts, history);
+
+        let reply_dir = tempfile::TempDir::new().unwrap();
+        let reply_socket = reply_dir.path().join("reply.sock");
+        let mut reply_server = IpcServer::bind(reply_socket.clone()).await.unwrap();
+        let mut reply_rx = reply_server.take_rx().expect("rx available after bind");
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("tester".into()),
+                text: "hello".into(),
+                reply_to: Some(reply_socket),
+            })
+            .await
+            .unwrap();
+
+        // Consume events until Done
+        while let Some(ev) = ev_rx.recv().await {
+            if matches!(ev, AgentEvent::Done) {
+                break;
+            }
+        }
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx.recv())
+            .await
+            .expect("recv timeout")
+            .expect("channel closed");
+        match received {
+            crate::ipc::IpcMessage::PromptReply { text, .. } => {
+                assert_eq!(text, "(no text response)");
+            }
+            other => panic!("expected PromptReply, got {:?}", other),
+        }
+
+        drop(in_tx);
+        drop(reply_server);
         let _ = handle.await;
     }
 }

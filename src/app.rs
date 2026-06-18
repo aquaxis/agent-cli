@@ -277,9 +277,9 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
                 tokio::select! {
                     res = ipc_rx.recv() => {
                         match res {
-                            Some(IpcMessage::Prompt { from, from_name, text }) => {
+                            Some(IpcMessage::Prompt { from, from_name, text, reply_to }) => {
                                 if input_tx_for_ipc
-                                    .send(AgentInput::PeerPrompt { from, from_name, text })
+                                    .send(AgentInput::PeerPrompt { from, from_name, text, reply_to })
                                     .await
                                     .is_err()
                                 {
@@ -1429,6 +1429,7 @@ async fn send_to_peer(arg: &str, registry_dir: &Path, raw_mode: bool) {
                 from: p.id.clone(),
                 from_name: None,
                 text: text.to_string(),
+                reply_to: None,
             };
             if let Err(e) = crate::ipc::client::send(&p.socket, &msg).await {
                 raw_eprintln(raw_mode, &format!("[error] {e}"));
