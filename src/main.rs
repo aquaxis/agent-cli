@@ -7,6 +7,7 @@ mod app;
 mod cli;
 mod commands;
 mod config;
+mod custom_commands;
 mod error;
 mod editor;
 mod history;

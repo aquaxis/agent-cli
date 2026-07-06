@@ -76,7 +76,7 @@ base_url = "http://gpu-server.local:11434"
 ## Known Limitations
 
 - `tool_calls` JSON formats may vary between models. If errors occur, retry without tools.
-- Large models may exceed the 180-second timeout. For long-generation scenarios, also review `[tools.shell] timeout_secs`.
+- Large models may exceed the 180-second timeout. For long-generation scenarios, also review `[tools.bash] timeout_ms`.
 
 ## Troubleshooting
 

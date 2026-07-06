@@ -321,8 +321,8 @@ pub async fn selftest(
         }
     }
 
-    println!("[selftest] stage 2 (tool execution: shell)");
-    if let Err(e) = stage_shell_tool(&cfg).await {
+    println!("[selftest] stage 2 (tool execution: bash)");
+    if let Err(e) = stage_bash_tool(&cfg).await {
         println!("[selftest]   FAIL ({e})");
         all_ok = false;
     }
@@ -403,32 +403,33 @@ async fn stage_provider_ok(cfg: &mut Config, source: &ConfigSource) -> Result<()
     Ok(())
 }
 
-async fn stage_shell_tool(cfg: &Config) -> Result<()> {
+async fn stage_bash_tool(cfg: &Config) -> Result<()> {
     use crate::tools::{ToolCtx, ToolRegistry};
     let tools = ToolRegistry::build(cfg, None, None);
     let tool = tools
-        .get("shell")
-        .ok_or_else(|| AppError::Other("shell tool is not enabled".into()))?;
+        .get("bash")
+        .ok_or_else(|| AppError::Other("bash tool is not enabled".into()))?;
     let ctx = ToolCtx {
         self_id: crate::id::AgentId::new(),
         registry_dir: std::path::PathBuf::from("/tmp/agent-cli-selftest-noop"),
+        event_tx: None,
     };
     let out = tool
-        .invoke(serde_json::json!({"cmd": "echo selftest"}), &ctx)
+        .invoke(serde_json::json!({"command": "echo selftest"}), &ctx)
         .await?;
     if !out.ok {
         return Err(AppError::Other(format!(
-            "shell tool returned failure: {}",
+            "bash tool returned failure: {}",
             out.content
         )));
     }
     if !out.content.contains("selftest") {
         return Err(AppError::Other(format!(
-            "shell tool did not echo selftest: {}",
+            "bash tool did not echo selftest: {}",
             out.content
         )));
     }
-    println!("[selftest]   stage 2 ok (shell tool executed)");
+    println!("[selftest]   stage 2 ok (bash tool executed)");
     Ok(())
 }
 

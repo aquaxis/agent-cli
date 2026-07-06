@@ -11,10 +11,10 @@
 - Six backends: `claude` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
-- Built-in tools: `shell` / `fs_read` / `fs_write` / `send_to`. Approval mode can be flipped at runtime with `/auto on`.
+- Built-in tools: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`. Approval mode can be flipped at runtime with `/auto on`.
 - Streaming responses are synchronized with the REPL prompt so a fresh `> ` is always redrawn after the response completes.
 - Reliable shutdown — any of `/quit`, `/exit`, `Ctrl+D`, `Ctrl+C`, or `SIGTERM` exits within ~1 s and cleans up the IPC socket and registry metadata automatically.
-- Self-diagnostics with `agent-cli doctor` and a 5-stage smoke test with `agent-cli selftest` (Provider OK / shell tool / IPC / subprocess registration / subprocess AI response).
+- Self-diagnostics with `agent-cli doctor` and a 5-stage smoke test with `agent-cli selftest` (Provider OK / bash tool / IPC / subprocess registration / subprocess AI response).
 - Configurable tool-use loop cap via `[runtime] max_tool_iterations` (default 24, max `u32::MAX`) — see "[info] max tool-use iterations reached" below.
 - Ollama `message.thinking` field is decoded as `[thinking]` for thinking-capable models such as `glm-5.1:cloud`.
 - Opt-in context-efficiency features (all default OFF): Claude prompt caching, opencode local persistent session, and hybrid history-window management (summarize-then-drop). See [`doc/config.md`](doc/config.md) §11.
@@ -275,7 +275,7 @@ User prompts are persisted to `<runtime.log_dir>/history.txt` (last 200 entries)
 
 ### Skipping tool approval
 
-Tool invocations (shell, fs_*, send_to) request a y/N approval by default. There are three ways to skip approval:
+Tool invocations (bash, read, write, send_to, edit, glob, grep, monitor, websearch, webfetch) request a y/N approval by default. There are three ways to skip approval:
 
 | Method | Example |
 |--------|---------|
@@ -338,7 +338,7 @@ cargo clippy --all-targets -- -D warnings
 # Self-diagnostics
 agent-cli doctor
 
-# Smoke test (5 stages: provider OK / shell / IPC / subprocess / subprocess AI response)
+# Smoke test (5 stages: provider OK / bash / IPC / subprocess / subprocess AI response)
 agent-cli selftest --provider claude
 agent-cli selftest --provider ollama
 
@@ -346,7 +346,7 @@ agent-cli selftest --provider ollama
 scripts/manual_acceptance.sh
 ```
 
-Stage 1 of `selftest` requires a live backend. Stages 2–4 (shell tool, IPC roundtrip, subprocess IPC) run without external dependencies; Stage 5 needs a working provider plus child-process startup.
+Stage 1 of `selftest` requires a live backend. Stages 2–4 (bash tool, IPC roundtrip, subprocess IPC) run without external dependencies; Stage 5 needs a working provider plus child-process startup.
 
 ## Personas
 
@@ -368,8 +368,8 @@ Minimal example:
 name: alice
 role: code reviewer
 skills: [Rust, security]
-allowed_tools: [shell, fs_read]
-denied_tools:  [fs_write]
+allowed_tools: [bash, read]
+denied_tools:  [write]
 ---
 
 You are a senior reviewer. Always propose minimal-diff fixes.

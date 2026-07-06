@@ -57,7 +57,7 @@ In the REPL, lines starting with `/` are commands; everything else is a normal p
 
 ### Skipping Tool Approval
 
-Tool invocations (shell, fs_*, send_to) request y/N approval by default. There are three ways to skip approval (any combination works):
+Tool invocations (bash, fs_*, send_to) request y/N approval by default. There are three ways to skip approval (any combination works):
 
 | Method | Example | When it takes effect |
 |--------|---------|---------------------|

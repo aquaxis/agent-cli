@@ -9,72 +9,78 @@ use tokio::time::timeout;
 use crate::error::Result;
 use crate::tools::{Tool, ToolCtx, ToolOutput};
 
-pub struct ShellTool {
-    pub default_timeout_secs: u64,
+pub struct BashTool {
+    pub default_timeout_ms: u64,
     pub max_output_kb: u64,
 }
 
-impl ShellTool {
-    pub fn new(default_timeout_secs: u64, max_output_kb: u64) -> Self {
+impl BashTool {
+    pub fn new(default_timeout_ms: u64, max_output_kb: u64) -> Self {
         Self {
-            default_timeout_secs,
+            default_timeout_ms,
             max_output_kb,
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
-struct ShellArgs {
-    cmd: String,
+struct BashArgs {
+    command: String,
     #[serde(default)]
-    cwd: Option<String>,
+    description: Option<String>,
     #[serde(default)]
-    timeout_secs: Option<u64>,
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    run_in_background: bool,
 }
 
 #[async_trait]
-impl Tool for ShellTool {
+impl Tool for BashTool {
     fn name(&self) -> &'static str {
-        "shell"
+        "bash"
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command using `bash -lc <cmd>`. Returns stdout, stderr and exit_code."
+        "Execute a bash command. Returns stdout, stderr and exit_code as JSON."
     }
 
     fn schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "cmd": {"type": "string", "description": "Command to execute"},
-                "cwd": {"type": "string", "description": "Working directory"},
-                "timeout_secs": {"type": "integer", "description": "Timeout in seconds"},
+                "command": {"type": "string", "description": "The bash command to execute"},
+                "description": {"type": "string", "description": "Clear, concise description of what the command does"},
+                "timeout_ms": {"type": "integer", "description": "Max execution time in milliseconds"},
+                "run_in_background": {"type": "boolean", "description": "Run detached in the background (returns immediately)"}
             },
-            "required": ["cmd"]
+            "required": ["command"]
         })
     }
 
     async fn invoke(&self, args: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
-        let parsed: ShellArgs = serde_json::from_value(args)?;
-        let to = parsed.timeout_secs.unwrap_or(self.default_timeout_secs);
-        let mut cmd = Command::new("bash");
-        cmd.arg("-lc").arg(&parsed.cmd);
-        if let Some(dir) = &parsed.cwd {
-            cmd.current_dir(dir);
+        let parsed: BashArgs = serde_json::from_value(args)?;
+        if parsed.run_in_background {
+            return Ok(ToolOutput::err(
+                "run_in_background is not supported by the bash tool; use the monitor tool",
+            ));
         }
+        let _ = parsed.description; // informational only
+        let to = parsed.timeout_ms.unwrap_or(self.default_timeout_ms);
+        let mut cmd = Command::new("bash");
+        cmd.arg("-lc").arg(&parsed.command);
         cmd.stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
         let fut = cmd.output();
-        let output = match timeout(Duration::from_secs(to), fut).await {
+        let output = match timeout(Duration::from_millis(to), fut).await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => {
                 return Ok(ToolOutput::err(format!("spawn error: {e}")));
             }
             Err(_) => {
                 return Ok(ToolOutput::err(format!(
-                    "timed out after {to} seconds: {}",
-                    parsed.cmd
+                    "timed out after {to} ms: {}",
+                    parsed.command
                 )));
             }
         };
@@ -113,14 +119,15 @@ mod tests {
         ToolCtx {
             self_id: AgentId::new(),
             registry_dir: PathBuf::from("/tmp"),
+            event_tx: None,
         }
     }
 
     #[tokio::test]
     async fn echo_works() {
-        let tool = ShellTool::new(5, 64);
+        let tool = BashTool::new(5_000, 64);
         let out = tool
-            .invoke(json!({"cmd": "echo hello"}), &ctx())
+            .invoke(json!({"command": "echo hello"}), &ctx())
             .await
             .unwrap();
         assert!(out.ok);
@@ -129,12 +136,26 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_triggers() {
-        let tool = ShellTool::new(1, 64);
+        let tool = BashTool::new(1_000, 64);
         let out = tool
-            .invoke(json!({"cmd": "sleep 5", "timeout_secs": 1}), &ctx())
+            .invoke(json!({"command": "sleep 5", "timeout_ms": 1000}), &ctx())
             .await
             .unwrap();
         assert!(!out.ok);
         assert!(out.content.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn run_in_background_errors() {
+        let tool = BashTool::new(5_000, 64);
+        let out = tool
+            .invoke(
+                json!({"command": "echo hi", "run_in_background": true}),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(!out.ok);
+        assert!(out.content.contains("monitor"));
     }
 }

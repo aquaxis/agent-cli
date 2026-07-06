@@ -10,7 +10,7 @@ This document provides a comprehensive guide to configuring `agent-cli`. For a q
 4. [Complete Examples](#4-complete-examples)
 5. [API Key and Secret Management](#5-api-key-and-secret-management)
 6. [Multiple Profile Usage](#6-multiple-profile-usage)
-7. [Shell Tool Tuning](#7-shell-tool-tuning)
+7. [Bash Tool Tuning](#7-bash-tool-tuning)
 8. [UI Display Mode](#8-ui-display-mode)
 9. [Common Configuration Mistakes and Diagnostics](#9-common-configuration-mistakes-and-diagnostics)
 10. [Applying Configuration Changes and Restarting](#10-applying-configuration-changes-and-restarting)
@@ -52,7 +52,7 @@ agent-cli --config ./project-a.toml config path
 
 [runtime]                   # Runtime behavior and paths
 [tools]                     # Tool-wide settings
-[tools.shell]               # Shell tool tuning
+[tools.bash]               # Bash tool tuning
 
 [ui]                        # Display mode
 [history]                   # Opt-in history-window management
@@ -125,7 +125,7 @@ This is the upper limit for the loop where the AI repeats `tool_use -> tool resu
 | Use case | Recommended value | Rationale |
 |------|--------|------|
 | Simple conversation / education | `4-8` | Truncates runaway loops earlier |
-| Default (design-then-debug, etc.) | `24` (default) | Fits a typical workflow of design artifact generation -> verification -> lint fix -> fs_write |
+| Default (design-then-debug, etc.) | `24` (default) | Fits a typical workflow of design artifact generation -> verification -> lint fix -> write |
 | Multi-step orchestrator | `32-48` | When calling multiple tools sequentially |
 | Long autonomous execution (experimental) | `64-256` | When decomposing large tasks step by step |
 | Beyond that | Not recommended | You should suspect the AI is stuck in a loop. Operate with the assumption that you can intervene via `/cancel` or `Ctrl+C` |
@@ -141,15 +141,15 @@ max_tool_iterations = 48   # Multi-step orchestrator use case
 
 | Key | Type | Default | Description |
 |------|----|------|------|
-| `enabled` | string[] | `["shell","fs_read","fs_write","send_to"]` | Tools to enable |
+| `enabled` | string[] | `["bash","read","write","send_to","monitor","edit","glob","grep","websearch","webfetch"]` | Tools to enable |
 
 If the persona has `allowed_tools` / `denied_tools`, the **intersection / difference** with this list determines the final tool set.
 
-### `[tools.shell]`
+### `[tools.bash]`
 
 | Key | Type | Default | Description |
 |------|----|------|------|
-| `timeout_secs` | int | `60` | Timeout per command (seconds) |
+| `timeout_ms` | int | `60` | Timeout per command (seconds) |
 | `max_output_kb` | int | `256` | Maximum retained size for stdout/stderr (KB) |
 
 ### `[ui]`
@@ -213,10 +213,10 @@ auto_approve_tools = false
 log_dir            = "~/.local/share/agent-cli/logs"
 
 [tools]
-enabled = ["shell", "fs_read", "fs_write", "send_to"]
+enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
-[tools.shell]
-timeout_secs  = 120
+[tools.bash]
+timeout_ms    = 120000
 max_output_kb = 512
 
 [ui]
@@ -257,10 +257,10 @@ persona_file        = ""
 max_tool_iterations = 48                            # Multi-step orchestrator assumed
 
 [tools]
-enabled = ["shell", "fs_read", "fs_write", "send_to"]
+enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
-[tools.shell]
-timeout_secs  = 60
+[tools.bash]
+timeout_ms    = 120000
 max_output_kb = 256
 
 [ui]
@@ -342,19 +342,19 @@ By sharing `registry_dir`, agents with different profiles can call each other vi
 registry_dir = "/tmp/agent-cli/team"
 ```
 
-## 7. Shell Tool Tuning
+## 7. Bash Tool Tuning
 
-To allow long-running jobs or commands that produce large output, adjust `[tools.shell]`.
+To allow long-running jobs or commands that produce large output, adjust `[tools.bash]`.
 
 ```toml
-[tools.shell]
-timeout_secs  = 600   # 10 minutes
+[tools.bash]
+timeout_ms    = 1200000   # 10 minutes
 max_output_kb = 4096  # 4 MB
 ```
 
 Notes:
 
-- Processes exceeding `timeout_secs` are force-killed, and the tool result is treated as a failure.
+- Processes exceeding `timeout_ms` are force-killed, and the tool result is treated as a failure.
 - stdout/stderr exceeding `max_output_kb` is truncated with `...[truncated]` appended to the end.
 - To prevent the AI from accidentally invoking huge commands, it is recommended to also use interactive approval (`auto_approve_tools=false`).
 
@@ -390,10 +390,10 @@ Configuration changes take effect after restarting `agent-cli`. Dynamic switchin
 - Diagnosis: Try `curl -s $base_url/health` manually.
 - Resolution: Verify the URL, key, and server status.
 
-### Symptom: Shell tool reports "timed out"
+### Symptom: Bash tool reports "timed out"
 
-- Cause: `timeout_secs` was exceeded.
-- Resolution: Increase `[tools.shell] timeout_secs`, or instruct the AI to use shorter commands.
+- Cause: `timeout_ms` was exceeded.
+- Resolution: Increase `[tools.bash] timeout_ms`, or instruct the AI to use shorter commands.
 
 ### Symptom: Exits with `config file not found`
 

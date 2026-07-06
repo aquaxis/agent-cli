@@ -1,6 +1,6 @@
 [package]
 name = "agent-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Standalone multi-agent CLI with Claude Code-equivalent functionality"
@@ -52,6 +52,11 @@ dirs = "5"
 shellexpand = "3"
 tempfile = "3"
 unicode-width = "0.2.2"
+
+# Tool support: pattern matching, file walking, regex search
+globset = "0.4"
+walkdir = "2"
+regex = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util", "macros"] }

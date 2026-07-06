@@ -1,0 +1,126 @@
+# agent-cli configuration example
+#
+# Copy this file to one of the resolved locations and edit to taste:
+#   ~/.config/agent-cli/config.toml
+# or set the environment variable:  export AGENT_CLI_CONFIG=/path/to/config.toml
+# or pass it explicitly:            agent-cli --config /path/to/config.toml
+#
+# Lines starting with `#` are comments. Uncomment / edit the values you need.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Provider: the AI backend. Only one `kind` is active at a time.
+# Supported: "claude" | "codex" | "ollama" | "opencode" | "opencode-go" | "llama.cpp"
+# ─────────────────────────────────────────────────────────────────────────────
+[provider]
+kind = "claude"
+
+# --- Anthropic Claude (Messages API) ---
+[provider.claude]
+model       = "claude-opus-4-7"
+api_key_env = "ANTHROPIC_API_KEY"          # env var holding the key
+base_url    = "https://api.anthropic.com"
+thinking    = true
+# Opt-in: Anthropic prompt caching (system + tools + conversation tail).
+# prompt_cache = true
+
+# --- OpenAI (Codex) ---
+# [provider.codex]
+# model       = "gpt-4.1"
+# api_key_env = "OPENAI_API_KEY"
+# base_url    = "https://api.openai.com/v1"
+
+# --- Ollama (local or cloud tag, OpenAI-compatible /api/chat) ---
+# [provider.ollama]
+# model    = "glm-5.2:cloud"
+# base_url = "http://127.0.0.1:11434"
+
+# --- OpenCode (local `opencode serve` or OpenCode Zen / Go cloud) ---
+# [provider.opencode]
+# # Local mode:
+# base_url = "http://127.0.0.1:4096"
+# model    = "claude-sonnet-4-5"
+# # Cloud mode (OpenCode Zen / Go): a resolved api_key_env selects cloud mode.
+# base_url    = "https://opencode.ai/zen/go/v1"
+# api_key_env = "OPENCODE_API_KEY"
+# model       = "glm-5.2"
+# # Wire format: "openai" (default, /chat/completions) or "anthropic" (/messages).
+# api = "openai"
+# # Opt-in (local mode only): reuse one server session across turns.
+# persistent_session = true
+
+# --- llama.cpp /v1/chat/completions (OpenAI-compatible) ---
+# [provider."llama.cpp"]
+# model    = "default"
+# base_url = "http://127.0.0.1:8080"
+# Optional sampling knobs (omit any => the server's own default):
+# max_tokens     = 1024   # -n / --n-predict
+# temperature    = 0.2    # --temp
+# top_k          = 80     # --top-k
+# top_p          = 0.95   # --top-p
+# min_p          = 0.05   # --min-p
+# repeat_penalty = 1.05   # --repeat-penalty
+# repeat_last_n  = 64     # --repeat-last-n
+# seed           = 0      # --seed
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runtime behavior and paths
+# ─────────────────────────────────────────────────────────────────────────────
+[runtime]
+auto_approve_tools = false                # skip y/N approval for every tool call
+log_dir            = "~/.local/share/agent-cli/logs"
+registry_dir       = ""                   # empty => per-user default (/run/user/<uid>/agent-cli)
+agents_dir         = "~/.config/agent-cli/agents"
+persona_file       = ""                   # empty => built-in default persona
+# Max tool-use iterations per turn (one iteration = LLM call -> tool calls + results).
+# Default 24; raise for design-then-debug orchestrators that iterate on lint feedback.
+max_tool_iterations = 24
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tools: which built-in tools the agent can call, and per-tool tuning.
+# Tool set is aligned with Claude Code:
+#   bash, read, write, send_to, monitor, edit, glob, grep, websearch, webfetch
+# ─────────────────────────────────────────────────────────────────────────────
+[tools]
+enabled = [
+  "bash",
+  "read",
+  "write",
+  "send_to",
+  "monitor",
+  "edit",
+  "glob",
+  "grep",
+  "websearch",
+  "webfetch",
+]
+# Backward compatibility: the pre-rename names ("shell", "fs_read", "fs_write")
+# are still accepted in `enabled` and map to bash / read / write respectively.
+
+# Bash tool tuning. (The legacy `[tools.shell]` block is still accepted as an
+# alias, but `timeout_secs` is ignored — use `timeout_ms` here.)
+[tools.bash]
+timeout_ms    = 120000   # per-command timeout in milliseconds
+max_output_kb = 256      # truncate stdout/stderr beyond this (KB)
+
+# Web search tool (opt-in network tool). When `endpoint` / `api_key_env` are
+# unset, `websearch` returns a clear configuration error instead of failing.
+# [tools.websearch]
+# api_key_env = "TAVILY_API_KEY"
+# endpoint    = "https://api.tavily.com/search"
+# provider    = "tavily"            # supported: "tavily"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UI: display volume of thinking blocks.
+#   "collapsed" (default) | "expanded" | "hidden"
+# ─────────────────────────────────────────────────────────────────────────────
+[ui]
+show_thinking = "collapsed"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# History: opt-in hybrid context-window management.
+# When disabled (default), the full conversation is replayed verbatim each turn.
+# ─────────────────────────────────────────────────────────────────────────────
+[history]
+enabled            = false
+max_context_tokens = 24000
+keep_recent_turns  = 6

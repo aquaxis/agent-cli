@@ -53,10 +53,16 @@ src/
 │   └── stream.rs        ... SSE frame assembly
 ├── tools/
 │   ├── mod.rs           ... Tool trait, ToolRegistry
-│   ├── shell.rs
-│   ├── fs_read.rs
-│   ├── fs_write.rs
-│   └── send_to.rs
+│   ├── bash.rs          ... bash command execution
+│   ├── read.rs          ... line-numbered file read
+│   ├── write.rs         ... file write
+│   ├── edit.rs          ... exact string replacement
+│   ├── glob.rs          ... glob pattern file search
+│   ├── grep.rs          ... regex content search
+│   ├── monitor.rs       ... long-running command monitor
+│   ├── websearch.rs     ... web search (config-driven)
+│   ├── webfetch.rs      ... URL fetch + HTML-to-text
+│   └── send_to.rs       ... peer prompt delivery
 └── ipc/
     ├── mod.rs           ... IpcMessage
     ├── server.rs        ... UnixListener (0600) / Drop performs accept abort + socket deletion

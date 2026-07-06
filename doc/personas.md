@@ -195,27 +195,27 @@ Config file:
 
 ```toml
 [tools]
-enabled = ["shell", "fs_read", "fs_write", "send_to"]
+enabled = ["bash", "read", "write", "send_to"]
 ```
 
 | Persona specification | Enabled tools |
 |----------------------|--------------|
-| None specified | `shell, fs_read, fs_write, send_to` |
-| `allowed_tools: [shell, fs_read]` | `shell, fs_read` |
-| `denied_tools: [fs_write]` | `shell, fs_read, send_to` |
-| `allowed_tools: [shell, fs_write]` + `denied_tools: [fs_write]` | `shell` |
+| None specified | `bash, read, write, send_to` |
+| `allowed_tools: [bash, read]` | `bash, read` |
+| `denied_tools: [write]` | `bash, read, send_to` |
+| `allowed_tools: [bash, write]` + `denied_tools: [write]` | `bash` |
 | `denied_tools: [send_to]` | This agent cannot send messages to other peers via `send_to` (but can still receive) |
 
 Verify in the REPL:
 
 ```text
 > /tools
-tools: shell, fs_read
+tools: bash, read
 ```
 
 ### 5.2 Security operations tips
 
-- For "read-only" roles (code reviewers, etc.), add `denied_tools: [fs_write]`
+- For "read-only" roles (code reviewers, etc.), add `denied_tools: [write]`
 - For a dispatcher role that "only delegates to peers", use `allowed_tools: [send_to]` only
 - For any persona with `auto_approve_tools=false` (the default), each tool execution requires y/N approval from the REPL input loop (see `doc/tools.md`)
 
@@ -258,14 +258,14 @@ skills:
   - CLI design
 description: An engineer focused on writing safe, readable code
 allowed_tools:
-  - shell
-  - fs_read
-  - fs_write
+  - bash
+  - read
+  - write
   - send_to
 ---
 
 You are the engineer who writes agent-cli code.
-- Start by making a plan; investigate the repository using `shell` and `fs_read` as needed.
+- Start by making a plan; investigate the repository using `bash` and `read` as needed.
 - When editing files, aim for minimal diffs and respect existing style.
 - Do not guess unclear specs; confirm with other agents via `send_to`.
 ```
@@ -282,10 +282,10 @@ skills:
   - Security review
 description: A reviewer focused on safety and performance
 allowed_tools:
-  - shell
-  - fs_read
+  - bash
+  - read
 denied_tools:
-  - fs_write
+  - write
 ---
 
 You are an experienced code reviewer. Always keep the following in mind:
@@ -380,11 +380,11 @@ For a CI worker that must never perform destructive operations:
 name: ci-worker
 role: CI helper
 allowed_tools:
-  - fs_read
+  - read
 ---
 ```
 
-Even if `tools.enabled` contains more entries, this agent will only see `fs_read`.
+Even if `tools.enabled` contains more entries, this agent will only see `read`.
 
 ---
 
