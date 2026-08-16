@@ -8,7 +8,8 @@ use crate::error::{AppError, Result};
 const DEFAULT_CONFIG: &str = r#"# agent-cli configuration
 
 [provider]
-# Backend to use: "claude" | "codex" | "ollama" | "opencode" | "opencode-go" | "llama.cpp"
+# Backend to use: "claude" | "claude-code" | "codex" | "ollama" | "opencode" |
+# "opencode-go" | "llama.cpp"
 kind = "claude"
 
 [provider.claude]
@@ -18,6 +19,25 @@ base_url    = "https://api.anthropic.com"
 thinking    = true
 # Opt-in: Anthropic prompt caching (system + tools + conversation tail).
 # prompt_cache = true
+
+[provider.claude-code]
+# Drives the locally installed Claude Code CLI (`claude`) as a backend. No API
+# key: it uses whatever authentication Claude Code itself already has.
+# bin       = "claude"       # executable name (resolved via PATH) or full path
+# model     = "opus"         # --model; omit to use Claude Code's own default
+# mode      = "delegation"   # "delegation" (Claude Code runs its own tools)
+#                            # | "gateway"  (--tools "", chat only: agent-cli's
+#                            #               tools cannot be offered to it)
+# transport = "stream"       # "stream" (token streaming) | "oneshot"
+# session   = "persistent"   # "persistent" | "ephemeral" (delegation only)
+# tools              = ["Bash", "Read"]  # --tools
+# allowed_tools      = ["Bash(git *)"]   # --allowed-tools
+# disallowed_tools   = ["WebFetch"]      # --disallowed-tools
+# permission_mode    = "auto"            # --permission-mode
+# turn_timeout_secs  = 900
+# max_budget_usd     = 1.0               # --max-budget-usd
+# system_prompt_mode = "append"          # "append" | "replace"
+# extra_args         = []                # passed through verbatim
 
 [provider.codex]
 model       = "gpt-4.1"
@@ -109,6 +129,8 @@ pub struct ProviderRoot {
     pub kind: String,
     #[serde(default)]
     pub claude: Option<ProviderEntry>,
+    #[serde(default, rename = "claude-code")]
+    pub claude_code: Option<ProviderEntry>,
     #[serde(default)]
     pub codex: Option<ProviderEntry>,
     #[serde(default)]
@@ -189,6 +211,59 @@ pub struct ProviderEntry {
     /// `None`/absent => server default (non-deterministic).
     #[serde(default)]
     pub seed: Option<u64>,
+    /// claude-code only: the Claude Code executable. A value containing a path
+    /// separator is used as-is; otherwise it is resolved through `PATH`.
+    /// `None`/absent => `"claude"`.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// claude-code only: who owns the agent loop. `"delegation"` (default)
+    /// lets Claude Code run its own tools; `"gateway"` passes `--tools ""` and
+    /// uses it as a chat-only backend. Unknown values are rejected.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// claude-code only: `"stream"` (default, `--output-format stream-json`
+    /// with token-level deltas) or `"oneshot"` (one child per turn,
+    /// `--output-format json`). Unknown values are rejected.
+    #[serde(default)]
+    pub transport: Option<String>,
+    /// claude-code only, delegation mode only: `"persistent"` (default) reuses
+    /// one Claude Code session across turns and sends only new messages;
+    /// `"ephemeral"` passes `--no-session-persistence` and re-sends the
+    /// transcript each turn. Unknown values are rejected.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// claude-code only: built-in Claude Code tools to enable (`--tools`).
+    /// `None`/absent => flag omitted (Claude Code's own default set). Ignored
+    /// in gateway mode, which always sends `--tools ""`.
+    #[serde(default)]
+    pub tools: Option<Vec<String>>,
+    /// claude-code only: `--allowed-tools`. `None`/absent => flag omitted.
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
+    /// claude-code only: `--disallowed-tools`. `None`/absent => flag omitted.
+    #[serde(default)]
+    pub disallowed_tools: Option<Vec<String>>,
+    /// claude-code only: per-turn wall-clock limit in seconds. On expiry the
+    /// child is killed and the turn ends with an error, leaving the provider
+    /// usable for the next turn. `None`/absent => 900.
+    #[serde(default)]
+    pub turn_timeout_secs: Option<u64>,
+    /// claude-code only: `--permission-mode`. Passed through unvalidated;
+    /// Claude Code rejects unknown values itself. `None`/absent => omitted.
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    /// claude-code only: `--max-budget-usd`. `None`/absent => flag omitted.
+    #[serde(default)]
+    pub max_budget_usd: Option<f64>,
+    /// claude-code only: how the persona reaches Claude Code. `"append"`
+    /// (default) uses `--append-system-prompt`; `"replace"` uses
+    /// `--system-prompt`. Unknown values are rejected.
+    #[serde(default)]
+    pub system_prompt_mode: Option<String>,
+    /// claude-code only: extra CLI arguments appended verbatim before the
+    /// prompt argument. Escape hatch for flags this config does not model.
+    #[serde(default)]
+    pub extra_args: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -475,6 +550,7 @@ impl Config {
     pub fn provider_entry(&self, kind: &str) -> Option<&ProviderEntry> {
         match kind {
             "claude" => self.provider.claude.as_ref(),
+            "claude-code" => self.provider.claude_code.as_ref(),
             "codex" => self.provider.codex.as_ref(),
             "ollama" => self.provider.ollama.as_ref(),
             "opencode" | "opencode-go" => self.provider.opencode.as_ref(),
@@ -509,6 +585,11 @@ impl Config {
     fn provider_entry_mut(&mut self, kind: &str) -> Option<&mut ProviderEntry> {
         match kind {
             "claude" => Some(self.provider.claude.get_or_insert_with(Default::default)),
+            "claude-code" => Some(
+                self.provider
+                    .claude_code
+                    .get_or_insert_with(Default::default),
+            ),
             "codex" => Some(self.provider.codex.get_or_insert_with(Default::default)),
             "ollama" => Some(self.provider.ollama.get_or_insert_with(Default::default)),
             "opencode" | "opencode-go" => Some(self.provider.opencode.get_or_insert_with(Default::default)),
@@ -822,6 +903,97 @@ show_thinking = "expanded"
                 "unknown tool name in DEFAULT_CONFIG: {name}"
             );
         }
+    }
+
+    #[test]
+    fn claude_code_section_parses_every_key() {
+        let toml_src = r#"
+[provider]
+kind = "claude-code"
+
+[provider.claude-code]
+bin                = "/opt/bin/claude"
+model              = "opus"
+mode               = "gateway"
+transport          = "oneshot"
+session            = "ephemeral"
+tools              = ["Bash", "Read"]
+allowed_tools      = ["Bash(git *)"]
+disallowed_tools   = ["WebFetch"]
+permission_mode    = "acceptEdits"
+turn_timeout_secs  = 120
+max_budget_usd     = 0.5
+system_prompt_mode = "replace"
+extra_args         = ["--add-dir", "/tmp"]
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        let entry = cfg.provider.claude_code.as_ref().expect("section parsed");
+        assert_eq!(entry.bin.as_deref(), Some("/opt/bin/claude"));
+        assert_eq!(entry.model.as_deref(), Some("opus"));
+        assert_eq!(entry.mode.as_deref(), Some("gateway"));
+        assert_eq!(entry.transport.as_deref(), Some("oneshot"));
+        assert_eq!(entry.session.as_deref(), Some("ephemeral"));
+        assert_eq!(entry.tools.as_ref().unwrap(), &["Bash", "Read"]);
+        assert_eq!(entry.allowed_tools.as_ref().unwrap()[0], "Bash(git *)");
+        assert_eq!(entry.disallowed_tools.as_ref().unwrap()[0], "WebFetch");
+        assert_eq!(entry.permission_mode.as_deref(), Some("acceptEdits"));
+        assert_eq!(entry.turn_timeout_secs, Some(120));
+        assert_eq!(entry.max_budget_usd, Some(0.5));
+        assert_eq!(entry.system_prompt_mode.as_deref(), Some("replace"));
+        assert_eq!(entry.extra_args.as_ref().unwrap()[1], "/tmp");
+    }
+
+    #[test]
+    fn provider_entry_resolves_claude_code() {
+        let toml_src = r#"
+[provider]
+kind = "claude-code"
+
+[provider.claude-code]
+model = "opus"
+"#;
+        let mut cfg: Config = toml::from_str(toml_src).unwrap();
+        assert_eq!(
+            cfg.provider_entry("claude-code")
+                .and_then(|e| e.model.as_deref()),
+            Some("opus")
+        );
+        cfg.provider_entry_mut("claude-code").unwrap().model = Some("sonnet".into());
+        assert_eq!(
+            cfg.provider.claude_code.as_ref().unwrap().model.as_deref(),
+            Some("sonnet"),
+            "the claude-code entry, not another backend's, must be mutated"
+        );
+    }
+
+    #[test]
+    fn config_without_claude_code_section_is_unaffected() {
+        let toml_src = r#"
+[provider]
+kind = "ollama"
+
+[provider.ollama]
+model = "glm-5.1:cloud"
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        assert!(cfg.provider.claude_code.is_none());
+        assert!(cfg.provider_entry("claude-code").is_none());
+        assert_eq!(
+            cfg.provider_entry("ollama")
+                .and_then(|e| e.model.as_deref()),
+            Some("glm-5.1:cloud")
+        );
+    }
+
+    #[test]
+    fn default_config_documents_claude_code() {
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        // The shipped block is all comments, so the table is present but empty:
+        // every key falls back to its documented default.
+        let entry = cfg.provider.claude_code.as_ref().expect("section present");
+        assert!(entry.bin.is_none());
+        assert!(entry.mode.is_none());
+        assert!(DEFAULT_CONFIG.contains("\"claude-code\""));
     }
 
     #[test]

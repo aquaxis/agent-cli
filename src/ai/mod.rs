@@ -10,6 +10,7 @@ use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 
 pub mod claude;
+pub mod claude_code;
 pub mod codex;
 pub mod llamacpp;
 pub mod ollama;
@@ -133,6 +134,9 @@ pub fn build(cfg: &mut Config, source: &ConfigSource) -> Result<Box<dyn Provider
     let kind = cfg.provider.kind.as_str();
     match kind {
         "claude" => Ok(Box::new(claude::ClaudeProvider::from_config(cfg, source)?)),
+        "claude-code" => Ok(Box::new(claude_code::ClaudeCodeProvider::from_config(
+            cfg, source,
+        )?)),
         "codex" => Ok(Box::new(codex::CodexProvider::from_config(cfg, source)?)),
         "ollama" => Ok(Box::new(ollama::OllamaProvider::from_config(cfg, source)?)),
         "opencode" => Ok(Box::new(opencode::OpenCodeProvider::from_config(
@@ -145,7 +149,15 @@ pub fn build(cfg: &mut Config, source: &ConfigSource) -> Result<Box<dyn Provider
     }
 }
 
-pub const SUPPORTED: &[&str] = &["claude", "codex", "ollama", "opencode", "opencode-go", "llama.cpp"];
+pub const SUPPORTED: &[&str] = &[
+    "claude",
+    "claude-code",
+    "codex",
+    "ollama",
+    "opencode",
+    "opencode-go",
+    "llama.cpp",
+];
 
 /// Diagnostic information for provider HTTP errors (FR-09-3 / design doc 5.1).
 ///
