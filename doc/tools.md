@@ -262,6 +262,11 @@ Priority order in config/persona:
 
 The current tool set can be checked with the REPL command `/tools`.
 
+The pre-rename names `shell`, `fs_read`, and `fs_write` are still accepted in
+`[tools] enabled` and in persona `allowed_tools` / `denied_tools`; they are
+canonicalised to `bash`, `read`, and `write`. Configuration files written before
+the rename therefore keep working, but new files should use the canonical names.
+
 ## Default enabled set
 
 The default `[tools] enabled` list registers all ten tools: `bash`, `read`, `write`, `send_to`, `monitor`, `edit`, `glob`, `grep`, `websearch`, `webfetch`. `websearch` degrades to a clear configuration error when `[tools.websearch]` is not set.

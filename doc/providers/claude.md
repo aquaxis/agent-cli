@@ -63,7 +63,7 @@ agent-cli --config ./claude.toml doctor
 agent-cli selftest --provider claude
 ```
 
-`doctor` provides a pass/fail summary; `selftest` runs 5 stages (Provider / shell tool / IPC / subprocess startup / subprocess AI response). Both exit code 0 means the backend is healthy.
+`doctor` provides a pass/fail summary; `selftest` runs 5 stages (Provider / bash tool / IPC / subprocess startup / subprocess AI response). Both exit code 0 means the backend is healthy.
 
 ## Proxy / Compatible Server
 

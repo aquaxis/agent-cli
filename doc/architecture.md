@@ -33,9 +33,11 @@ Registry directory:
 src/
 ├── main.rs              ... CLI entry point / subcommand dispatch / definitive exit via std::process::exit
 ├── cli.rs               ... clap argument definitions
-├── app.rs               ... `run` REPL body / run_input_loop / PromptState / handle_auto_command / wait_for_termination_signal
+├── app.rs               ... `run` REPL body / run_input_loop (raw + line mode) / PromptState / slash-command dispatch / prompt + suggestion rendering / wait_for_termination_signal
+├── editor.rs            ... input buffer and history cursor (InputState) / display-width math
+├── custom_commands.rs   ... `.md` custom slash command discovery / `@file` + `$ARGUMENTS` expansion
 ├── agent.rs             ... single agent conversation loop / ApprovalRequest / request_approval
-├── commands.rs          ... list/send/providers/doctor/selftest/config
+├── commands.rs          ... list/send/ask/providers/doctor/selftest/config
 ├── config.rs            ... config file loading / resolution order
 ├── id.rs                ... AgentId
 ├── history.rs           ... opt-in history-window mgmt (estimate_tokens/old_span/render_transcript)
@@ -92,7 +94,9 @@ stdin -> run_input_loop -> mpsc -> Agent loop -> Provider -> ProviderEvent strea
 ```
 
 - `run_input_loop` holds `enum PromptState { Ready, Pending, AwaitingApproval(oneshot::Sender<bool>) }` and multiplexes 4 channels (shutdown / idle / approval / stdin) via `tokio::select!`.
-- Immediately after sending user input, it transitions to `Pending` and suppresses stdin reads until `Done` is received (via `mpsc::<()>` from `display_task`). This prevents interleaving of streaming output and input echo.
+- It has two front ends. With a TTY it runs `run_input_loop_raw`: crossterm raw mode, key events handled by `handle_key`, edit buffer and history cursor in `editor.rs`, prompt redrawn with an inline command suggestion. Otherwise (pipe, redirect, tests) it runs `run_input_loop_line` over `BufReader::lines()`. Both feed the same `AgentInput` channel, so tool use, approval, and custom commands behave identically in either mode.
+- Immediately after sending user input, it transitions to `Pending` and suppresses stdin reads until `Done` is received (via `mpsc::<()>` from `display_task`). This prevents interleaving of streaming output and input echo, and it is also why piped input reaches EOF only after the in-flight turn has finished.
+- Input starting with `/` is dispatched by `handle_repl_command`: built-in commands first, then an exact custom-command match, then a unique prefix match (auto-executed and reported as `[auto] /<typed> → /<resolved>`); several matches list the candidates. A resolved custom command is expanded by `custom_commands::expand_template` and entered into the same `AgentInput::UserPrompt` path as a typed prompt.
 - When `[history] enabled = true`, `process_turn` calls `maybe_compact_history` **before** the provider call: if estimated tokens (≈ chars/4) exceed `max_context_tokens`, the old span is summarized by a no-tool provider call into one system message, then oldest messages are dropped if still over budget. Best-effort (failure → drop-only, never fails the turn); disabled by default → full history replayed verbatim. See §8 and `doc/config.md` §11.3.
 - Tool execution iterates up to `[runtime] max_tool_iterations` (default 24, minimum 1, maximum `u32::MAX`). See `self.config.runtime.max_tool_iterations.max(1)` in `agent.rs::process_turn`. This is a guard mechanism to prevent infinite loops. When `auto_approve_tools=false` (default), y/N confirmation is obtained via the approval channel described in 3.3.
 - On reaching the limit: If the AI continues returning `tool_use` after exhausting the configured number of iterations, the loop exits and issues `AgentEvent::Info { message: "max tool-use iterations reached" }` followed by `AgentEvent::Done` in this order. Notification goes through the Info channel rather than the Error channel (since it means "not converged" rather than "abnormal"). The REPL treats it the same as a normal `Done` and redraws the next input prompt. For meaning, mitigation, and recommended ranges, see `doc/troubleshooting.md` / `doc/config.md`.
@@ -124,6 +128,30 @@ ipc::client::send (UnixStream)
                                               ▼
                                       Provider response -> screen display
 ```
+
+**Reply path.** `IpcMessage::Prompt` carries an optional `reply_to` socket path.
+When it is set, agent B sends `IpcMessage::PromptReply { from, text }` to that
+socket once its response is complete, instead of only acknowledging receipt:
+
+```text
+proc A                                          proc B
+------                                          ------
+agent-cli ask bob "..."  /  send_to { wait_reply: true }
+   │ binds a temporary reply socket
+   ▼
+{"kind":"prompt", ..., "reply_to":"<tmp>/reply.sock"}   ──►  Ack
+                                                             │
+                                              Agent loop (B) ┘
+                                                             │
+   temporary UnixListener  ◄── {"kind":"prompt_reply","text":"..."} ─┘
+   │
+   ▼ prints the response text (ask) or returns it as tool output (send_to)
+```
+
+Two callers use it: the `ask` subcommand (`commands::ask_and_receive`, default
+timeout 120 s, `--timeout` to change) and the `send_to` tool with
+`wait_reply = true`. With `reply_to` absent the flow is fire-and-forget, which
+is what `/send` and `agent-cli send` use.
 
 ### 3.3 Tool Execution Approval I/O Integration
 

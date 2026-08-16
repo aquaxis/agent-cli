@@ -2,7 +2,7 @@
 
 `agent-cli` is a standalone Rust CLI that bundles a Claude Code-equivalent AI agent (tools / thinking / streaming REPL) into a single binary. It does not depend on tmux: each process owns exactly one agent and talks to other agents over local Unix-domain-socket IPC.
 
-> 日本語版は [`README_ja.md`](README_ja.md) を参照してください. (The previous Japanese draft [`README.en.md`](README.en.md) is now outdated; the main README is in English and the maintained Japanese translation is `README_ja.md`.)
+> 日本語版は [`README_ja.md`](README_ja.md) を参照してください. (The main README is in English; `README_ja.md` is the maintained Japanese translation.)
 
 ## Highlights
 
@@ -12,6 +12,9 @@
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
 - Built-in tools: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`. Approval mode can be flipped at runtime with `/auto on`.
+- Custom slash commands — drop a Markdown file into `.agent-cli/commands/` and it becomes `/<name>`, with `$ARGUMENTS` / `$1`…`$N` / `@file` expansion and prefix auto-execution.
+- Line editing at the prompt — `↑` / `↓` history browsing, `Ctrl+A` / `Ctrl+E`, `Esc` to clear, and an inline suggestion while typing a `/` command.
+- Scriptable — pipe a question straight into `agent-cli run`, or query a running agent with `agent-cli ask <peer> <text>` and get just the answer on stdout.
 - Streaming responses are synchronized with the REPL prompt so a fresh `> ` is always redrawn after the response completes.
 - Reliable shutdown — any of `/quit`, `/exit`, `Ctrl+D`, `Ctrl+C`, or `SIGTERM` exits within ~1 s and cleans up the IPC socket and registry metadata automatically.
 - Self-diagnostics with `agent-cli doctor` and a 5-stage smoke test with `agent-cli selftest` (Provider OK / bash tool / IPC / subprocess registration / subprocess AI response).
@@ -116,6 +119,21 @@ agent-cli run --provider ollama --model glm-5.1:cloud --name bob
 > /quit       # or /exit, Ctrl+D, Ctrl+C — all of them work
 ```
 
+No terminal session required — a question can be answered straight from the command line:
+
+```bash
+# Pipe the question in; the answer is printed and the process exits on EOF.
+echo "Explain Rust ownership in three lines" | agent-cli run
+
+# Let the agent use tools while unattended.
+echo "Count the .rs files under src with bash" | agent-cli run --auto-approve-tools
+
+# Or ask an already-running agent and get only the response text back.
+agent-cli ask bob "Summarize the current design risks"
+```
+
+See [`doc/usage.md`](doc/usage.md) "Non-interactive / Scripted Use" for the rules that apply (one line per prompt, approval handling, output composition).
+
 ## Configuration
 
 Config files are TOML. Resolution order:
@@ -124,7 +142,7 @@ Config files are TOML. Resolution order:
 2. `AGENT_CLI_CONFIG` environment variable
 3. Default `~/.config/agent-cli/config.toml`
 
-Explicit paths must exist (no auto-creation). The default path auto-generates a sensible template on first run.
+Explicit paths must exist (no auto-creation). The default path auto-generates a sensible template on first run, and [`example/config.example.toml`](example/config.example.toml) is a fully commented starting point covering every section.
 
 `[provider] kind` selects the active backend; only that backend's `[provider.*]` table needs to be filled in, but you can keep several tables in one file and switch with `kind` (or `--provider`).
 
@@ -246,7 +264,8 @@ See [`doc/config.md`](doc/config.md) for the full reference and [`doc/troublesho
 |---------|---------|
 | `agent-cli run` | Start the REPL (one agent per process) |
 | `agent-cli list` | List running peers |
-| `agent-cli send <peer> <text>` | Send a one-shot prompt to a peer |
+| `agent-cli send <peer> <text>` | Send a one-shot prompt to a peer (no response) |
+| `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for the answer, print it (default 120 s) |
 | `agent-cli providers` | Show backend status |
 | `agent-cli doctor` | Sanity-check config / API keys / connectivity / registry / `bash` |
 | `agent-cli selftest [--provider <kind>]` | Smoke test in 5 stages |
@@ -268,10 +287,12 @@ REPL commands inside `agent-cli run`:
 | `/clear`, `/reset` | Clear conversation history (persona / system prompt are kept) |
 | `/cancel` | Request cancel of the in-flight AI response or tool call |
 | `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime |
+| `/commands` | List custom slash commands (name, first line, file path) |
+| `/reload-commands` | Re-scan the custom commands directory |
 | `/help` | Show help |
 | `/quit`, `/exit` | Terminate (full aliases) |
 
-User prompts are persisted to `<runtime.log_dir>/history.txt` (last 200 entries) and reloaded on next startup. See [`doc/usage.md`](doc/usage.md) for full details.
+User prompts and executed slash commands are persisted to `<runtime.log_dir>/history.txt` (last 200 entries) and reloaded on next startup; `/quit` and `/exit` are excluded. See [`doc/usage.md`](doc/usage.md) for full details.
 
 ### Skipping tool approval
 
@@ -284,6 +305,51 @@ Tool invocations (bash, read, write, send_to, edit, glob, grep, monitor, websear
 | REPL command | `/auto on` (`/auto off` returns to approval mode, `/auto status` shows the current value) |
 
 In approval mode, each tool request shows `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted; anything else (blank input, other words) counts as denial.
+
+### Custom slash commands
+
+Every `*.md` file in `.agent-cli/commands/` becomes a slash command named after the file stem, so `.agent-cli/commands/review.md` defines `/review`. Running it expands the file and submits the result to the agent as a user prompt.
+
+```markdown
+<!-- .agent-cli/commands/review.md -->
+Review the following file and list the three most severe issues.
+
+Target: $1
+Focus: $ARGUMENTS
+
+@doc/tools.md
+```
+
+```text
+> /review src/agent.rs security
+```
+
+| Placeholder | Expands to |
+|-------------|-----------|
+| `$ARGUMENTS` | The whole argument string after the command name |
+| `$1`, `$2`, … | The Nth whitespace-separated argument; absent ones become empty |
+| `@<path>` | The file's contents (`[error: cannot read @<path>]` if unreadable) |
+
+- Built-in commands take precedence — a custom `help.md` never shadows `/help`.
+- A prefix matching exactly one custom command runs it and prints `[auto] /<typed> → /<resolved>`; several matches list the candidates instead.
+- `/commands` lists what is loaded, `/reload-commands` re-scans without restarting.
+- The directory is `[runtime] commands_dir` (default `.agent-cli/commands`); a missing directory is not an error.
+
+See [`doc/usage.md`](doc/usage.md) "Custom Slash Commands" for the full reference.
+
+### REPL input editing
+
+With a terminal attached, the prompt supports in-place editing and history browsing:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Browse history (the in-progress draft is restored when you come back past the newest entry) |
+| `Ctrl+A` / `Home`, `Ctrl+E` / `End` | Jump to start / end of the line |
+| `Esc` | Leave history browsing, or clear the line |
+| `Ctrl+C` | Clear the line; exit when the line is empty |
+| `Ctrl+D` | Exit on an empty line |
+
+While the line starts with `/` and has no space, the best-matching command is suggested inline. Raw mode needs a TTY; with piped input the REPL falls back to plain line reading — tools, custom commands, and peer messaging all keep working.
 
 ### Suppressing `[thinking]` output
 
@@ -391,4 +457,4 @@ Full frontmatter reference, validation rules, and operational scenarios are in [
 
 ## License
 
-MIT License. See [`LICENSE`](LICENSE).
+MIT License. See [`LICENSE.md`](LICENSE.md).

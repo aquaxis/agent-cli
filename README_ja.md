@@ -11,10 +11,13 @@
 - 6 つのバックエンド: `claude` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
 - マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します。
 - ペルソナファイル（YAML フロントマター + Markdown 本文）でロール、スキル、ツールの許可/拒否リスト、モデル、temperature を定義します。
-- 組み込みツール: `shell` / `fs_read` / `fs_write` / `send_to`。承認モードは実行中に `/auto on` で切り替えられます。
+- 組み込みツール: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`。承認モードは実行中に `/auto on` で切り替えられます。
+- カスタムスラッシュコマンド — `.agent-cli/commands/` に Markdown ファイルを置くだけで `/<name>` として使えます。`$ARGUMENTS` / `$1`…`$N` / `@file` の展開と、前方一致による自動実行に対応します。
+- プロンプトの行編集 — `↑` / `↓` での履歴参照、`Ctrl+A` / `Ctrl+E`、`Esc` でのクリア、`/` コマンド入力中のインラインサジェスト。
+- スクリプトから利用可能 — `agent-cli run` に質問をパイプで流し込む、あるいは稼働中のエージェントに `agent-cli ask <peer> <text>` で問い合わせて応答だけを標準出力で受け取れます。
 - ストリーミング応答は REPL のプロンプトと同期しており、応答完了後は常に新しい `> ` が再描画されます。
 - 確実なシャットダウン — `/quit`、`/exit`、`Ctrl+D`、`Ctrl+C`、`SIGTERM` のいずれでも約 1 秒以内に終了し、IPC ソケットとレジストリのメタデータを自動的に後始末します。
-- `agent-cli doctor` による自己診断と、`agent-cli selftest` による 5 段階のスモークテスト（Provider OK / shell ツール / IPC / 子プロセス登録 / 子プロセスの AI 応答）。
+- `agent-cli doctor` による自己診断と、`agent-cli selftest` による 5 段階のスモークテスト（Provider OK / bash ツール / IPC / 子プロセス登録 / 子プロセスの AI 応答）。
 - `[runtime] max_tool_iterations` でツール使用ループ上限を設定可能（デフォルト 24、最大 `u32::MAX`）。下記「[info] max tool-use iterations reached」を参照。
 - Ollama の `message.thinking` フィールドは、`glm-5.1:cloud` のような思考対応モデル向けに `[thinking]` としてデコードされます。
 - オプトインのコンテキスト効率化機能（すべてデフォルト OFF）: Claude プロンプトキャッシュ、opencode ローカル永続セッション、ハイブリッド履歴ウィンドウ管理（要約してから破棄）。[`doc/config.md`](doc/config.md) §11 を参照。
@@ -115,6 +118,21 @@ agent-cli run --provider ollama --model glm-5.1:cloud --name bob
 > /quit       # /exit, Ctrl+D, Ctrl+C でも可
 ```
 
+対話セッションは必須ではありません。コマンドラインだけで質問と応答を完結させられます:
+
+```bash
+# 質問をパイプで渡すと、応答が表示され EOF でプロセスが終了します。
+echo "Rust の所有権を 3 行で説明して" | agent-cli run
+
+# 無人実行でツールも使わせる場合。
+echo "src 配下の .rs ファイル数を bash で数えて" | agent-cli run --auto-approve-tools
+
+# 稼働中のエージェントに問い合わせ、応答テキストだけを受け取る場合。
+agent-cli ask bob "現在の設計上のリスクをまとめて"
+```
+
+適用されるルール（1 行 1 プロンプト、承認の扱い、出力の構成）は [`doc/usage.md`](doc/usage.md) の "Non-interactive / Scripted Use" を参照してください。
+
 ## 設定
 
 設定ファイルは TOML です。解決順序:
@@ -123,7 +141,7 @@ agent-cli run --provider ollama --model glm-5.1:cloud --name bob
 2. `AGENT_CLI_CONFIG` 環境変数
 3. デフォルト `~/.config/agent-cli/config.toml`
 
-明示指定したパスは存在している必要があります（自動生成しません）。デフォルトパスは初回起動時に適切なテンプレートを自動生成します。
+明示指定したパスは存在している必要があります（自動生成しません）。デフォルトパスは初回起動時に適切なテンプレートを自動生成します。全セクションにコメントを付けた雛形として [`example/config.example.toml`](example/config.example.toml) も利用できます。
 
 `[provider] kind` でアクティブなバックエンドを選択します。埋める必要があるのはそのバックエンドの `[provider.*]` テーブルだけですが、複数のテーブルを 1 つのファイルに残しておき、`kind`（または `--provider`）で切り替えることもできます。
 
@@ -245,7 +263,8 @@ keep_recent_turns  = 6
 |---------|---------|
 | `agent-cli run` | REPL を起動（1 プロセス 1 エージェント） |
 | `agent-cli list` | 稼働中のピアを一覧表示 |
-| `agent-cli send <peer> <text>` | ピアにワンショットのプロンプトを送信 |
+| `agent-cli send <peer> <text>` | ピアにワンショットのプロンプトを送信（応答は待ちません） |
+| `agent-cli ask <peer> <text> [--timeout <secs>]` | ピアにプロンプトを送り、応答を待って表示（デフォルト 120 秒） |
 | `agent-cli providers` | バックエンドの状態を表示 |
 | `agent-cli doctor` | 設定 / API キー / 接続性 / レジストリ / `bash` を健全性チェック |
 | `agent-cli selftest [--provider <kind>]` | 5 段階のスモークテスト |
@@ -267,14 +286,16 @@ keep_recent_turns  = 6
 | `/clear`, `/reset` | 会話履歴をクリア（ペルソナ / システムプロンプトは保持） |
 | `/cancel` | 実行中の AI 応答またはツール呼び出しのキャンセルを要求 |
 | `/auto [on\|off\|status]` | 実行中にツール承認スキップを切り替え |
+| `/commands` | カスタムスラッシュコマンドを一覧表示（名前 / 先頭行 / ファイルパス） |
+| `/reload-commands` | カスタムコマンドのディレクトリを再スキャン |
 | `/help` | ヘルプを表示 |
 | `/quit`, `/exit` | 終了（完全なエイリアス） |
 
-ユーザープロンプトは `<runtime.log_dir>/history.txt`（直近 200 件）に永続化され、次回起動時に再読み込みされます。詳細は [`doc/usage.md`](doc/usage.md) を参照してください。
+ユーザープロンプトと実行したスラッシュコマンドは `<runtime.log_dir>/history.txt`（直近 200 件）に永続化され、次回起動時に再読み込みされます（`/quit` と `/exit` は除外）。詳細は [`doc/usage.md`](doc/usage.md) を参照してください。
 
 ### ツール承認のスキップ
 
-ツール呼び出し（shell, fs_*, send_to）はデフォルトで y/N の承認を求めます。承認をスキップする方法は 3 つあります:
+ツール呼び出し（bash, read, write, send_to, monitor, edit, glob, grep, websearch, webfetch）はデフォルトで y/N の承認を求めます。承認をスキップする方法は 3 つあります:
 
 | 方法 | 例 |
 |--------|---------|
@@ -283,6 +304,51 @@ keep_recent_turns  = 6
 | REPL コマンド | `/auto on`（`/auto off` で承認モードに戻る、`/auto status` で現在値を表示） |
 
 承認モードでは、各ツール要求が `[tool approval] <tool> <args>` と `approve? [y/N]:` を表示します。受理されるのは `y` / `yes` のみで、それ以外（空入力や他の語）は拒否として扱われます。
+
+### カスタムスラッシュコマンド
+
+`.agent-cli/commands/` にある `*.md` ファイルは、ファイル名（拡張子を除く）のスラッシュコマンドになります。`.agent-cli/commands/review.md` なら `/review` です。実行するとファイルの内容が展開され、ユーザープロンプトとしてエージェントに送信されます。
+
+```markdown
+<!-- .agent-cli/commands/review.md -->
+以下のファイルをレビューし、深刻な問題を 3 つ挙げてください。
+
+対象: $1
+観点: $ARGUMENTS
+
+@doc/tools.md
+```
+
+```text
+> /review src/agent.rs security
+```
+
+| プレースホルダー | 展開結果 |
+|-------------|-----------|
+| `$ARGUMENTS` | コマンド名の後ろに入力した引数文字列全体 |
+| `$1`, `$2`, … | 空白区切りの N 番目の引数。存在しない場合は空文字列 |
+| `@<path>` | 対象ファイルの内容（読めない場合は `[error: cannot read @<path>]`） |
+
+- 組み込みコマンドが優先されます。`help.md` を置いても `/help` は上書きされません。
+- 前方一致するカスタムコマンドが 1 つだけならそのまま実行され、`[auto] /<入力> → /<解決後>` が表示されます。複数一致する場合は候補が一覧表示されます。
+- `/commands` で読み込み済みのコマンドを一覧表示、`/reload-commands` で再起動せずに再スキャンできます。
+- ディレクトリは `[runtime] commands_dir`（デフォルト `.agent-cli/commands`）で変更できます。存在しなくてもエラーにはなりません。
+
+完全なリファレンスは [`doc/usage.md`](doc/usage.md) の "Custom Slash Commands" を参照してください。
+
+### REPL の行編集
+
+端末に接続されている場合、プロンプトはその場での行編集と履歴参照に対応します:
+
+| キー | 動作 |
+|-----|--------|
+| `↑` / `↓` | 履歴を参照（最新より先に戻ると入力途中の内容が復元されます） |
+| `Ctrl+A` / `Home`、`Ctrl+E` / `End` | 行頭 / 行末へ移動 |
+| `Esc` | 履歴参照を抜ける、または行をクリア |
+| `Ctrl+C` | 行をクリア。空行なら終了 |
+| `Ctrl+D` | 空行で終了 |
+
+行が `/` で始まり空白を含まない間は、最も一致するコマンド名がインラインで表示されます。raw モードは TTY が必要で、パイプ入力では行単位の読み込みにフォールバックします（ツール、カスタムコマンド、ピア通信はそのまま動作します）。
 
 ### `[thinking]` 出力の抑制
 
@@ -337,7 +403,7 @@ cargo clippy --all-targets -- -D warnings
 # 自己診断
 agent-cli doctor
 
-# スモークテスト（5 段階: provider OK / shell / IPC / 子プロセス / 子プロセスの AI 応答）
+# スモークテスト（5 段階: provider OK / bash / IPC / 子プロセス / 子プロセスの AI 応答）
 agent-cli selftest --provider claude
 agent-cli selftest --provider ollama
 
@@ -345,7 +411,7 @@ agent-cli selftest --provider ollama
 scripts/manual_acceptance.sh
 ```
 
-`selftest` のステージ 1 は稼働中のバックエンドが必要です。ステージ 2–4（shell ツール、IPC 往復、子プロセス IPC）は外部依存なしで実行されます。ステージ 5 は動作するプロバイダーに加えて子プロセスの起動が必要です。
+`selftest` のステージ 1 は稼働中のバックエンドが必要です。ステージ 2–4（bash ツール、IPC 往復、子プロセス IPC）は外部依存なしで実行されます。ステージ 5 は動作するプロバイダーに加えて子プロセスの起動が必要です。
 
 ## ペルソナ
 
@@ -367,8 +433,8 @@ agent-cli run --name alice
 name: alice
 role: code reviewer
 skills: [Rust, security]
-allowed_tools: [shell, fs_read]
-denied_tools:  [fs_write]
+allowed_tools: [bash, read]
+denied_tools:  [write]
 ---
 
 You are a senior reviewer. Always propose minimal-diff fixes.
@@ -390,4 +456,4 @@ You are a senior reviewer. Always propose minimal-diff fixes.
 
 ## ライセンス
 
-MIT License. [`LICENSE`](LICENSE) を参照してください。
+MIT License. [`LICENSE.md`](LICENSE.md) を参照してください。
