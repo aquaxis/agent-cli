@@ -33,7 +33,7 @@ Registry directory:
 src/
 ├── main.rs              ... CLI entry point / subcommand dispatch / definitive exit via std::process::exit
 ├── cli.rs               ... clap argument definitions
-├── app.rs               ... `run` REPL body / run_input_loop (raw + line mode) / PromptState / slash-command dispatch / prompt + suggestion rendering / wait_for_termination_signal
+├── app.rs               ... `run` REPL body / run_input_loop (raw + line mode) / PromptState / slash-command dispatch / prompt + candidate rendering / Tab completion / wait_for_termination_signal
 ├── editor.rs            ... input buffer and history cursor (InputState) / display-width math
 ├── custom_commands.rs   ... `.md` custom slash command discovery / `@file` + `$ARGUMENTS` expansion
 ├── agent.rs             ... single agent conversation loop / ApprovalRequest / request_approval
@@ -95,7 +95,7 @@ stdin -> run_input_loop -> mpsc -> Agent loop -> Provider -> ProviderEvent strea
 ```
 
 - `run_input_loop` holds `enum PromptState { Ready, Pending, AwaitingApproval(oneshot::Sender<bool>) }` and multiplexes 4 channels (shutdown / idle / approval / stdin) via `tokio::select!`.
-- It has two front ends. With a TTY it runs `run_input_loop_raw`: crossterm raw mode, key events handled by `handle_key`, edit buffer and history cursor in `editor.rs`, prompt redrawn with an inline command suggestion. Otherwise (pipe, redirect, tests) it runs `run_input_loop_line` over `BufReader::lines()`. Both feed the same `AgentInput` channel, so tool use, approval, and custom commands behave identically in either mode.
+- It has two front ends. With a TTY it runs `run_input_loop_raw`: crossterm raw mode, key events handled by `handle_key`, edit buffer and history cursor in `editor.rs`, prompt redrawn with the command candidates on the row above it, and `Tab` completion resolved against the same candidate list (`command_completion`). Otherwise (pipe, redirect, tests) it runs `run_input_loop_line` over `BufReader::lines()`. Both feed the same `AgentInput` channel, so tool use, approval, and custom commands behave identically in either mode.
 - Immediately after sending user input, it transitions to `Pending` and suppresses stdin reads until `Done` is received (via `mpsc::<()>` from `display_task`). This prevents interleaving of streaming output and input echo, and it is also why piped input reaches EOF only after the in-flight turn has finished.
 - Input starting with `/` is dispatched by `handle_repl_command`: built-in commands first, then an exact custom-command match, then a unique prefix match (auto-executed and reported as `[auto] /<typed> → /<resolved>`); several matches list the candidates. A resolved custom command is expanded by `custom_commands::expand_template` and entered into the same `AgentInput::UserPrompt` path as a typed prompt.
 - When `[history] enabled = true`, `process_turn` calls `maybe_compact_history` **before** the provider call: if estimated tokens (≈ chars/4) exceed `max_context_tokens`, the old span is summarized by a no-tool provider call into one system message, then oldest messages are dropped if still over budget. Best-effort (failure → drop-only, never fails the turn); disabled by default → full history replayed verbatim. See §8 and `doc/config.md` §11.3.

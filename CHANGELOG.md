@@ -4,6 +4,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- `Tab` completes the slash command being typed in the REPL (`app.rs::command_completion`). A single match completes it and appends a space so an argument can follow (`/sen` → `/send `); several matches extend the line as far as the candidates agree (`/rel` → `/reload-`). Nothing to add, no match, or an argument already started leaves the line untouched. Built-in and custom commands complete alike.
+
+### Changed
+
+- The live command-candidate list is now drawn on the row **above** the prompt instead of below it, so the line being typed stays where the eye already is. The hint row is part of the tracked render block and is cleared with it.
+
 ## [0.3.0]
 
 ### Added
