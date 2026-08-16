@@ -4,6 +4,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.3.0]
+
+### Added
+
+- New backend `kind = "claude-code"` (`src/ai/claude_code.rs`): drives the locally installed Claude Code CLI (`claude`) as a child process, so `agent-cli` wraps it with its REPL, personas, peer IPC, conversation logging, and custom slash commands. It needs no API key — Claude Code's own authentication is used. Not to be confused with the existing `claude` backend, which is a direct client of the Anthropic Messages API.
+  - Two modes. `mode = "delegation"` (default) lets Claude Code run its own tools, apply its own permission mode, and keep its own session; its `tool_use` blocks are deliberately **not** mapped to `ProviderEvent::ToolUse`, because the tool has already run by the time it is reported and converting it would execute every command twice. `mode = "gateway"` passes `--tools ""` and is chat-only: `claude -p` accepts no external tool definitions, so agent-cli's own tools cannot be offered to it either.
+  - Two transports. `transport = "stream"` (default) uses `--output-format stream-json --verbose --include-partial-messages` for token-level streaming; `transport = "oneshot"` uses `--output-format json`. Only `delegation` + `stream` + `session = "persistent"` keeps a resident child process; every other combination spawns one child per turn.
+  - New `[provider.claude-code]` keys, all optional: `bin`, `model`, `mode`, `transport`, `session`, `tools`, `allowed_tools`, `disallowed_tools`, `permission_mode`, `turn_timeout_secs`, `max_budget_usd`, `system_prompt_mode`, `extra_args`. Unknown values for the enumerated keys are rejected at startup with the accepted set listed.
+  - Per-turn timeout kills a stuck child and leaves the provider usable; children are spawned with `kill_on_drop`, so no orphan survives an `agent-cli` exit.
+  - `agent-cli providers` and `agent-cli doctor` report the resolved `claude` binary (and its `--version`) instead of an API-key status for this backend.
+  - New guide `doc/providers/claude-code.md`; `doc/config.md`, `doc/architecture.md` (§8.1), `README.md`, `README_ja.md`, and `example/config.example.toml` updated.
+
+### Changed
+
+- `README.md` / `README_ja.md`: the highlight stating that agent-cli "does not call out to the `claude` CLI" now says that this holds for the REPL and built-in tools, since driving that CLI is available as the opt-in `claude-code` backend.
+
 ### Added
 
 - The `[ui] show_thinking` setting now actually controls thinking display in the REPL (FR-03-1-2 follow-up, T-512). Previously the setting was defined but not consumed by `display_event`. Three values are implemented: `"hidden"` (suppress entirely) / `"collapsed"` (default: truncate each delta to "first 80 chars + first line") / `"expanded"` (full text, previous behavior). Unknown values fall back to `"collapsed"`. Recommended `"hidden"` for long-reasoning models like `glm-5.1:cloud` that fill the screen with thinking output.

@@ -7,8 +7,8 @@
 ## Highlights
 
 - Standalone — no tmux required. Just run `agent-cli` (the no-arg form is equivalent to `agent-cli run`).
-- Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch (does not call out to the `claude` CLI).
-- Six backends: `claude` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
+- Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch — the REPL and tools never call out to the `claude` CLI. (Driving that CLI is available separately, as the opt-in `claude-code` backend below.)
+- Seven backends: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
 - Built-in tools: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`. Approval mode can be flipped at runtime with `/auto on`.
@@ -27,6 +27,7 @@
 | kind | API | Default model |
 |------|-----|--------------|
 | claude | Anthropic Claude (Messages, SSE) | `claude-opus-4-7` |
+| claude-code | Local Claude Code CLI as a child process (no API key) | Claude Code's own |
 | codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
 | opencode | OpenCode — dual mode (see below) | `claude-sonnet-4-5` |
@@ -53,13 +54,33 @@ already filled in. Set `kind = "opencode-go"` and `api_key_env` only — the
 `model` (`claude-sonnet-4-5`) are auto-populated. You can still override any
 field in `[provider.opencode]`. See the configuration example below.
 
+**`claude-code`** runs the Claude Code CLI installed on the machine and adapts
+it to the provider interface, so `agent-cli` wraps it with personas, peer IPC,
+logging, and custom slash commands. It needs no API key — Claude Code brings its
+own authentication:
+
+```toml
+[provider]
+kind = "claude-code"
+
+[provider.claude-code]
+mode      = "delegation"   # Claude Code runs its own tools (default)
+transport = "stream"       # token-level streaming (default)
+```
+
+Two consequences are worth knowing up front: in the default `delegation` mode
+Claude Code executes its own tools, so agent-cli's tool registry and approval
+prompt are not involved; and in `gateway` mode (`--tools ""`) nothing executes
+at all, because `claude -p` accepts no external tool definitions. See
+[`doc/providers/claude-code.md`](doc/providers/claude-code.md).
+
 The mandatory verification targets are `claude` and `ollama` (with model `glm-5.1:cloud`).
 
-| Capability | claude | codex | ollama | opencode | llama.cpp |
-|------------|--------|-------|--------|----------|-----------|
-| Streaming  | ✓ | ✓ | ✓ | ✓ (cloud SSE; local buffered) | ✓ |
-| Tool use   | ✓ | ✓ (function calling) | ✓ (model-dependent) | ✓ cloud / ✗ local (v1) | ✓ (server-build dependent) |
-| Thinking   | ✓ (`thinking_delta`) | ✗ | ✓ (model-dependent, `message.thinking`) | ✗ | ✗ |
+| Capability | claude | claude-code | codex | ollama | opencode | llama.cpp |
+|------------|--------|-------------|-------|--------|----------|-----------|
+| Streaming  | ✓ | ✓ (`transport = "stream"`) | ✓ | ✓ | ✓ (cloud SSE; local buffered) | ✓ |
+| Tool use   | ✓ | ✓ delegation mode — run **inside** Claude Code | ✓ (function calling) | ✓ (model-dependent) | ✓ cloud / ✗ local (v1) | ✓ (server-build dependent) |
+| Thinking   | ✓ (`thinking_delta`) | ✓ (`transport = "stream"`) | ✗ | ✓ (model-dependent, `message.thinking`) | ✗ | ✗ |
 
 `opencode-go` has the same capabilities as `opencode` (cloud mode); it is a config shortcut, not a separate backend.
 
@@ -160,6 +181,24 @@ model        = "claude-opus-4-7"
 base_url     = "https://api.anthropic.com"   # usually leave as-is
 thinking     = true                          # enable thinking blocks
 # prompt_cache = true                         # opt-in Anthropic prompt caching
+```
+
+**claude-code** — the locally installed Claude Code CLI, driven as a child process. No API key; it uses Claude Code's own authentication. Every key below is optional:
+
+```toml
+[provider]
+kind = "claude-code"
+
+[provider.claude-code]
+bin       = "claude"       # executable name (resolved via PATH) or full path
+model     = "sonnet"       # --model; omit for Claude Code's own default
+mode      = "delegation"   # "delegation" (its own tools) | "gateway" (chat only)
+transport = "stream"       # "stream" (token streaming) | "oneshot"
+session   = "persistent"   # "persistent" | "ephemeral" (delegation only)
+turn_timeout_secs = 900
+# tools           = ["Bash", "Read"]
+# permission_mode = "auto"
+# max_budget_usd  = 1.0
 ```
 
 **codex** — OpenAI Chat Completions (SSE, function calling). `kind = "codex"` is the internal name; it is not OpenAI's legacy Codex model. `base_url` also works with OpenAI-compatible gateways / Azure OpenAI:
@@ -451,7 +490,7 @@ Full frontmatter reference, validation rules, and operational scenarios are in [
 - [`doc/tools.md`](doc/tools.md) — built-in tool specifications
 - [`doc/architecture.md`](doc/architecture.md) — architecture overview
 - [`doc/troubleshooting.md`](doc/troubleshooting.md) — known failures and fixes
-- [`doc/providers/claude.md`](doc/providers/claude.md) / [`codex.md`](doc/providers/codex.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
+- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development guide
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
 

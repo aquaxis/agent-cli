@@ -49,6 +49,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 ```toml
 [provider]                  # Which backend to use
 [provider.claude]           # claude backend-specific settings
+[provider.claude-code]      # claude-code backend (drives the local `claude` CLI)
 [provider.codex]            # codex (OpenAI) backend-specific settings
 [provider.ollama]           # ollama backend-specific settings
 [provider.opencode]         # opencode backend (local serve / OpenCode Zen)
@@ -69,7 +70,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
-| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"codex"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
+| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"claude-code"` / `"codex"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
 
 ### `[provider.claude]` / `[provider.codex]` / `[provider.ollama]` / `[provider.opencode]` / `[provider.opencode-go]` / `[provider."llama.cpp"]`
 
@@ -112,6 +113,44 @@ Per-backend defaults:
 | opencode | `claude-sonnet-4-5` | `http://127.0.0.1:4096` (local) / `https://opencode.ai/zen/v1` (when key set) | (none = local; set = cloud, e.g. `OPENCODE_API_KEY`) |
 | opencode-go | `claude-sonnet-4-5` | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
 | llama.cpp | `default` | `http://127.0.0.1:8080` | (optional) |
+
+### `[provider.claude-code]`
+
+Drives the locally installed **Claude Code CLI** (`claude`) as a backend. It
+takes no `api_key_env`, `base_url`, or `request_timeout_secs`: authentication
+and endpoints belong to Claude Code itself. Every key below is optional, and the
+whole section may be omitted. See
+[`doc/providers/claude-code.md`](providers/claude-code.md).
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `bin` | string | `"claude"` | Executable. A value containing a path separator is used as-is; otherwise it is resolved on `PATH`. A missing binary is a startup error |
+| `model` | string | (Claude Code's own) | `--model` |
+| `mode` | string | `"delegation"` | `"delegation"` — Claude Code runs its own tools and keeps its session; `"gateway"` — `--tools ""`, chat only |
+| `transport` | string | `"stream"` | `"stream"` — `--output-format stream-json` with token deltas; `"oneshot"` — `--output-format json`, whole reply at end of turn |
+| `session` | string | `"persistent"` | Delegation only. `"persistent"` reuses one Claude Code session and sends only new messages; `"ephemeral"` adds `--no-session-persistence` and re-sends the transcript |
+| `tools` | array | unset | `--tools`. Ignored in gateway mode, which always sends `--tools ""` |
+| `allowed_tools` | array | unset | `--allowed-tools` |
+| `disallowed_tools` | array | unset | `--disallowed-tools` |
+| `permission_mode` | string | unset | `--permission-mode`, passed through unvalidated |
+| `turn_timeout_secs` | int | `900` | Per-turn wall clock. On expiry the child is killed and the turn ends with an error; the provider stays usable |
+| `max_budget_usd` | float | unset | `--max-budget-usd`. Recommended for unattended use |
+| `system_prompt_mode` | string | `"append"` | `"append"` → `--append-system-prompt`; `"replace"` → `--system-prompt` |
+| `extra_args` | array | `[]` | Extra CLI flags appended verbatim before the prompt argument |
+
+Unknown values for `mode`, `transport`, `session`, or `system_prompt_mode` are
+rejected at startup with the accepted set listed.
+
+Two consequences worth knowing before choosing a mode:
+
+- **Gateway mode is chat-only.** `claude -p` accepts no external tool
+  definitions, so agent-cli's own tools cannot be handed to it. The model will
+  describe the tool it would use and stop.
+- **Delegation mode bypasses agent-cli's approval prompt.** Claude Code has
+  already run the tool by the time it reports it, so those events are never
+  turned into agent-cli tool calls (that would execute everything twice).
+  Control permissions with `permission_mode` / `tools` / `allowed_tools` /
+  `disallowed_tools`.
 
 `opencode` runs in two modes selected by **API-key presence**: no resolved key → **local** mode against a running `opencode serve` (native session API); key resolved → **cloud** mode against OpenCode Zen (OpenAI-compatible). `opencode-go` is a convenience alias that sets `base_url` to the Go endpoint, `api` to `"anthropic"`, and `api_key_env` to `"OPENCODE_API_KEY"`. It still uses `[provider.opencode]` for overrides. See [`doc/providers/opencode.md`](providers/opencode.md).
 

@@ -7,8 +7,8 @@
 ## 特長
 
 - スタンドアロン — tmux 不要。`agent-cli` を実行するだけです（引数なしは `agent-cli run` と等価）。
-- ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（`claude` CLI を呼び出しません）。
-- 6 つのバックエンド: `claude` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
+- ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（REPL とツール自体は `claude` CLI を呼び出しません）。なお `claude` CLI を駆動する方法は、後述の `claude-code` バックエンドとして別途選択できます。
+- 7 つのバックエンド: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
 - マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します。
 - ペルソナファイル（YAML フロントマター + Markdown 本文）でロール、スキル、ツールの許可/拒否リスト、モデル、temperature を定義します。
 - 組み込みツール: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`。承認モードは実行中に `/auto on` で切り替えられます。
@@ -27,6 +27,7 @@
 | kind | API | デフォルトモデル |
 |------|-----|--------------|
 | claude | Anthropic Claude (Messages, SSE) | `claude-opus-4-7` |
+| claude-code | ローカルの Claude Code CLI を子プロセスとして駆動（API キー不要） | Claude Code 自身のデフォルト |
 | codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
 | opencode | OpenCode — デュアルモード（下記参照） | `claude-sonnet-4-5` |
@@ -52,13 +53,33 @@
 （`claude-sonnet-4-5`）が自動的に埋められます。`[provider.opencode]`
 で個別に上書きすることもできます。下記の設定例を参照してください。
 
+**`claude-code`** は、マシンにインストール済みの Claude Code CLI を子プロセスとして
+起動し、プロバイダー抽象に適合させます。`agent-cli` の REPL・ペルソナ・
+エージェント間 IPC・ログ・カスタムスラッシュコマンドが、そのまま Claude Code を
+包む形になります。API キーは不要で、Claude Code 自身の認証をそのまま使います:
+
+```toml
+[provider]
+kind = "claude-code"
+
+[provider.claude-code]
+mode      = "delegation"   # Claude Code 自身がツールを実行（デフォルト）
+transport = "stream"       # トークン単位のストリーミング（デフォルト）
+```
+
+先に把握しておくべき点が 2 つあります。デフォルトの `delegation` モードでは
+Claude Code 側がツールを実行するため、agent-cli のツールレジストリと承認プロンプトは
+関与しません。また `gateway` モード（`--tools ""`）ではツールが一切実行されません。
+`claude -p` は外部のツール定義を受け付けないためです。
+[`doc/providers/claude-code.md`](doc/providers/claude-code.md) を参照してください。
+
 必須の検証対象は `claude` と `ollama`（モデル `glm-5.1:cloud`）です。
 
-| 機能 | claude | codex | ollama | opencode | llama.cpp |
-|------------|--------|-------|--------|----------|-----------|
-| ストリーミング | ✓ | ✓ | ✓ | ✓（クラウド SSE / ローカルはバッファ） | ✓ |
-| ツール使用 | ✓ | ✓（function calling） | ✓（モデル依存） | ✓ クラウド / ✗ ローカル (v1) | ✓（サーバービルド依存） |
-| 思考 | ✓ (`thinking_delta`) | ✗ | ✓（モデル依存, `message.thinking`） | ✗ | ✗ |
+| 機能 | claude | claude-code | codex | ollama | opencode | llama.cpp |
+|------------|--------|-------------|-------|--------|----------|-----------|
+| ストリーミング | ✓ | ✓（`transport = "stream"`） | ✓ | ✓ | ✓（クラウド SSE / ローカルはバッファ） | ✓ |
+| ツール使用 | ✓ | ✓ delegation モード（Claude Code **内部**で実行） | ✓（function calling） | ✓（モデル依存） | ✓ クラウド / ✗ ローカル (v1) | ✓（サーバービルド依存） |
+| 思考 | ✓ (`thinking_delta`) | ✓（`transport = "stream"`） | ✗ | ✓（モデル依存, `message.thinking`） | ✗ | ✗ |
 
 `opencode-go` の機能は `opencode`（クラウドモード）と同じです。設定のショートカットであり、別のバックエンドではありません。
 
@@ -159,6 +180,24 @@ model        = "claude-opus-4-7"
 base_url     = "https://api.anthropic.com"   # 通常はそのまま
 thinking     = true                          # 思考ブロックを有効化
 # prompt_cache = true                         # オプトイン: Anthropic プロンプトキャッシュ
+```
+
+**claude-code** — ローカルにインストール済みの Claude Code CLI を子プロセスとして駆動します。API キーは不要で、Claude Code 自身の認証を使います。以下のキーはすべて任意です:
+
+```toml
+[provider]
+kind = "claude-code"
+
+[provider.claude-code]
+bin       = "claude"       # 実行ファイル名（PATH から解決）またはフルパス
+model     = "sonnet"       # --model。省略時は Claude Code 自身のデフォルト
+mode      = "delegation"   # "delegation"（Claude Code 側のツール）| "gateway"（チャットのみ）
+transport = "stream"       # "stream"（トークンストリーミング）| "oneshot"
+session   = "persistent"   # "persistent" | "ephemeral"（delegation のみ）
+turn_timeout_secs = 900
+# tools           = ["Bash", "Read"]
+# permission_mode = "auto"
+# max_budget_usd  = 1.0
 ```
 
 **codex** — OpenAI Chat Completions (SSE, function calling)。`kind = "codex"` は内部名であり、OpenAI のレガシー Codex モデルを指すものではありません。`base_url` は OpenAI 互換ゲートウェイ / Azure OpenAI でも動作します:
@@ -450,7 +489,7 @@ You are a senior reviewer. Always propose minimal-diff fixes.
 - [`doc/tools.md`](doc/tools.md) — 組み込みツールの仕様
 - [`doc/architecture.md`](doc/architecture.md) — アーキテクチャ概要
 - [`doc/troubleshooting.md`](doc/troubleshooting.md) — 既知の不具合と対処
-- [`doc/providers/claude.md`](doc/providers/claude.md) / [`codex.md`](doc/providers/codex.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — バックエンド別ガイド
+- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — バックエンド別ガイド
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — 開発ガイド
 - [`CHANGELOG.md`](CHANGELOG.md) — リリースノート
 

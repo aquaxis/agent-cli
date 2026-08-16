@@ -585,7 +585,7 @@ fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
 /// Flatten history for the local session API: system messages are joined into
 /// the `system` field; the remaining turns are concatenated into one labelled
 /// text prompt (the local endpoint takes a single new message's parts).
-fn flatten_history(messages: &[Message]) -> (Option<String>, String) {
+pub(crate) fn flatten_history(messages: &[Message]) -> (Option<String>, String) {
     let mut system: Option<String> = None;
     let mut body = String::new();
     for m in messages {

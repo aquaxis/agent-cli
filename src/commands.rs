@@ -153,6 +153,17 @@ pub async fn providers(cfg: &Config) -> Result<()> {
                 None => "no api_key_env configured".into(),
             },
             ("ollama", Some(_)) | ("llama.cpp", Some(_)) => "local server".into(),
+            // No API key of its own: it runs the Claude Code CLI, which brings
+            // its own authentication. What matters is whether the binary exists.
+            ("claude-code", entry) => {
+                let raw = entry
+                    .and_then(|e| e.bin.clone())
+                    .unwrap_or_else(|| "claude".into());
+                match ai::claude_code::resolve_bin(&raw) {
+                    Ok(path) => format!("bin {}", path.display()),
+                    Err(_) => format!("bin {raw}: NOT found"),
+                }
+            }
             (_, _) => "no config".into(),
         };
         println!("  - {kind:<12} model={model:<20} {key_status}");
@@ -178,6 +189,52 @@ pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
 
     // Normalize opencode-go → opencode with Go defaults before further checks
     cfg.apply_opencode_go_defaults();
+
+    // Claude Code check: this backend has no api_key_env — it drives the
+    // `claude` CLI, which carries its own authentication. Check the binary.
+    let kind = cfg.provider.kind.as_str();
+    if kind == "claude-code" {
+        let raw = cfg
+            .provider_entry(kind)
+            .and_then(|e| e.bin.clone())
+            .unwrap_or_else(|| "claude".into());
+        print!("[doctor] claude binary   : {raw} ... ");
+        match ai::claude_code::resolve_bin(&raw) {
+            Ok(path) => {
+                let version = tokio::time::timeout(
+                    Duration::from_secs(20),
+                    tokio::process::Command::new(&path)
+                        .arg("--version")
+                        .output(),
+                )
+                .await;
+                match version {
+                    Ok(Ok(out)) if out.status.success() => println!(
+                        "OK ({}, {})",
+                        path.display(),
+                        String::from_utf8_lossy(&out.stdout).trim()
+                    ),
+                    Ok(Ok(out)) => {
+                        println!("FAIL (exit {} at {})", out.status, path.display());
+                        all_ok = false;
+                    }
+                    Ok(Err(e)) => {
+                        println!("FAIL ({e})");
+                        all_ok = false;
+                    }
+                    Err(_) => {
+                        println!("FAIL (--version timed out)");
+                        all_ok = false;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("NOT found");
+                println!("[doctor]   {e}");
+                all_ok = false;
+            }
+        }
+    }
 
     // API key check (if applicable)
     let kind = cfg.provider.kind.as_str();

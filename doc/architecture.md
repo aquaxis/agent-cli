@@ -47,6 +47,7 @@ src/
 ├── ai/
 │   ├── mod.rs           ... Provider trait, build()
 │   ├── claude.rs        ... Anthropic Messages (SSE, thinking, tool_use)
+│   ├── claude_code.rs   ... Claude Code CLI as a child process (stream-json / --print JSON)
 │   ├── codex.rs         ... OpenAI Chat Completions (SSE, function calling)
 │   ├── ollama.rs        ... Ollama /api/chat (NDJSON, tool_calls)
 │   ├── opencode.rs      ... OpenCode local session API / Zen cloud (OpenAI- or Anthropic-compatible via `api`)
@@ -287,6 +288,29 @@ Full reference: [`doc/config.md`](config.md) §11.
 
 All three are independent and additive; with every flag off the request
 bodies and history handling are byte-for-byte unchanged.
+
+## 8.1 Child-process backend (`claude-code`)
+
+Every other backend is an HTTP client. `claude-code` instead spawns the local
+Claude Code CLI and talks to it over pipes, which puts two things outside
+agent-cli's control:
+
+- **Tools.** In the default `delegation` mode Claude Code executes its own
+  tools and reports them afterwards, so `ai/claude_code.rs` never converts a
+  `tool_use` block into `ProviderEvent::ToolUse` — doing so would make
+  `agent.rs` run the same command a second time. The approval flow of §3.3 is
+  therefore not exercised by this backend. In `gateway` mode (`--tools ""`) no
+  tools run at all: `claude -p` accepts no external tool definitions, so
+  agent-cli's registry cannot be offered either.
+- **Process lifetime.** `delegation` + `stream` + `session = "persistent"`
+  keeps one resident child for the conversation, fed one JSON line per turn and
+  guarded by a per-turn timeout; every other combination spawns one child per
+  turn. Children are spawned with `kill_on_drop`, so agent-cli's exit paths in
+  §7 leave no orphan.
+
+Text and thinking deltas arrive as Anthropic-shaped SSE wrapped in
+`stream_event`, so `ai/claude.rs::handle_frame` is reused after one unwrap.
+See [`doc/providers/claude-code.md`](providers/claude-code.md).
 
 ## 9. Target OS
 

@@ -9,7 +9,8 @@
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Provider: the AI backend. Only one `kind` is active at a time.
-# Supported: "claude" | "codex" | "ollama" | "opencode" | "opencode-go" | "llama.cpp"
+# Supported: "claude" | "claude-code" | "codex" | "ollama" | "opencode" |
+#            "opencode-go" | "llama.cpp"
 # ─────────────────────────────────────────────────────────────────────────────
 [provider]
 kind = "claude"
@@ -22,6 +23,26 @@ base_url    = "https://api.anthropic.com"
 thinking    = true
 # Opt-in: Anthropic prompt caching (system + tools + conversation tail).
 # prompt_cache = true
+
+# --- Claude Code CLI (drives the locally installed `claude` binary) ---
+# No API key: it inherits whatever authentication Claude Code already has.
+# Not the same backend as [provider.claude] above, which is the Anthropic API.
+# [provider.claude-code]
+# bin       = "claude"       # executable name (resolved via PATH) or full path
+# model     = "sonnet"       # --model; omit for Claude Code's own default
+# mode      = "delegation"   # "delegation" (Claude Code runs its own tools)
+#                            # | "gateway"  (--tools "", chat only: agent-cli's
+#                            #               tools cannot be offered to it)
+# transport = "stream"       # "stream" (token streaming) | "oneshot"
+# session   = "persistent"   # "persistent" | "ephemeral" (delegation only)
+# turn_timeout_secs  = 900
+# tools              = ["Bash", "Read"]  # --tools
+# allowed_tools      = ["Bash(git *)"]   # --allowed-tools
+# disallowed_tools   = ["WebFetch"]      # --disallowed-tools
+# permission_mode    = "auto"            # --permission-mode
+# max_budget_usd     = 1.0               # --max-budget-usd
+# system_prompt_mode = "append"          # "append" | "replace"
+# extra_args         = []                # passed through verbatim
 
 # --- OpenAI (Codex) ---
 # [provider.codex]
