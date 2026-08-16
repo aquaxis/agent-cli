@@ -10,7 +10,7 @@ This document provides a comprehensive guide to configuring `agent-cli`. For a q
 4. [Complete Examples](#4-complete-examples)
 5. [API Key and Secret Management](#5-api-key-and-secret-management)
 6. [Multiple Profile Usage](#6-multiple-profile-usage)
-7. [Shell Tool Tuning](#7-shell-tool-tuning)
+7. [Bash Tool Tuning](#7-bash-tool-tuning)
 8. [UI Display Mode](#8-ui-display-mode)
 9. [Common Configuration Mistakes and Diagnostics](#9-common-configuration-mistakes-and-diagnostics)
 10. [Applying Configuration Changes and Restarting](#10-applying-configuration-changes-and-restarting)
@@ -40,6 +40,10 @@ agent-cli --config ./project-a.toml config path
 # Example: /home/alice/work/project-a.toml
 ```
 
+A fully commented starting point covering every section below ships with the
+repository as [`example/config.example.toml`](../example/config.example.toml).
+Copy it to the resolved path and edit, or point `--config` at your own copy.
+
 ## 2. Overall Structure and Section Roles
 
 ```toml
@@ -52,7 +56,8 @@ agent-cli --config ./project-a.toml config path
 
 [runtime]                   # Runtime behavior and paths
 [tools]                     # Tool-wide settings
-[tools.shell]               # Shell tool tuning
+[tools.bash]                # Bash tool tuning
+[tools.websearch]           # websearch tool endpoint / key (opt-in)
 
 [ui]                        # Display mode
 [history]                   # Opt-in history-window management
@@ -78,6 +83,24 @@ agent-cli --config ./project-a.toml config path
 | `persistent_session` | bool | `false` (**opencode local only**) | No | Opt-in: reuse one OpenCode server session across turns. See §11 |
 | `api` | string | `"openai"` (**opencode cloud only**) | No | Cloud wire format: `"openai"` → `{base}/chat/completions`; `"anthropic"` → `{base}/messages`. Pair with the matching `base_url` (e.g. `https://opencode.ai/zen/go/v1`) |
 | `request_timeout_secs` | int | `900` | No | Total HTTP timeout incl. streaming |
+| `temperature` | float | Backend default | No | Sampling temperature. When omitted, the field is left out of the request entirely and the backend's own default applies. A persona's `temperature` overrides this for the agent that loads it |
+| `max_retries` | int | `3` (**ollama only**) | No | Retry count for transient failures (retryable HTTP status, timeout, connection error). Other backends do not retry |
+
+#### `llama.cpp` sampling keys
+
+These are accepted on any `[provider.*]` table but only consumed by the
+`llama.cpp` backend, where they mirror the `llama-cli` flags of the same name.
+All are optional — omit a key and the server's own default applies.
+
+| Key | Type | `llama-cli` equivalent | Description |
+|------|----|------|------|
+| `max_tokens` | int | `-n` / `--n-predict` | Maximum number of tokens to generate |
+| `top_k` | int | `--top-k` | Top-K sampling cutoff |
+| `top_p` | float | `--top-p` | Nucleus sampling cutoff |
+| `min_p` | float | `--min-p` | Minimum-probability cutoff |
+| `repeat_penalty` | float | `--repeat-penalty` | Repetition penalty |
+| `repeat_last_n` | int | `--repeat-last-n` | Window size the repetition penalty applies to |
+| `seed` | int | `--seed` | Sampling seed for reproducible output |
 
 Per-backend defaults:
 
@@ -102,6 +125,7 @@ Per-backend defaults:
 | `agents_dir` | string | `~/.config/agent-cli/agents` | Directory to search for persona files (`<agents_dir>/<name>.md`). See [`doc/personas.md`](personas.md) for details |
 | `persona_file` | string | empty | Explicit persona file path. When empty, falls back to `<agents_dir>/<name>.md` or the built-in default. See [`doc/personas.md`](personas.md) for details |
 | `max_tool_iterations` | u32 | `24` | Upper limit for tool_use iterations within a single turn. Minimum is 1 (`0` or negative values are clamped to `1` internally), maximum is `u32::MAX = 4,294,967,295`. This is a safeguard to prevent infinite loops. See "Tuning `max_tool_iterations`" below for details |
+| `commands_dir` | string | `.agent-cli/commands` | Directory scanned for user-defined custom slash commands (`*.md`). Relative paths resolve against the working directory; `~` and env-style paths are expanded. An empty string falls back to the default, and a directory that does not exist is not an error — the REPL simply runs with built-in commands only. See [`doc/usage.md`](usage.md) "Custom Slash Commands" |
 
 #### Tuning `max_tool_iterations`
 
@@ -125,7 +149,7 @@ This is the upper limit for the loop where the AI repeats `tool_use -> tool resu
 | Use case | Recommended value | Rationale |
 |------|--------|------|
 | Simple conversation / education | `4-8` | Truncates runaway loops earlier |
-| Default (design-then-debug, etc.) | `24` (default) | Fits a typical workflow of design artifact generation -> verification -> lint fix -> fs_write |
+| Default (design-then-debug, etc.) | `24` (default) | Fits a typical workflow of design artifact generation -> verification -> lint fix -> write |
 | Multi-step orchestrator | `32-48` | When calling multiple tools sequentially |
 | Long autonomous execution (experimental) | `64-256` | When decomposing large tasks step by step |
 | Beyond that | Not recommended | You should suspect the AI is stuck in a loop. Operate with the assumption that you can intervene via `/cancel` or `Ctrl+C` |
@@ -141,16 +165,45 @@ max_tool_iterations = 48   # Multi-step orchestrator use case
 
 | Key | Type | Default | Description |
 |------|----|------|------|
-| `enabled` | string[] | `["shell","fs_read","fs_write","send_to"]` | Tools to enable |
+| `enabled` | string[] | `["bash","read","write","send_to","monitor","edit","glob","grep","websearch","webfetch"]` | Tools to enable |
 
 If the persona has `allowed_tools` / `denied_tools`, the **intersection / difference** with this list determines the final tool set.
 
-### `[tools.shell]`
+**Legacy tool names.** The pre-rename names `shell`, `fs_read`, and `fs_write`
+are still accepted in `enabled` (and in persona `allowed_tools` / `denied_tools`)
+and are mapped to `bash`, `read`, and `write` respectively, so configuration
+files written before the rename keep working. New configurations should use the
+canonical names.
+
+### `[tools.bash]`
 
 | Key | Type | Default | Description |
 |------|----|------|------|
-| `timeout_secs` | int | `60` | Timeout per command (seconds) |
+| `timeout_ms` | int | `120000` | Timeout per command, **in milliseconds** (the default is 120 seconds) |
 | `max_output_kb` | int | `256` | Maximum retained size for stdout/stderr (KB) |
+
+A legacy `[tools.shell]` table is still loaded as `[tools.bash]`, so an old
+configuration file does not break. Its `timeout_secs` key has no equivalent and
+is ignored — the default `timeout_ms` applies unless you add it explicitly.
+
+### `[tools.websearch]`
+
+Configuration for the `websearch` tool. Network access is opt-in: while
+`api_key_env` and `endpoint` are unset, `websearch` returns a configuration hint
+instead of results, and every other tool is unaffected.
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `api_key_env` | string | unset | Name of the environment variable holding the search API key (not the key itself) |
+| `endpoint` | string | unset | Search endpoint URL (provider-specific) |
+| `provider` | string | `"tavily"` | Search provider identifier, e.g. `"tavily"` / `"brave"` |
+
+```toml
+[tools.websearch]
+api_key_env = "TAVILY_API_KEY"
+endpoint    = "https://api.tavily.com/search"
+provider    = "tavily"
+```
 
 ### `[ui]`
 
@@ -213,10 +266,10 @@ auto_approve_tools = false
 log_dir            = "~/.local/share/agent-cli/logs"
 
 [tools]
-enabled = ["shell", "fs_read", "fs_write", "send_to"]
+enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
-[tools.shell]
-timeout_secs  = 120
+[tools.bash]
+timeout_ms    = 120000
 max_output_kb = 512
 
 [ui]
@@ -255,13 +308,19 @@ registry_dir        = "/tmp/agent-cli"
 agents_dir          = "~/.config/agent-cli/agents"
 persona_file        = ""
 max_tool_iterations = 48                            # Multi-step orchestrator assumed
+commands_dir        = ".agent-cli/commands"         # Custom slash commands (*.md)
 
 [tools]
-enabled = ["shell", "fs_read", "fs_write", "send_to"]
+enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
-[tools.shell]
-timeout_secs  = 60
+[tools.bash]
+timeout_ms    = 120000
 max_output_kb = 256
+
+[tools.websearch]
+api_key_env = "TAVILY_API_KEY"
+endpoint    = "https://api.tavily.com/search"
+provider    = "tavily"
 
 [ui]
 show_thinking = "expanded"
@@ -342,19 +401,20 @@ By sharing `registry_dir`, agents with different profiles can call each other vi
 registry_dir = "/tmp/agent-cli/team"
 ```
 
-## 7. Shell Tool Tuning
+## 7. Bash Tool Tuning
 
-To allow long-running jobs or commands that produce large output, adjust `[tools.shell]`.
+To allow long-running jobs or commands that produce large output, adjust `[tools.bash]`.
 
 ```toml
-[tools.shell]
-timeout_secs  = 600   # 10 minutes
-max_output_kb = 4096  # 4 MB
+[tools.bash]
+timeout_ms    = 600000   # 10 minutes (value is in milliseconds; default 120000 = 2 minutes)
+max_output_kb = 4096     # 4 MB
 ```
 
 Notes:
 
-- Processes exceeding `timeout_secs` are force-killed, and the tool result is treated as a failure.
+- `timeout_ms` is milliseconds, not seconds. `1200000` is 20 minutes, not 20 seconds.
+- Processes exceeding `timeout_ms` are force-killed, and the tool result is treated as a failure.
 - stdout/stderr exceeding `max_output_kb` is truncated with `...[truncated]` appended to the end.
 - To prevent the AI from accidentally invoking huge commands, it is recommended to also use interactive approval (`auto_approve_tools=false`).
 
@@ -390,10 +450,10 @@ Configuration changes take effect after restarting `agent-cli`. Dynamic switchin
 - Diagnosis: Try `curl -s $base_url/health` manually.
 - Resolution: Verify the URL, key, and server status.
 
-### Symptom: Shell tool reports "timed out"
+### Symptom: Bash tool reports "timed out"
 
-- Cause: `timeout_secs` was exceeded.
-- Resolution: Increase `[tools.shell] timeout_secs`, or instruct the AI to use shorter commands.
+- Cause: `timeout_ms` was exceeded.
+- Resolution: Increase `[tools.bash] timeout_ms`, or instruct the AI to use shorter commands.
 
 ### Symptom: Exits with `config file not found`
 

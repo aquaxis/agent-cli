@@ -71,12 +71,13 @@ log_dir            = "~/.local/share/agent-cli/logs"
 registry_dir       = ""
 agents_dir         = "~/.config/agent-cli/agents"
 persona_file       = ""
+commands_dir       = ".agent-cli/commands"   # custom slash commands (*.md)
 
 [tools]
-enabled = ["shell", "fs_read", "fs_write", "send_to"]
+enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
-[tools.shell]
-timeout_secs  = 60
+[tools.bash]
+timeout_ms    = 120000
 max_output_kb = 256
 
 [ui]
@@ -209,10 +210,19 @@ pub struct RuntimeConfig {
     /// Bump to 16+ for orchestrators that own multiple tools per turn.
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: u32,
+    /// Directory of user-defined custom slash commands (`*.md` files), resolved
+    /// relative to the working directory unless absolute / `~`-expanded. Empty
+    /// string falls back to the default (`.agent-cli/commands`). See FR-14.
+    #[serde(default = "default_commands_dir")]
+    pub commands_dir: String,
 }
 
 fn default_max_tool_iterations() -> u32 {
     24
+}
+
+fn default_commands_dir() -> String {
+    ".agent-cli/commands".to_string()
 }
 
 impl Default for RuntimeConfig {
@@ -224,6 +234,7 @@ impl Default for RuntimeConfig {
             agents_dir: default_agents_dir(),
             persona_file: String::new(),
             max_tool_iterations: default_max_tool_iterations(),
+            commands_dir: default_commands_dir(),
         }
     }
 }
@@ -240,51 +251,80 @@ fn default_agents_dir() -> String {
 pub struct ToolsConfig {
     #[serde(default = "default_tools_enabled")]
     pub enabled: Vec<String>,
+    /// Bash tool tuning. `#[serde(alias = "shell")]` keeps the legacy
+    /// `[tools.shell]` block loadable after the rename (its `timeout_secs`
+    /// field has no equivalent and is ignored; `timeout_ms` falls back to the
+    /// default).
+    #[serde(default, alias = "shell")]
+    pub bash: BashToolConfig,
     #[serde(default)]
-    pub shell: ShellToolConfig,
+    pub websearch: WebSearchConfig,
 }
 
 impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
             enabled: default_tools_enabled(),
-            shell: ShellToolConfig::default(),
+            bash: BashToolConfig::default(),
+            websearch: WebSearchConfig::default(),
         }
     }
 }
 
 fn default_tools_enabled() -> Vec<String> {
     vec![
-        "shell".to_string(),
-        "fs_read".to_string(),
-        "fs_write".to_string(),
+        "bash".to_string(),
+        "read".to_string(),
+        "write".to_string(),
         "send_to".to_string(),
+        "monitor".to_string(),
+        "edit".to_string(),
+        "glob".to_string(),
+        "grep".to_string(),
+        "websearch".to_string(),
+        "webfetch".to_string(),
     ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShellToolConfig {
-    #[serde(default = "default_shell_timeout")]
-    pub timeout_secs: u64,
-    #[serde(default = "default_shell_max_output")]
+pub struct BashToolConfig {
+    /// Default execution timeout for the `bash` tool, in milliseconds.
+    #[serde(default = "default_bash_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_bash_max_output")]
     pub max_output_kb: u64,
 }
 
-impl Default for ShellToolConfig {
+impl Default for BashToolConfig {
     fn default() -> Self {
         Self {
-            timeout_secs: default_shell_timeout(),
-            max_output_kb: default_shell_max_output(),
+            timeout_ms: default_bash_timeout_ms(),
+            max_output_kb: default_bash_max_output(),
         }
     }
 }
 
-fn default_shell_timeout() -> u64 {
-    60
+fn default_bash_timeout_ms() -> u64 {
+    120_000
 }
 
-fn default_shell_max_output() -> u64 {
+fn default_bash_max_output() -> u64 {
     256
+}
+
+/// Configuration for the `websearch` tool. Network tools are opt-in: when
+/// `api_key_env` / `endpoint` are absent, `websearch` returns a clear error.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebSearchConfig {
+    /// Environment variable holding the search API key.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Search endpoint URL (provider-specific).
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// Search provider identifier (e.g. "tavily", "brave"). Default: "tavily".
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -538,8 +578,36 @@ mod tests {
         assert!(cfg.provider.claude.is_some());
         assert!(cfg.provider.ollama.is_some());
         assert!(cfg.provider.llamacpp.is_some());
-        assert_eq!(cfg.tools.enabled.len(), 4);
-        assert_eq!(cfg.tools.shell.timeout_secs, 60);
+        assert_eq!(cfg.tools.enabled.len(), 10);
+        assert_eq!(cfg.tools.bash.timeout_ms, 120_000);
+        assert_eq!(cfg.runtime.commands_dir, ".agent-cli/commands");
+    }
+
+    #[test]
+    fn runtime_commands_dir_default() {
+        assert_eq!(RuntimeConfig::default().commands_dir, ".agent-cli/commands");
+    }
+
+    #[test]
+    fn config_with_custom_commands_dir() {
+        let toml_src = r#"
+[provider]
+kind = "claude"
+[runtime]
+commands_dir = "/tmp/cmds"
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        assert_eq!(cfg.runtime.commands_dir, "/tmp/cmds");
+    }
+
+    #[test]
+    fn config_without_commands_dir_uses_default() {
+        let toml_src = r#"
+[provider]
+kind = "claude"
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        assert_eq!(cfg.runtime.commands_dir, ".agent-cli/commands");
     }
 
     /// FR-04-3 boundary (upper limit): TOML with `max_tool_iterations` set to `u32::MAX`
@@ -677,10 +745,10 @@ auto_approve_tools = false
 log_dir            = "~/.local/share/agent-cli/logs"
 
 [tools]
-enabled = ["shell", "fs_read", "fs_write", "send_to"]
+enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
-[tools.shell]
-timeout_secs  = 120
+[tools.bash]
+timeout_ms    = 120000
 max_output_kb = 512
 
 [ui]
@@ -717,10 +785,10 @@ agents_dir         = "~/.config/agent-cli/agents"
 persona_file       = ""
 
 [tools]
-enabled = ["shell", "fs_read", "fs_write", "send_to"]
+enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
-[tools.shell]
-timeout_secs  = 60
+[tools.bash]
+timeout_ms    = 120000
 max_output_kb = 256
 
 [ui]
@@ -744,7 +812,10 @@ show_thinking = "expanded"
     #[test]
     fn enabled_tool_names_match_implementation() {
         let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
-        let known = ["shell", "fs_read", "fs_write", "send_to"];
+        let known = [
+            "bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep",
+            "websearch", "webfetch",
+        ];
         for name in &cfg.tools.enabled {
             assert!(
                 known.contains(&name.as_str()),

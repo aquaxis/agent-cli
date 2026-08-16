@@ -40,7 +40,7 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
 ### Getting `HTTP 429: ...` responses
 
 - Rate limiting. Check whether you're sending a large number of requests in a short time.
-- Increasing `[tools.shell] timeout_secs` can reduce excessive retries during long-running operations.
+- Increasing `[tools.bash] timeout_ms` can reduce excessive retries during long-running operations.
 
 ### Not sure which config file is being used
 
@@ -80,7 +80,7 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
 - Start it, then `curl -s http://127.0.0.1:4096/session` to confirm, and verify
   `base_url`.
 
-### Local mode: the model can't call shell/fs tools
+### Local mode: the model can't call bash/fs tools
 
 - Known v1 limitation: agent-cli tool specs are **not** forwarded to a local
   `opencode serve` (session-API tool schema unconfirmed). Use cloud mode if you
@@ -184,7 +184,7 @@ User-side workarounds (in recommended order):
 
 1. **Split the prompt**: Narrow the goal per request and give instructions step by step.
 2. **Be more specific**: State the desired result (file, command, output example) explicitly. This reduces the AI's tendency to keep "exploring" with tools.
-3. **Exclude unnecessary tools with `denied_tools`**: Add `denied_tools: [fs_read, fs_write]` in the persona file to prevent the AI from calling irrelevant tools.
+3. **Exclude unnecessary tools with `denied_tools`**: Add `denied_tools: [read, write]` in the persona file to prevent the AI from calling irrelevant tools.
 4. **Reset the conversation**: Run `/clear` to wipe history and retry with a fresh instruction.
 5. **Raise `[runtime] max_tool_iterations`**: Edit the config file to increase the cap (default 24, min 1, max `u32::MAX = 4,294,967,295`). For multi-step orchestrators, try 32/48; for long autonomous runs, 64-256. Changes take effect on `agent-cli` restart. See [`doc/config.md`](config.md) section `[runtime]` for details.
 
@@ -192,7 +192,7 @@ User-side workarounds (in recommended order):
 
 ### `timed out after 60 seconds: ...`
 
-- The default timeout was exceeded. Increase `[tools.shell] timeout_secs` or instruct the AI to use shorter commands.
+- The default timeout was exceeded. Increase `[tools.bash] timeout_ms` or instruct the AI to use shorter commands.
 
 ### Output ending with `...[truncated]`
 

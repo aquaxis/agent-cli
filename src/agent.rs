@@ -323,6 +323,7 @@ impl Agent {
             let ctx = ToolCtx {
                 self_id: self.id.clone(),
                 registry_dir: self.registry_dir.clone(),
+                event_tx: Some(event_tx.clone()),
             };
             for (id, name, args) in pending_tools {
                 let _ = event_tx
@@ -529,6 +530,58 @@ mod tests {
     use crate::persona::Persona;
     use crate::tools::ToolRegistry;
 
+    /// Verify the read→LLM feedback path: a `read` tool call returns the file
+    /// content as the `AgentEvent::ToolResult` output. Combined with the
+    /// tool-use cycle test below (which proves `process_turn()` pushes each
+    /// `ToolResult` into `self.history` and re-sends history on the next
+    /// provider call), this confirms the read file content reaches the LLM.
+    #[tokio::test]
+    async fn read_tool_result_carries_file_content() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.write_all(b"READABLE_MARKER_42\n").unwrap();
+        let path = tmp.path().to_str().unwrap().to_string();
+
+        let scripts = vec![
+            vec![
+                ProviderEvent::ToolUse {
+                    id: "call-1".into(),
+                    name: "read".into(),
+                    args: serde_json::json!({ "file_path": path }),
+                },
+                ProviderEvent::Done,
+            ],
+            vec![ProviderEvent::Done],
+        ];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = build_test_agent(scripts, history);
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx.send(AgentInput::UserPrompt("read it".into())).await.unwrap();
+
+        let mut saw_read_result = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::ToolResult { name, ok, output } if name == "read" => {
+                    assert!(ok, "read tool failed: {output}");
+                    assert!(
+                        output.contains("READABLE_MARKER_42"),
+                        "read content not in tool result: {output}"
+                    );
+                    saw_read_result = true;
+                }
+                AgentEvent::Done => break,
+                _ => {}
+            }
+        }
+        assert!(saw_read_result, "read ToolResult event never arrived");
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
     fn build_test_agent(scripts: Vec<Vec<ProviderEvent>>, history: Vec<Message>) -> Agent {
         let cfg: Config = toml::from_str(crate::config::tests_default_config()).unwrap();
         let tools = ToolRegistry::build(&cfg, None, None);
@@ -598,8 +651,8 @@ mod tests {
             vec![
                 ProviderEvent::ToolUse {
                     id: "call-1".into(),
-                    name: "shell".into(),
-                    args: serde_json::json!({"cmd": "echo agent-cli-test"}),
+                    name: "bash".into(),
+                    args: serde_json::json!({"command": "echo agent-cli-test"}),
                 },
                 ProviderEvent::Done,
             ],
@@ -628,10 +681,10 @@ mod tests {
         let mut saw_done = false;
         while let Some(ev) = ev_rx.recv().await {
             match ev {
-                AgentEvent::ToolCall { name, .. } if name == "shell" => {
+                AgentEvent::ToolCall { name, .. } if name == "bash" => {
                     tool_called = true;
                 }
-                AgentEvent::ToolResult { name, ok, output } if name == "shell" => {
+                AgentEvent::ToolResult { name, ok, output } if name == "bash" => {
                     tool_ok = ok;
                     tool_output_contains_test = output.contains("agent-cli-test");
                 }
@@ -666,8 +719,8 @@ mod tests {
             scripts.push(vec![
                 ProviderEvent::ToolUse {
                     id: format!("call-{i}"),
-                    name: "shell".into(),
-                    args: serde_json::json!({"cmd": "echo loop"}),
+                    name: "bash".into(),
+                    args: serde_json::json!({"command": "echo loop"}),
                 },
                 ProviderEvent::Done,
             ]);
@@ -691,8 +744,8 @@ mod tests {
         let mut saw_done = false;
         while let Some(ev) = ev_rx.recv().await {
             match ev {
-                AgentEvent::ToolCall { name, .. } if name == "shell" => tool_calls += 1,
-                AgentEvent::ToolResult { name, .. } if name == "shell" => tool_results += 1,
+                AgentEvent::ToolCall { name, .. } if name == "bash" => tool_calls += 1,
+                AgentEvent::ToolResult { name, .. } if name == "bash" => tool_results += 1,
                 AgentEvent::Info { message } => info_messages.push(message),
                 AgentEvent::Error { .. } => error_count += 1,
                 AgentEvent::Done => {
@@ -729,8 +782,8 @@ mod tests {
             vec![
                 ProviderEvent::ToolUse {
                     id: "call-0".into(),
-                    name: "shell".into(),
-                    args: serde_json::json!({"cmd": "echo clamped"}),
+                    name: "bash".into(),
+                    args: serde_json::json!({"command": "echo clamped"}),
                 },
                 ProviderEvent::Done,
             ],
@@ -925,8 +978,8 @@ mod tests {
             vec![
                 ProviderEvent::ToolUse {
                     id: "call-1".into(),
-                    name: "shell".into(),
-                    args: serde_json::json!({"cmd": "echo approved"}),
+                    name: "bash".into(),
+                    args: serde_json::json!({"command": "echo approved"}),
                 },
                 ProviderEvent::Done,
             ],
@@ -966,7 +1019,7 @@ mod tests {
         let mut saw_done = false;
         while let Some(ev) = ev_rx.recv().await {
             match ev {
-                AgentEvent::ToolResult { name, ok, output } if name == "shell" => {
+                AgentEvent::ToolResult { name, ok, output } if name == "bash" => {
                     tool_ok = ok;
                     output_contains_marker = output.contains("approved");
                 }
@@ -997,8 +1050,8 @@ mod tests {
             vec![
                 ProviderEvent::ToolUse {
                     id: "call-deny".into(),
-                    name: "shell".into(),
-                    args: serde_json::json!({"cmd": "echo denied"}),
+                    name: "bash".into(),
+                    args: serde_json::json!({"command": "echo denied"}),
                 },
                 ProviderEvent::Done,
             ],
@@ -1032,7 +1085,7 @@ mod tests {
         let mut saw_done = false;
         while let Some(ev) = ev_rx.recv().await {
             match ev {
-                AgentEvent::ToolResult { name, ok, output } if name == "shell" => {
+                AgentEvent::ToolResult { name, ok, output } if name == "bash" => {
                     tool_denied = !ok && output.contains("denied tool execution");
                 }
                 AgentEvent::Done => {
@@ -1056,8 +1109,8 @@ mod tests {
             vec![
                 ProviderEvent::ToolUse {
                     id: "call-auto".into(),
-                    name: "shell".into(),
-                    args: serde_json::json!({"cmd": "echo auto"}),
+                    name: "bash".into(),
+                    args: serde_json::json!({"command": "echo auto"}),
                 },
                 ProviderEvent::Done,
             ],
@@ -1084,7 +1137,7 @@ mod tests {
         let mut saw_done = false;
         while let Some(ev) = ev_rx.recv().await {
             match ev {
-                AgentEvent::ToolResult { name, ok, .. } if name == "shell" => {
+                AgentEvent::ToolResult { name, ok, .. } if name == "bash" => {
                     tool_ok = ok;
                 }
                 AgentEvent::Done => {
@@ -1232,8 +1285,8 @@ mod tests {
                 },
                 ProviderEvent::ToolUse {
                     id: "call-1".into(),
-                    name: "shell".into(),
-                    args: serde_json::json!({"cmd": "echo ok"}),
+                    name: "bash".into(),
+                    args: serde_json::json!({"command": "echo ok"}),
                 },
                 ProviderEvent::Done,
             ],

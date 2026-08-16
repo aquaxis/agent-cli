@@ -15,6 +15,7 @@ use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest};
 use crate::ai;
 use crate::cli::RunArgs;
 use crate::config::{Config, ConfigSource, ShowThinkingMode};
+use crate::custom_commands::{self, CustomCommand};
 use crate::editor::InputState;
 use crate::error::Result;
 use crate::id::AgentId;
@@ -87,6 +88,10 @@ pub(crate) struct ReplState {
     history: RwLock<Vec<String>>,
     /// Shared via `Arc<AtomicBool>` for `/auto on|off|status` runtime toggle (FR-04-2 / design doc 4.3A).
     auto_approve: Arc<AtomicBool>,
+    /// Resolved directory for custom slash commands (`*.md` files).
+    commands_dir: PathBuf,
+    /// Discovered custom commands, refreshable via `/reload-commands`.
+    commands: RwLock<Vec<CustomCommand>>,
 }
 
 const HISTORY_LIMIT: usize = 200;
@@ -125,6 +130,20 @@ fn append_history(path: &Path, line: &str, last_line: Option<&str>) {
         .open(path)
     {
         let _ = writeln!(f, "{line}");
+    }
+}
+
+/// Push a line into in-memory history (with dedup and limit) and persist it.
+async fn push_history(state: &Arc<ReplState>, line: &str) {
+    let last_line = state.history.read().await.last().cloned();
+    append_history(&state.history_path, line, last_line.as_deref());
+    let mut h = state.history.write().await;
+    if h.last().map(|l| l.as_str()) != Some(line) {
+        h.push(line.to_string());
+        let len = h.len();
+        if len > HISTORY_LIMIT {
+            h.drain(..len - HISTORY_LIMIT);
+        }
     }
 }
 
@@ -222,6 +241,8 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
 
     let history_path = config.log_dir()?.join("history.txt");
     let initial_history = load_history(&history_path);
+    let commands_dir = custom_commands::resolve_dir(&config.runtime.commands_dir);
+    let initial_commands = custom_commands::discover(&commands_dir);
     let state = Arc::new(ReplState {
         registry_dir: registry_dir.clone(),
         agents_dir: agents_dir.clone(),
@@ -233,6 +254,8 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         history_path,
         history: RwLock::new(initial_history),
         auto_approve: auto_approve.clone(),
+        commands_dir,
+        commands: RwLock::new(initial_commands),
     });
 
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
@@ -392,6 +415,20 @@ enum PromptState {
     AwaitingApproval(oneshot::Sender<bool>),
 }
 
+/// Outcome of `handle_repl_command` (custom-command support, FR-08/FR-11).
+///
+/// - `Continue`: command completed (or unknown); redraw the prompt (existing behavior).
+/// - `SubmittedPrompt`: a custom command sent a `UserPrompt` to the agent; the
+///   caller must drain stale idle notifications and enter `PromptState::Pending`
+///   (same as a normal user prompt).
+/// - `Quit`: terminate the REPL (`/quit`, `/exit`).
+#[derive(Debug)]
+enum CommandResult {
+    Continue,
+    SubmittedPrompt,
+    Quit,
+}
+
 impl PromptState {
     fn is_ready(&self) -> bool {
         matches!(self, PromptState::Ready)
@@ -518,14 +555,24 @@ impl PromptRenderer {
     }
 
     /// Render `prompt` + the editor buffer, wrapping correctly and positioning the
-    /// cursor at the logical insertion point.
-    fn render(&mut self, stdout: &mut std::io::Stdout, prompt: &str, state: &InputState) {
+    /// cursor at the logical insertion point. When `suggestion` is `Some`, a
+    /// one-line candidate hint is printed just below the prompt line (used for
+    /// live slash-command completion). It occupies one extra row, which
+    /// `clear_block` clears on the next render (it clears from the block top
+    /// downward).
+    fn render(
+        &mut self,
+        stdout: &mut std::io::Stdout,
+        prompt: &str,
+        state: &InputState,
+        suggestion: Option<&str>,
+    ) {
         use crossterm::cursor::{MoveDown, MoveToColumn, MoveUp};
         use crossterm::style::Print;
 
         let width = Self::terminal_width();
 
-        // 1. Clear the previous block (handles multi-row renders).
+        // 1. Clear the previous block (handles multi-row renders + suggestion).
         self.clear_block(stdout);
 
         // 2. Print prompt + line; the terminal auto-wraps long content.
@@ -538,6 +585,21 @@ impl PromptRenderer {
         let cursor_cols = state.display_cursor();
         let (end_row, cursor_row, cursor_col) =
             layout_cursor(prompt_cols, cursor_cols, total_cols, width);
+
+        // 3b. Print the suggestion one row below the printed line (if any),
+        //     then return the cursor to end_row so the positioning below works.
+        //     The suggestion is truncated to one row to keep the math simple.
+        //     Skip it when the terminal is too narrow to be useful (e.g. a pty
+        //     with no reported size), so we never render a lone ellipsis.
+        if let Some(sug) = suggestion.filter(|s| !s.is_empty()) {
+            if width >= 8 {
+                let sug = truncate_suggestion(sug, width);
+                let _ = stdout.execute(MoveDown(1));
+                let _ = stdout.execute(MoveToColumn(0));
+                let _ = stdout.execute(Print(&sug));
+                let _ = stdout.execute(MoveUp(1));
+            }
+        }
 
         // 4. Move from the post-print position (end_row) to the cursor row.
         if end_row > cursor_row {
@@ -777,7 +839,7 @@ async fn run_input_loop_raw(
     const APPROVAL_PROMPT: &str = "approve? [y/N]: ";
 
     // Draw initial prompt
-    renderer.render(&mut stdout, PROMPT, &input_state);
+    render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
 
     loop {
         // Read current history for navigation (deduplicated for smooth up/down browsing)
@@ -803,7 +865,7 @@ async fn run_input_loop_raw(
                         prompt_state = PromptState::Ready;
                         // Redraw prompt after AI response on a fresh line
                         renderer.reset();
-                        renderer.render(&mut stdout, PROMPT, &input_state);
+                        render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
                     }
                     None => break,
                 }
@@ -825,7 +887,7 @@ async fn run_input_loop_raw(
                         // Reset input state for the approval prompt
                         input_state = InputState::new();
                         prompt_state = PromptState::AwaitingApproval(req.response);
-                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state);
+                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state, None);
                     }
                     None => {
                         approval_rx = None;
@@ -884,17 +946,25 @@ async fn run_input_loop_raw(
                                     renderer.finish_line(&mut stdout, PROMPT, &line);
 
                                     if let Some(rest) = trimmed.strip_prefix('/') {
-                                        if !handle_repl_command(rest, &input_tx, &state, true).await {
-                                            exit_loop = true;
-                                            break;
+                                        match handle_repl_command(rest, &input_tx, &state, true).await {
+                                            CommandResult::Quit => {
+                                                exit_loop = true;
+                                                break;
+                                            }
+                                            CommandResult::SubmittedPrompt => {
+                                                while agent_idle_rx.try_recv().is_ok() {}
+                                                prompt_state = PromptState::Pending;
+                                            }
+                                            CommandResult::Continue => {
+                                                // Redraw prompt after command
+                                                render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                                            }
                                         }
-                                        // Redraw prompt after command
-                                        renderer.render(&mut stdout, PROMPT, &input_state);
                                         continue;
                                     }
                                     if trimmed.is_empty() {
                                         // Blank line: just redraw prompt
-                                        renderer.render(&mut stdout, PROMPT, &input_state);
+                                        render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
                                         continue;
                                     }
 
@@ -927,9 +997,9 @@ async fn run_input_loop_raw(
                                 KeyAction::ClearLine => {
                                     // Redraw prompt with cleared state
                                     if prompt_state.is_awaiting_approval() {
-                                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state);
+                                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state, None);
                                     } else {
-                                        renderer.render(&mut stdout, PROMPT, &input_state);
+                                        render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
                                     }
                                 }
                                 KeyAction::Eof => {
@@ -938,9 +1008,9 @@ async fn run_input_loop_raw(
                                 }
                                 KeyAction::Continue => {
                                     if prompt_state.is_awaiting_approval() {
-                                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state);
+                                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state, None);
                                     } else {
-                                        renderer.render(&mut stdout, PROMPT, &input_state);
+                                        render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
                                     }
                                 }
                             }
@@ -1054,8 +1124,13 @@ async fn run_input_loop_line<R>(
                         }
 
                         if let Some(rest) = trimmed.strip_prefix('/') {
-                            if !handle_repl_command(rest, &input_tx, &state, false).await {
-                                break;
+                            match handle_repl_command(rest, &input_tx, &state, false).await {
+                                CommandResult::Quit => break,
+                                CommandResult::SubmittedPrompt => {
+                                    while agent_idle_rx.try_recv().is_ok() {}
+                                    prompt_state = PromptState::Pending;
+                                }
+                                CommandResult::Continue => {}
                             }
                             continue;
                         }
@@ -1309,17 +1384,122 @@ fn collapse_thinking_text(text: &str) -> String {
     }
 }
 
+/// Built-in REPL slash command names (the `match cmd` arms in
+/// `handle_repl_command`). Used for live candidate suggestions.
+const BUILTIN_COMMANDS: &[&str] = &[
+    "quit",
+    "exit",
+    "help",
+    "auto",
+    "clear",
+    "reset",
+    "history",
+    "list",
+    "send",
+    "tools",
+    "persona",
+    "reload-persona",
+    "peer",
+    "cancel",
+    "commands",
+    "reload-commands",
+];
+
+/// Return command names (without `/`) that start with `prefix`, built-in names
+/// first (in declaration order) then custom names (sorted), deduplicated. A
+/// custom command that collides with a built-in is dropped (built-ins take
+/// precedence, FR-07). An empty `prefix` matches all.
+fn slash_candidates(prefix: &str, custom_names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for b in BUILTIN_COMMANDS {
+        if b.starts_with(prefix) {
+            out.push((*b).to_string());
+        }
+    }
+    let builtin_set: std::collections::HashSet<&str> = BUILTIN_COMMANDS.iter().copied().collect();
+    let mut customs: Vec<String> = custom_names
+        .iter()
+        .filter(|c| c.starts_with(prefix) && !builtin_set.contains(c.as_str()))
+        .cloned()
+        .collect();
+    customs.sort();
+    out.extend(customs);
+    out
+}
+
+/// Build the single-line suggestion string shown below the prompt when the
+/// user is typing a `/<name>` command (no space yet). Returns `None` when
+/// there is nothing useful to suggest (no match, or the typed text is already
+/// the sole exact match).
+fn command_suggestion(prefix: &str, custom_names: &[String]) -> Option<String> {
+    let cands = slash_candidates(prefix, custom_names);
+    if cands.is_empty() {
+        return None;
+    }
+    if cands.len() == 1 && cands[0] == prefix {
+        return None;
+    }
+    let display = cands
+        .iter()
+        .map(|c| format!("/{}", c))
+        .collect::<Vec<_>>()
+        .join("  ");
+    Some(display)
+}
+
+/// Compute the live command suggestion for the current input line. Returns
+/// `None` unless the line starts with `/` and has no space (i.e. the user is
+/// still typing the command name).
+async fn current_suggestion(state: &Arc<ReplState>, line: &str) -> Option<String> {
+    let after = line.strip_prefix('/')?;
+    if after.contains(' ') {
+        return None;
+    }
+    let customs: Vec<String> = state
+        .commands
+        .read()
+        .await
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    command_suggestion(after, &customs)
+}
+
+/// Truncate `s` to fit within `max_chars` display columns (command names are
+/// ASCII, so char-based truncation is accurate), appending `…` when truncated.
+fn truncate_suggestion(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut t: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+    t.push('…');
+    t
+}
+
+/// Render the prompt with a live command suggestion (when the line starts
+/// with `/` and has no space). Used by the raw-mode input loop.
+async fn render_prompt(
+    renderer: &mut PromptRenderer,
+    stdout: &mut std::io::Stdout,
+    prompt: &str,
+    state: &Arc<ReplState>,
+    input_state: &InputState,
+) {
+    let sug = current_suggestion(state, &input_state.line).await;
+    renderer.render(stdout, prompt, input_state, sug.as_deref());
+}
+
 async fn handle_repl_command(
     rest: &str,
     input_tx: &mpsc::Sender<AgentInput>,
     state: &Arc<ReplState>,
     raw_mode: bool,
-) -> bool {
+) -> CommandResult {
     let mut parts = rest.splitn(2, ' ');
     let cmd = parts.next().unwrap_or("").trim();
     let arg = parts.next().unwrap_or("").trim();
     match cmd {
-        "quit" | "exit" => return false,
+        "quit" | "exit" => return CommandResult::Quit,
         "help" => {
             raw_println(raw_mode, "Commands:");
             raw_println(raw_mode, "  /list                       List currently running peers (id / name / provider / model / role).");
@@ -1334,6 +1514,8 @@ async fn handle_repl_command(
             raw_println(raw_mode, "  /clear, /reset              Clear conversation history (persona / system prompt are kept).");
             raw_println(raw_mode, "  /cancel                     Request cancel of the in-flight AI response or tool call.");
             raw_println(raw_mode, "  /auto [on|off|status]       Toggle tool-approval skip. No arg / 'status' shows current value.");
+            raw_println(raw_mode, "  /commands                   List custom slash commands from .agent-cli/commands.");
+            raw_println(raw_mode, "  /reload-commands            Re-scan the custom commands directory.");
             raw_println(raw_mode, "  /help                       Show this help.");
             raw_println(raw_mode, "  /quit, /exit                Terminate (full aliases). Ctrl+D, Ctrl+C, SIGTERM also exit cleanly.");
             raw_println(raw_mode, "");
@@ -1341,6 +1523,16 @@ async fn handle_repl_command(
             raw_println(raw_mode, "  - REPL command  : /auto on  (toggleable at runtime)");
             raw_println(raw_mode, "  - CLI flag      : agent-cli run --auto-approve-tools");
             raw_println(raw_mode, "  - Config file   : [runtime] auto_approve_tools = true");
+            // Custom commands section (FR-12).
+            let cmds = state.commands.read().await;
+            if !cmds.is_empty() {
+                raw_println(raw_mode, "");
+                raw_println(raw_mode, "Custom commands (.agent-cli/commands):");
+                for cc in cmds.iter() {
+                    let first_line = cc.content.lines().next().unwrap_or("");
+                    raw_println(raw_mode, &format!("  /{}  {}", cc.name, first_line));
+                }
+            }
         }
         "auto" => handle_auto_command(arg, state, raw_mode),
         "clear" | "reset" => {
@@ -1381,11 +1573,110 @@ async fn handle_repl_command(
         "cancel" => {
             let _ = input_tx.send(AgentInput::Cancel).await;
         }
+        "commands" => {
+            // FR-13: list custom commands with file path and first line.
+            let cmds = state.commands.read().await;
+            if cmds.is_empty() {
+                raw_println(raw_mode, "(no custom commands)");
+            } else {
+                for cc in cmds.iter() {
+                    let first_line = cc.content.lines().next().unwrap_or("");
+                    raw_println(
+                        raw_mode,
+                        &format!("  /{}  {}  [{}]", cc.name, first_line, cc.path.display()),
+                    );
+                }
+            }
+        }
+        "reload-commands" => {
+            // FR-16: re-scan the commands directory without restarting.
+            let dir = state.commands_dir.clone();
+            let new_cmds = custom_commands::discover(&dir);
+            let count = new_cmds.len();
+            let mut cmds = state.commands.write().await;
+            *cmds = new_cmds;
+            raw_println(raw_mode, &format!("[reload-commands] {} command(s) loaded", count));
+        }
         _ => {
-            raw_eprintln(raw_mode, &format!("unknown command: {cmd}"));
+            // FR-05/FR-06: built-in commands take precedence; otherwise look up
+            // a custom command file and, if found, send its expanded content as
+            // a user prompt (FR-08/FR-11).
+            let cc = {
+                let cmds = state.commands.read().await;
+                cmds.iter().find(|c| c.name == cmd).cloned()
+            };
+            if let Some(cc) = cc {
+                let prompt = custom_commands::expand_template(&cc.content, arg);
+                if input_tx.send(AgentInput::UserPrompt(prompt)).await.is_err() {
+                    raw_eprintln(raw_mode, "[error] failed to send custom command prompt");
+                    return CommandResult::Continue;
+                }
+                // Record in history (FR-17).
+                let full_cmd = if arg.is_empty() {
+                    format!("/{}", cmd)
+                } else {
+                    format!("/{} {}", cmd, arg)
+                };
+                push_history(state, &full_cmd).await;
+                return CommandResult::SubmittedPrompt;
+            }
+            // FR-18: prefix match on custom commands. If exactly one custom command
+            // starts with `cmd`, auto-execute it. If multiple, list candidates.
+            let prefix_matches: Vec<CustomCommand> = {
+                let cmds = state.commands.read().await;
+                cmds.iter()
+                    .filter(|c| c.name.starts_with(cmd))
+                    .cloned()
+                    .collect()
+            };
+            match prefix_matches.len() {
+                0 => {
+                    raw_eprintln(raw_mode, &format!("unknown command: {cmd}"));
+                }
+                1 => {
+                    let cc = &prefix_matches[0];
+                    let resolved_name = cc.name.clone();
+                    let prompt = custom_commands::expand_template(&cc.content, arg);
+                    raw_println(
+                        raw_mode,
+                        &format!("[auto] /{} → /{}", cmd, resolved_name),
+                    );
+                    if input_tx.send(AgentInput::UserPrompt(prompt)).await.is_err() {
+                        raw_eprintln(raw_mode, "[error] failed to send custom command prompt");
+                        return CommandResult::Continue;
+                    }
+                    let full_cmd = if arg.is_empty() {
+                        format!("/{}", resolved_name)
+                    } else {
+                        format!("/{} {}", resolved_name, arg)
+                    };
+                    push_history(state, &full_cmd).await;
+                    return CommandResult::SubmittedPrompt;
+                }
+                _ => {
+                    raw_println(
+                        raw_mode,
+                        &format!("ambiguous command: /{cmd} matches:"),
+                    );
+                    for cc in &prefix_matches {
+                        let first_line = cc.content.lines().next().unwrap_or("");
+                        raw_println(
+                            raw_mode,
+                            &format!("  /{}  {}", cc.name, first_line),
+                        );
+                    }
+                }
+            }
         }
     }
-    true
+    // Record built-in commands in history (FR-17), except quit/exit.
+    let full_cmd = if arg.is_empty() {
+        format!("/{}", cmd)
+    } else {
+        format!("/{} {}", cmd, arg)
+    };
+    push_history(state, &full_cmd).await;
+    CommandResult::Continue
 }
 
 fn list_peers(registry_dir: &Path, raw_mode: bool) {
@@ -1700,6 +1991,8 @@ mod tests {
             history_path: dir.join("history.txt"),
             history: RwLock::new(Vec::new()),
             auto_approve: Arc::new(AtomicBool::new(false)),
+            commands_dir: dir.to_path_buf(),
+            commands: RwLock::new(Vec::new()),
         })
     }
 
@@ -1989,8 +2282,8 @@ mod tests {
         let (resp_tx, resp_rx) = oneshot::channel::<bool>();
         approval_tx
             .send(ApprovalRequest {
-                tool_name: "shell".into(),
-                args: serde_json::json!({"cmd": "echo hi"}),
+                tool_name: "bash".into(),
+                args: serde_json::json!({"command": "echo hi"}),
                 response: resp_tx,
             })
             .await
@@ -2013,8 +2306,8 @@ mod tests {
         let (resp_tx2, resp_rx2) = oneshot::channel::<bool>();
         approval_tx
             .send(ApprovalRequest {
-                tool_name: "shell".into(),
-                args: serde_json::json!({"cmd": "echo hi"}),
+                tool_name: "bash".into(),
+                args: serde_json::json!({"command": "echo hi"}),
                 response: resp_tx2,
             })
             .await
@@ -2073,7 +2366,7 @@ mod tests {
         let (resp_tx, resp_rx) = oneshot::channel::<bool>();
         approval_tx
             .send(ApprovalRequest {
-                tool_name: "shell".into(),
+                tool_name: "bash".into(),
                 args: serde_json::json!({}),
                 response: resp_tx,
             })
@@ -2273,5 +2566,335 @@ mod tests {
         let mut s2 = InputState::new();
         let action2 = handle_key(key(KeyCode::Char('c'), true), &mut s2, &["cmd".to_string()]);
         assert!(matches!(action2, Some(KeyAction::Eof)));
+    }
+
+    /// Build a ReplState whose `commands` are discovered from `dir`.
+    async fn build_state_with_commands(dir: &Path) -> Arc<ReplState> {
+        let state = build_state(dir);
+        let cmds = custom_commands::discover(dir);
+        let mut guard = state.commands.write().await;
+        *guard = cmds;
+        drop(guard);
+        state
+    }
+
+    #[tokio::test]
+    async fn custom_command_sends_prompt() {
+        let tmp = TempDir::new().unwrap();
+        // Create a custom command file.
+        std::fs::write(
+            tmp.path().join("hello.md"),
+            "Hello from custom command: $ARGUMENTS",
+        )
+        .unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+
+        let result = handle_repl_command("hello world", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::SubmittedPrompt), "got {result:?}");
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("input_rx closed");
+        match msg {
+            AgentInput::UserPrompt(s) => {
+                assert_eq!(s, "Hello from custom command: world");
+            }
+            other => panic!("expected UserPrompt, got {other:?}"),
+        }
+        // No unexpected second message.
+        let extra = tokio::time::timeout(Duration::from_millis(100), input_rx.recv()).await;
+        assert!(extra.is_err(), "no extra input expected");
+    }
+
+    #[tokio::test]
+    async fn builtin_takes_precedence_over_custom() {
+        let tmp = TempDir::new().unwrap();
+        // A custom command named `help` must NOT shadow the built-in /help.
+        std::fs::write(tmp.path().join("help.md"), "SHOULD NOT BE SENT").unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+
+        let result = handle_repl_command("help", &input_tx, &state, false).await;
+        // Built-in help returns Continue (no prompt sent).
+        assert!(matches!(result, CommandResult::Continue), "got {result:?}");
+        // No UserPrompt should have been sent.
+        let none = tokio::time::timeout(Duration::from_millis(100), input_rx.recv()).await;
+        assert!(none.is_err(), "built-in /help must not send a UserPrompt");
+    }
+
+    #[tokio::test]
+    async fn unknown_command_no_file_sends_nothing() {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+
+        let result = handle_repl_command("does-not-exist", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::Continue), "got {result:?}");
+        let none = tokio::time::timeout(Duration::from_millis(100), input_rx.recv()).await;
+        assert!(none.is_err(), "unknown command must not send a UserPrompt");
+    }
+
+    #[tokio::test]
+    async fn reload_commands_picks_up_new_file() {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+
+        // Initially empty.
+        {
+            let cmds = state.commands.read().await;
+            assert!(cmds.is_empty());
+        }
+        // Add a file, then reload.
+        std::fs::write(tmp.path().join("late.md"), "late arrival").unwrap();
+        let result = handle_repl_command("reload-commands", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::Continue), "got {result:?}");
+        {
+            let cmds = state.commands.read().await;
+            assert_eq!(cmds.len(), 1);
+            assert_eq!(cmds[0].name, "late");
+        }
+    }
+
+    #[tokio::test]
+    async fn commands_lists_custom_commands() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("alpha.md"), "first line alpha\nmore").unwrap();
+        std::fs::write(tmp.path().join("beta.md"), "first line beta").unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+
+        // /commands returns Continue (no prompt sent); we just verify it does
+        // not panic and lists both commands by reading the shared state.
+        let result = handle_repl_command("commands", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::Continue), "got {result:?}");
+        let cmds = state.commands.read().await;
+        let names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+    }
+
+    #[tokio::test]
+    async fn custom_command_at_file_expansion() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("data.txt");
+        std::fs::write(&target, "FILE-DATA").unwrap();
+        // The command file references @<target>.
+        let template = format!("Read this: @{}", target.display());
+        std::fs::write(tmp.path().join("show.md"), &template).unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+
+        let result = handle_repl_command("show", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::SubmittedPrompt), "got {result:?}");
+        let msg = input_rx.recv().await.expect("input_rx closed");
+        match msg {
+            AgentInput::UserPrompt(s) => assert!(s.contains("FILE-DATA"), "{}", s),
+            other => panic!("expected UserPrompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slash_candidates_empty_prefix_lists_all_builtins_first() {
+        let customs = vec!["hello".to_string(), "ai".to_string()];
+        let cands = slash_candidates("", &customs);
+        // Built-ins come first; "ai" custom appended after, sorted with other customs.
+        assert!(cands.starts_with(&[
+            "quit".to_string(),
+            "exit".to_string(),
+            "help".to_string(),
+        ]));
+        assert!(cands.contains(&"commands".to_string()));
+        assert!(cands.contains(&"ai".to_string()));
+        assert!(cands.contains(&"hello".to_string()));
+        // Built-in section precedes all customs.
+        let first_custom_idx = cands.iter().position(|c| c == "ai").unwrap();
+        let last_builtin_idx = cands.iter().rposition(|c| *c == "reload-commands").unwrap();
+        assert!(last_builtin_idx < first_custom_idx);
+    }
+
+    #[test]
+    fn slash_candidates_prefix_filters() {
+        let customs = vec!["hello".to_string(), "history-extra".to_string()];
+        // "he" matches built-in "help" and custom "hello"; "history" starts with "hi".
+        let cands_he = slash_candidates("he", &customs);
+        assert_eq!(cands_he, vec!["help", "hello"]);
+        // "hi" matches built-in "history" and custom "history-extra".
+        let cands_hi = slash_candidates("hi", &customs);
+        assert_eq!(cands_hi, vec!["history", "history-extra"]);
+    }
+
+    #[test]
+    fn slash_candidates_custom_colliding_with_builtin_is_dropped() {
+        // A custom named "help" collides with the built-in; built-in wins, custom dropped.
+        let customs = vec!["help".to_string(), "hello".to_string()];
+        let cands = slash_candidates("he", &customs);
+        assert_eq!(cands, vec!["help", "hello"]);
+    }
+
+    #[test]
+    fn command_suggestion_returns_none_when_no_match() {
+        assert_eq!(command_suggestion("zzz", &["hello".to_string()]), None);
+    }
+
+    #[test]
+    fn command_suggestion_returns_none_when_sole_exact_match() {
+        // Fully typed, single match: nothing more to suggest.
+        assert_eq!(command_suggestion("help", &[]), None);
+    }
+
+    #[test]
+    fn command_suggestion_lists_matches_with_slash() {
+        let customs = vec!["hello".to_string()];
+        let sug = command_suggestion("he", &customs).unwrap();
+        assert_eq!(sug, "/help  /hello");
+    }
+
+    #[test]
+    fn truncate_suggestion_adds_ellipsis() {
+        assert_eq!(truncate_suggestion("abcdef", 4), "abc…");
+        assert_eq!(truncate_suggestion("abc", 10), "abc");
+    }
+
+    // --- FR-17: slash commands recorded in history ---
+
+    #[tokio::test]
+    async fn slash_command_recorded_in_history() {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+
+        // Execute a built-in command: /help
+        let _ = handle_repl_command("help", &input_tx, &state, false).await;
+        let hist = state.history.read().await;
+        assert!(hist.contains(&"/help".to_string()), "history should contain /help, got {:?}", hist);
+        drop(hist);
+
+        // Execute another built-in: /tools
+        let _ = handle_repl_command("tools", &input_tx, &state, false).await;
+        let hist = state.history.read().await;
+        assert!(hist.contains(&"/tools".to_string()), "history should contain /tools, got {:?}", hist);
+    }
+
+    #[tokio::test]
+    async fn custom_command_recorded_in_history() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("hello.md"), "Hello $ARGUMENTS").unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+
+        let _ = handle_repl_command("hello world", &input_tx, &state, false).await;
+        let hist = state.history.read().await;
+        assert!(hist.contains(&"/hello world".to_string()), "history should contain /hello world, got {:?}", hist);
+    }
+
+    #[tokio::test]
+    async fn quit_not_recorded_in_history() {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+
+        let _ = handle_repl_command("quit", &input_tx, &state, false).await;
+        let hist = state.history.read().await;
+        assert!(!hist.contains(&"/quit".to_string()), "/quit should not be in history, got {:?}", hist);
+    }
+
+    // --- FR-18: auto-execute single-candidate prefix match ---
+
+    #[tokio::test]
+    async fn auto_execute_single_prefix_match() {
+        let tmp = TempDir::new().unwrap();
+        // Only one custom command starting with "he": "hello"
+        std::fs::write(tmp.path().join("hello.md"), "Hello from hello").unwrap();
+        // "hi" doesn't start with "he", so "he" uniquely matches "hello"
+        std::fs::write(tmp.path().join("hi.md"), "Hello from hi").unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+
+        // "he" should auto-execute "hello"
+        let result = handle_repl_command("he", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::SubmittedPrompt), "got {result:?}");
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("input_rx closed");
+        match msg {
+            AgentInput::UserPrompt(s) => assert_eq!(s, "Hello from hello"),
+            other => panic!("expected UserPrompt, got {other:?}"),
+        }
+
+        // Verify it was recorded in history with the resolved name
+        let hist = state.history.read().await;
+        assert!(hist.contains(&"/hello".to_string()), "auto-executed command should be in history as /hello, got {:?}", hist);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_prefix_lists_candidates() {
+        let tmp = TempDir::new().unwrap();
+        // Two commands starting with "he": "hello" and "helpx"
+        std::fs::write(tmp.path().join("hello.md"), "Hello from hello").unwrap();
+        std::fs::write(tmp.path().join("helpx.md"), "Hello from helpx").unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+
+        // "he" matches both "hello" and "helpx" → ambiguous
+        let result = handle_repl_command("he", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::Continue), "ambiguous prefix should return Continue, got {result:?}");
+
+        // No UserPrompt should be sent
+        let none = tokio::time::timeout(Duration::from_millis(100), input_rx.recv()).await;
+        assert!(none.is_err(), "ambiguous prefix should not send UserPrompt");
+    }
+
+    #[tokio::test]
+    async fn no_prefix_match_unknown_command() {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, _input_rx) = mpsc::channel::<AgentInput>(8);
+
+        let result = handle_repl_command("does-not-exist", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::Continue), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn exact_match_takes_precedence_over_prefix() {
+        let tmp = TempDir::new().unwrap();
+        // Command named exactly "he" and another starting with "he" ("hello")
+        std::fs::write(tmp.path().join("he.md"), "Exact match").unwrap();
+        std::fs::write(tmp.path().join("hello.md"), "Hello match").unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+
+        // "/he" should match exactly "he", not prefix-match "hello"
+        let result = handle_repl_command("he", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::SubmittedPrompt), "got {result:?}");
+
+        let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("input_rx closed");
+        match msg {
+            AgentInput::UserPrompt(s) => assert_eq!(s, "Exact match"),
+            other => panic!("expected UserPrompt with exact match content, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn builtin_takes_precedence_over_prefix_match() {
+        let tmp = TempDir::new().unwrap();
+        // A custom command "hello" that starts with "he" — but built-in "help" takes
+        // precedence when typing the exact built-in name.
+        std::fs::write(tmp.path().join("hello.md"), "SHOULD NOT BE SENT").unwrap();
+        let state = build_state_with_commands(tmp.path()).await;
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+
+        // "help" is a built-in command; built-in takes precedence
+        let result = handle_repl_command("help", &input_tx, &state, false).await;
+        assert!(matches!(result, CommandResult::Continue), "built-in /help should return Continue, got {result:?}");
+        // No UserPrompt sent
+        let none = tokio::time::timeout(Duration::from_millis(100), input_rx.recv()).await;
+        assert!(none.is_err(), "built-in /help must not send UserPrompt");
     }
 }
