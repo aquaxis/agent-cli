@@ -73,14 +73,15 @@ When stdin is a terminal, the prompt runs in raw mode and supports in-place line
 | `Esc` | Leave history browsing; on a normal line, clear it |
 | `Ctrl+C` | Clear the line; on an empty line, exit |
 | `Ctrl+D` | Exit on an empty line; ignored otherwise |
-| `Tab` | Currently unused (no completion) |
+| `Tab` | Complete the slash command being typed (see below) |
 
 Notes:
 
 - **Draft preservation**: the line you were typing is saved when you first press `↑`, and restored when you press `↓` past the newest history entry.
-- **Command suggestion**: while the line starts with `/` and contains no space, the best-matching command name is shown inline after the cursor. Keep typing to narrow it, or press `Enter` — prefix resolution is described under "Custom Slash Commands".
+- **Command candidates**: while the line starts with `/` and contains no space, the matching command names are listed on the line **above** the prompt, so the line you are typing stays put instead of being pushed around. Keep typing to narrow the list, or press `Enter` — prefix resolution is described under "Custom Slash Commands".
+- **Tab completion**: `Tab` completes the command name from that same candidate list. One match completes it and adds a space, ready for an argument (`/sen` → `/send `). Several matches extend the line as far as the candidates agree (`/rel` → `/reload-`), leaving the list on screen to choose from. When there is nothing to add — no match, an already-settled name, or an argument already started — `Tab` does nothing. Built-in and custom commands complete alike.
 - **Display width**: full-width characters (CJK) are counted as two columns, so cursor positioning stays correct in mixed-width lines.
-- **TTY requirement**: raw mode is only enabled when stdin is a terminal. With piped or redirected input the REPL falls back to line-buffered reading, where the editing keys and the suggestion are unavailable — everything else (tools, custom commands, peer messaging) works unchanged. See "Non-interactive / Scripted Use".
+- **TTY requirement**: raw mode is only enabled when stdin is a terminal. With piped or redirected input the REPL falls back to line-buffered reading, where the editing keys, the candidate list, and `Tab` completion are unavailable — everything else (tools, custom commands, peer messaging) works unchanged. See "Non-interactive / Scripted Use".
 
 ### Custom Slash Commands
 

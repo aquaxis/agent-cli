@@ -556,10 +556,11 @@ impl PromptRenderer {
 
     /// Render `prompt` + the editor buffer, wrapping correctly and positioning the
     /// cursor at the logical insertion point. When `suggestion` is `Some`, a
-    /// one-line candidate hint is printed just below the prompt line (used for
-    /// live slash-command completion). It occupies one extra row, which
-    /// `clear_block` clears on the next render (it clears from the block top
-    /// downward).
+    /// one-line candidate hint is printed **above** the prompt line (used for
+    /// live slash-command completion), so the line being typed always stays at
+    /// the bottom of the block where the eye already is. The hint occupies one
+    /// extra row at the top of the block, which `clear_block` removes on the
+    /// next render (it moves to the block top and clears downward).
     fn render(
         &mut self,
         stdout: &mut std::io::Stdout,
@@ -575,33 +576,32 @@ impl PromptRenderer {
         // 1. Clear the previous block (handles multi-row renders + suggestion).
         self.clear_block(stdout);
 
-        // 2. Print prompt + line; the terminal auto-wraps long content.
+        // 2. Print the candidate hint first, on its own row above the prompt.
+        //    Skipped when the terminal is too narrow to be useful (e.g. a pty
+        //    with no reported size), so we never render a lone ellipsis.
+        let sug_rows = suggestion_rows(suggestion, width);
+        if sug_rows > 0 {
+            let sug = truncate_suggestion(suggestion.unwrap_or(""), width - 1);
+            let _ = stdout.execute(Print(&sug));
+            // CR+LF is required in raw mode; this lands at column 0 of the
+            // prompt row, one row below the hint.
+            let _ = stdout.execute(Print("\r\n"));
+        }
+
+        // 3. Print prompt + line; the terminal auto-wraps long content.
         let _ = stdout.execute(Print(prompt));
         let _ = stdout.execute(Print(&state.line));
 
-        // 3. Compute the target cursor position.
+        // 4. Compute the target cursor position within the prompt rows.
         let prompt_cols = crate::editor::str_display_width(prompt);
         let total_cols = prompt_cols + state.display_width();
         let cursor_cols = state.display_cursor();
         let (end_row, cursor_row, cursor_col) =
             layout_cursor(prompt_cols, cursor_cols, total_cols, width);
 
-        // 3b. Print the suggestion one row below the printed line (if any),
-        //     then return the cursor to end_row so the positioning below works.
-        //     The suggestion is truncated to one row to keep the math simple.
-        //     Skip it when the terminal is too narrow to be useful (e.g. a pty
-        //     with no reported size), so we never render a lone ellipsis.
-        if let Some(sug) = suggestion.filter(|s| !s.is_empty()) {
-            if width >= 8 {
-                let sug = truncate_suggestion(sug, width);
-                let _ = stdout.execute(MoveDown(1));
-                let _ = stdout.execute(MoveToColumn(0));
-                let _ = stdout.execute(Print(&sug));
-                let _ = stdout.execute(MoveUp(1));
-            }
-        }
-
-        // 4. Move from the post-print position (end_row) to the cursor row.
+        // 5. Move from the post-print position (end_row) to the cursor row.
+        //    Both are relative to the prompt row, so the hint above does not
+        //    change this step — only the block-relative bookkeeping in 6.
         if end_row > cursor_row {
             let _ = stdout.execute(MoveUp((end_row - cursor_row) as u16));
         } else if cursor_row > end_row {
@@ -611,9 +611,20 @@ impl PromptRenderer {
         }
         let _ = stdout.execute(MoveToColumn(cursor_col as u16));
 
-        // 5. Remember where the cursor ended up for the next render.
-        self.cursor_row = cursor_row as u16;
+        // 6. Remember where the cursor ended up for the next render, counting
+        //    the hint row so `clear_block` moves all the way back to the top.
+        self.cursor_row = sug_rows + cursor_row as u16;
         let _ = stdout.flush();
+    }
+}
+
+/// Number of rows the candidate hint occupies above the prompt: 1 when there is
+/// something to show and the terminal is wide enough, 0 otherwise. Pure so the
+/// renderer's row bookkeeping can be unit-tested without a TTY.
+fn suggestion_rows(suggestion: Option<&str>, width: usize) -> u16 {
+    match suggestion {
+        Some(s) if !s.is_empty() && width >= 8 => 1,
+        _ => 0,
     }
 }
 
@@ -734,7 +745,9 @@ fn handle_key(key_event: KeyEvent, input: &mut InputState, history: &[String]) -
             }
         }
         KeyCode::Tab => {
-            // No tab completion for now; ignore
+            // Completion is handled by the raw-mode loop before this point (it
+            // needs the custom-command list); reaching here means there was
+            // nothing to complete, so just redraw.
             Some(KeyAction::Continue)
         }
         _ => None,
@@ -920,6 +933,30 @@ async fn run_input_loop_raw(
                             continue;
                         }
                         let is_awaiting_approval = prompt_state.is_awaiting_approval();
+
+                        // Tab completes the slash command being typed. Handled
+                        // here rather than in `handle_key` because it needs the
+                        // custom-command list, which lives behind an async lock.
+                        if key_event.code == KeyCode::Tab
+                            && key_event.kind != crossterm::event::KeyEventKind::Release
+                        {
+                            let customs: Vec<String> = state
+                                .commands
+                                .read()
+                                .await
+                                .iter()
+                                .map(|c| c.name.clone())
+                                .collect();
+                            if let Some(completed) =
+                                command_completion(&input_state.line, &customs)
+                            {
+                                input_state.line = completed;
+                                input_state.move_end();
+                            }
+                            render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                            continue;
+                        }
+
                         if let Some(action) = handle_key(key_event, &mut input_state, &history_snapshot) {
                             match action {
                                 KeyAction::Submit(line) => {
@@ -1463,6 +1500,52 @@ async fn current_suggestion(state: &Arc<ReplState>, line: &str) -> Option<String
         .map(|c| c.name.clone())
         .collect();
     command_suggestion(after, &customs)
+}
+
+/// Longest prefix shared by every candidate. Empty when the list is empty or
+/// the candidates diverge at the first character.
+fn longest_common_prefix(cands: &[String]) -> String {
+    let Some(first) = cands.first() else {
+        return String::new();
+    };
+    let mut end = first.len();
+    for c in &cands[1..] {
+        let mut common = 0;
+        for ((i, a), (_, b)) in first.char_indices().zip(c.char_indices()) {
+            if a != b {
+                break;
+            }
+            common = i + a.len_utf8();
+        }
+        end = end.min(common);
+    }
+    first[..end].to_string()
+}
+
+/// Tab completion for the slash-command being typed. Returns the replacement
+/// line, or `None` when there is nothing to complete.
+///
+/// - Exactly one candidate: complete it and append a space, so an argument can
+///   be typed straight away (`/sen` → `/send `).
+/// - Several candidates: extend as far as they agree (`/re` →
+///   `/reload-` for `reload-persona` / `reload-commands`). The candidate list is
+///   already on screen above the prompt, so nothing else is printed.
+/// - Nothing to add, no match, not a slash command, or an argument already
+///   started: `None`, and the keypress is a no-op.
+fn command_completion(line: &str, custom_names: &[String]) -> Option<String> {
+    let prefix = line.strip_prefix('/')?;
+    if prefix.contains(' ') {
+        return None;
+    }
+    let cands = slash_candidates(prefix, custom_names);
+    match cands.len() {
+        0 => None,
+        1 => Some(format!("/{} ", cands[0])),
+        _ => {
+            let lcp = longest_common_prefix(&cands);
+            (lcp.len() > prefix.len()).then(|| format!("/{lcp}"))
+        }
+    }
 }
 
 /// Truncate `s` to fit within `max_chars` display columns (command names are
@@ -2755,6 +2838,77 @@ mod tests {
     fn truncate_suggestion_adds_ellipsis() {
         assert_eq!(truncate_suggestion("abcdef", 4), "abc…");
         assert_eq!(truncate_suggestion("abc", 10), "abc");
+    }
+
+    // --- Tab completion ---
+
+    #[test]
+    fn longest_common_prefix_of_candidates() {
+        let cands = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            longest_common_prefix(&cands(&["reload-persona", "reload-commands"])),
+            "reload-"
+        );
+        assert_eq!(longest_common_prefix(&cands(&["help", "hello"])), "hel");
+        assert_eq!(longest_common_prefix(&cands(&["quit", "list"])), "");
+        assert_eq!(longest_common_prefix(&cands(&["only"])), "only");
+        assert_eq!(longest_common_prefix(&[]), "");
+    }
+
+    #[test]
+    fn tab_completes_a_unique_match_and_adds_a_space() {
+        // `/sen` matches only /send, so it completes and leaves room for the
+        // argument.
+        assert_eq!(command_completion("/sen", &[]).unwrap(), "/send ");
+    }
+
+    #[test]
+    fn tab_extends_to_the_common_prefix_when_ambiguous() {
+        // /reload-persona and /reload-commands agree up to "reload-".
+        assert_eq!(command_completion("/rel", &[]).unwrap(), "/reload-");
+        // "/re" also spans /reset, so there the shared prefix is just what was
+        // typed and Tab has nothing to add.
+        assert_eq!(command_completion("/re", &[]), None);
+    }
+
+    #[test]
+    fn tab_completes_custom_commands_too() {
+        let customs = vec!["review".to_string()];
+        assert_eq!(command_completion("/rev", &customs).unwrap(), "/review ");
+    }
+
+    #[test]
+    fn tab_is_a_noop_when_nothing_can_be_added() {
+        // Ambiguous with no shared extension: /re* already spans reload-* and
+        // nothing longer is common between them and /reset.
+        assert_eq!(command_completion("/reload-", &[]), None);
+        // No candidate at all.
+        assert_eq!(command_completion("/zzz", &[]), None);
+        // Not a slash command.
+        assert_eq!(command_completion("hello", &[]), None);
+        // Argument already started: the command name is settled.
+        assert_eq!(command_completion("/send bob", &[]), None);
+    }
+
+    #[test]
+    fn tab_on_a_fully_typed_unique_command_only_adds_the_space() {
+        assert_eq!(command_completion("/quit", &[]).unwrap(), "/quit ");
+        // Idempotent: a second Tab has an argument position, so it does nothing.
+        assert_eq!(command_completion("/quit ", &[]), None);
+    }
+
+    // --- Candidate hint row bookkeeping (rendered above the prompt) ---
+
+    #[test]
+    fn suggestion_occupies_one_row_when_shown() {
+        assert_eq!(suggestion_rows(Some("/help  /hello"), 80), 1);
+    }
+
+    #[test]
+    fn suggestion_occupies_no_row_when_absent_or_terminal_too_narrow() {
+        assert_eq!(suggestion_rows(None, 80), 0);
+        assert_eq!(suggestion_rows(Some(""), 80), 0);
+        assert_eq!(suggestion_rows(Some("/help"), 7), 0);
     }
 
     // --- FR-17: slash commands recorded in history ---
