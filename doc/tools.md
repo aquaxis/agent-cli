@@ -9,6 +9,25 @@ Describes the argument schemas, return values, limitations, and approval flow fo
 - Approval flow: When `auto_approve_tools=false` (default), a y/N prompt is obtained via the REPL input loop before execution. See "Tool Execution Approval" below for details. When denied, `user denied tool execution` is returned to the AI.
 - Available tools can be controlled via the persona's `allowed_tools`/`denied_tools` (see `doc/config.md`).
 
+### Which backends see these tools
+
+The ten tools below are `agent-cli`'s own registry. They are offered to the
+model by the HTTP backends (`claude`, `codex`, `ollama`, `opencode`,
+`opencode-go`, `llama.cpp`), which return `tool_use` requests that `agent-cli`
+executes through the approval flow described below.
+
+The `claude-code` backend is different, because the model it drives is Claude
+Code, which carries tools of its own:
+
+| `[provider.claude-code] mode` | Tools the model can use | This document applies |
+|---|---|---|
+| `"delegation"` (default) | Claude Code's own, executed inside Claude Code and reported afterwards | No — configure that set with `tools` / `allowed_tools` / `disallowed_tools` / `permission_mode` |
+| `"gateway"` | none (`--tools ""`, chat only) | No |
+
+`agent-cli`'s registry is never handed to that backend, so neither the approval
+flow nor persona `allowed_tools` / `denied_tools` restrict what Claude Code
+runs. See [`providers/claude-code.md`](providers/claude-code.md).
+
 ## Tool Execution Approval
 
 The approval y/N input/output is **integrated into the REPL's main input loop** (it does not read directly via `std::io::stdin().read_line()`). This prevents approval input from being confused with the user's normal prompt.

@@ -64,6 +64,19 @@ agent-cli selftest --provider ollama
 
 If `doctor`'s `provider conn` step shows `OK (stream initiated)`, connectivity is healthy. Cloud-routed models (`*:cloud` tags) may have cold-start delays; the connectivity timeout is set to 60 seconds.
 
+## Retrying Transient Failures
+
+`ollama` is the only backend that retries. A transient failure — HTTP 429 / 500
+/ 502 / 503 / 504, a body reporting the model as overloaded or asking to retry,
+a request timeout, or a connection error — is retried with exponential backoff
+before the error surfaces. Only the initial request is retried; a response
+stream that has already started is not.
+
+```toml
+[provider.ollama]
+max_retries = 3   # default; 0 disables retrying
+```
+
 ## Proxy / Remote Host
 
 If Ollama runs on a different host:
@@ -76,7 +89,7 @@ base_url = "http://gpu-server.local:11434"
 ## Known Limitations
 
 - `tool_calls` JSON formats may vary between models. If errors occur, retry without tools.
-- Large models may exceed the 180-second timeout. For long-generation scenarios, also review `[tools.bash] timeout_ms`.
+- Large models may exceed the HTTP client timeout, which covers the whole request including streaming. The default is 900 seconds; raise it with `[provider.ollama] request_timeout_secs`. For long-generation scenarios, also review `[tools.bash] timeout_ms`.
 
 ## Troubleshooting
 

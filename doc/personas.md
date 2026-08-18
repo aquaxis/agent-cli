@@ -176,6 +176,12 @@ You are an experienced reviewer. Always follow these rules:
 
 The prompt is stored as the leading `Message::System` in the conversation history and can be replaced via `/reload-persona`.
 
+With `kind = "claude-code"` the same string is handed to the `claude` CLI as a
+command-line flag instead of a system message: `--append-system-prompt` when
+`[provider.claude-code] system_prompt_mode = "append"` (the default), or
+`--system-prompt` when it is `"replace"`, which discards Claude Code's own
+system prompt. Composition itself is unchanged.
+
 ---
 
 ## 5. Tool Permission Control
@@ -188,6 +194,13 @@ The prompt is stored as the leading `Message::System` in the conversation histor
   -> If denied_tools is specified, remove those elements from the remainder (blacklist)
 = Actually enabled tools for this agent
 ```
+
+This filters `agent-cli`'s own tool registry. Under `kind = "claude-code"` with
+the default `mode = "delegation"`, that registry is not what the model uses —
+Claude Code runs its own tools — so a persona whitelist does not restrict it.
+Use the backend's `tools` / `allowed_tools` / `disallowed_tools` /
+`permission_mode` keys for that. See [`doc/tools.md`](tools.md) "Which backends
+see these tools" and [`doc/providers/claude-code.md`](providers/claude-code.md).
 
 ### 5.1 Example
 
@@ -237,6 +250,10 @@ temperature: 0.1
 - Launching with `agent-cli run --provider claude --name alice` using the above persona overrides `provider.claude.model` to `claude-opus-4-7` and `provider.claude.temperature` to `0.1`.
 - If launched with `--provider ollama`, the same values are written to `provider.ollama.model` / `provider.ollama.temperature` (note that model names may not be compatible across providers).
 - If the CLI `--model` is also used, the CLI override is applied first, then the persona override (the persona wins in the end).
+- With `--provider claude-code`, `model` is honoured — it becomes the CLI's
+  `--model` argument. `temperature` is written to the configuration entry as for
+  any other backend, but the `claude` CLI takes no temperature flag, so the
+  value is not forwarded and has no effect.
 
 > Temperature is clamped or ignored to an appropriate range by each provider implementation. Anthropic Claude expects `0.0..=1.0`; OpenAI / Ollama expect approximately `0.0..=2.0`.
 

@@ -344,6 +344,11 @@ keep_recent_turns  = 6
 
 承認モードでは、各ツール要求が `[tool approval] <tool> <args>` と `approve? [y/N]:` を表示します。受理されるのは `y` / `yes` のみで、それ以外（空入力や他の語）は拒否として扱われます。
 
+これは `agent-cli` 自身が実行するツールに対する仕組みです。`kind = "claude-code"`
+を `delegation` モードで使う場合、ツールは Claude Code 内部で実行されるため、上記
+3 つの方法はいずれも適用されません。そのバックエンドの `permission_mode` /
+`tools` / `allowed_tools` / `disallowed_tools` で制御してください。
+
 ### カスタムスラッシュコマンド
 
 `.agent-cli/commands/` にある `*.md` ファイルは、ファイル名（拡張子を除く）のスラッシュコマンドになります。`.agent-cli/commands/review.md` なら `/review` です。実行するとファイルの内容が展開され、ユーザープロンプトとしてエージェントに送信されます。

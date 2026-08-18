@@ -32,7 +32,7 @@ agent-cli [--config <path>] <subcommand>
 | Option | Description |
 |--------|-------------|
 | `--name <name>` | Agent display name |
-| `--provider <kind>` | Override backend |
+| `--provider <kind>` | Override backend: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp` |
 | `--model <model>` | Override model |
 | `--persona <path>` | Explicit persona file path |
 | `--auto-approve-tools` | Skip y/N approval for tool invocations |
@@ -45,7 +45,7 @@ In the REPL, lines starting with `/` are commands; everything else is a normal p
 |---------|---------|
 | `/list` | List peers (id, name, provider, model, role) |
 | `/send <peer> <text>` | Send a prompt to a peer |
-| `/tools` | List tools enabled for this agent |
+| `/tools` | List tools enabled for this agent (agent-cli's own registry; not offered to the model under `claude-code` delegation) |
 | `/persona` | Show this agent's persona (role / skills / description / tool restrictions / source path) |
 | `/reload-persona` | Re-resolve and reload the persona file, updating the system prompt (history preserved) |
 | `/peer <id_or_name>` | Show a peer's persona summary |
@@ -145,6 +145,14 @@ Tool invocations (bash, read, write, send_to, monitor, edit, glob, grep, websear
 
 `/auto status` (or `/auto` with no argument) shows the current value. In approval mode, each tool request displays `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted; anything else (blank input, other words) counts as denial.
 
+**Scope.** Approval governs the tools `agent-cli` itself runs. With
+`kind = "claude-code"` in the default `mode = "delegation"`, the tools are run
+inside Claude Code and reported afterwards, so `auto_approve_tools`,
+`--auto-approve-tools`, `/auto`, and persona allow / deny lists do not gate
+them. Restrict that backend with its own `tools` / `allowed_tools` /
+`disallowed_tools` / `permission_mode` keys instead — see
+[`doc/providers/claude-code.md`](providers/claude-code.md).
+
 ### Suppressing `[thinking]` Output
 
 Claude's `thinking_delta` and Ollama's `message.thinking` (e.g. `glm-5.1:cloud`) are passed to the REPL as `AgentEvent::Thinking` and rendered as `[thinking] <text>` lines. Long-reasoning models emit large amounts of thinking text, so `[ui] show_thinking` provides three levels of control:
@@ -187,7 +195,30 @@ ollama serve &
 agent-cli run --provider ollama --model glm-5.1:cloud
 ```
 
-### 3. Two-process coordination (claude x ollama)
+### 3. Local Claude Code CLI (claude-code)
+
+Uses the `claude` CLI installed on the machine as the backend, with no API key —
+Claude Code brings its own authentication.
+
+```toml
+[provider]
+kind = "claude-code"
+
+[provider.claude-code]
+# bin   = "claude"   # executable name (resolved on PATH) or an absolute path
+# model = "opus"     # omit to use Claude Code's own default
+```
+
+```bash
+agent-cli run --provider claude-code
+```
+
+In the default `mode = "delegation"` Claude Code runs its own tools inside its
+own process, so agent-cli's tools and its approval prompt are not part of the
+turn; `mode = "gateway"` is chat-only. See
+[`doc/providers/claude-code.md`](providers/claude-code.md).
+
+### 4. Two-process coordination (claude x ollama)
 
 ```toml
 # Share registry_dir in both configs
@@ -216,7 +247,7 @@ delivered to agent-01HY...
 
 Terminal B shows `[peer prompt from agent-01HX...]` and the AI responds.
 
-### 4. Role assignment (persona operation)
+### 5. Role assignment (persona operation)
 
 ```bash
 cp example/agents/reviewer.md ~/.config/agent-cli/agents/alice.md
@@ -229,7 +260,7 @@ agent-cli run --name bob      # coder persona auto-applied
 
 Type `/persona` in the REPL to see the currently applied role and skills. For the full list of frontmatter keys (`role` / `skills` / `allowed_tools` / `denied_tools` / `model` / `temperature` etc.) and operational patterns, see [`doc/personas.md`](personas.md).
 
-### 5. One-shot send from CLI
+### 6. One-shot send from CLI
 
 To send a short message to another agent without starting a REPL:
 
@@ -239,7 +270,7 @@ agent-cli send alice "stand-by"
 
 This runs as an IPC client only and exits immediately. The receiving agent continues to respond.
 
-### 6. One-shot ask from CLI (waits for the answer)
+### 7. One-shot ask from CLI (waits for the answer)
 
 When you want the peer's answer back on stdout instead of just delivering a prompt:
 
@@ -264,7 +295,7 @@ Differences from `send`:
 
 The peer must already be running. If it needs tools to answer, start it with `--auto-approve-tools`, otherwise it will stop at an approval prompt that no one can answer.
 
-### 7. Configuration switching
+### 8. Configuration switching
 
 ```bash
 agent-cli --config ./project-a.toml run --name proj-a

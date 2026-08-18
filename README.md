@@ -335,7 +335,7 @@ User prompts and executed slash commands are persisted to `<runtime.log_dir>/his
 
 ### Skipping tool approval
 
-Tool invocations (bash, read, write, send_to, edit, glob, grep, monitor, websearch, webfetch) request a y/N approval by default. There are three ways to skip approval:
+Tool invocations (bash, read, write, send_to, monitor, edit, glob, grep, websearch, webfetch) request a y/N approval by default. There are three ways to skip approval:
 
 | Method | Example |
 |--------|---------|
@@ -344,6 +344,11 @@ Tool invocations (bash, read, write, send_to, edit, glob, grep, monitor, websear
 | REPL command | `/auto on` (`/auto off` returns to approval mode, `/auto status` shows the current value) |
 
 In approval mode, each tool request shows `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted; anything else (blank input, other words) counts as denial.
+
+This governs the tools `agent-cli` runs itself. With `kind = "claude-code"` in
+`delegation` mode the tools run inside Claude Code, so none of the three methods
+apply — use that backend's `permission_mode` / `tools` / `allowed_tools` /
+`disallowed_tools` keys instead.
 
 ### Custom slash commands
 
