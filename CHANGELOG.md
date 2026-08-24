@@ -4,13 +4,26 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.4.0]
+
 ### Added
 
+- Detached agent creation — a running (or one-shot) `agent-cli` can now **create** an `agent-cli` process that does not depend on the parent: it runs headless in its own session, self-registers as a peer, and outlives the launcher.
+  - New subcommands: `agent-cli spawn [...]` launches a detached peer (same options as `run`) and returns once it has registered; `agent-cli serve [...]` runs headless (register + serve peers over IPC, no interactive REPL — the target `spawn` launches; usable directly for a foreground headless agent); `agent-cli stop <peer>` requests a graceful shutdown.
+  - The detached child is launched with a **double fork + `setsid`**: the intermediate process exits (reaped by the launcher) and the `serve` process is reparented to init, so it survives the launcher's exit, `Ctrl+C`, and terminal hang-up, and never lingers as a zombie. It shares the launcher's config file (hence the same `[runtime] registry_dir`), so it is immediately reachable via `list` / `send` / `ask` / the `send_to` tool.
+  - New REPL commands `/spawn [name] [provider]` and `/stop <peer>`.
+  - New **opt-in** LLM tool `spawn` (registered as a candidate but not in the default `[tools] enabled`, since autonomous process creation is higher-impact than peer messaging) that lets the model create a detached peer, with an optional fire-and-forget initial prompt.
+  - New IPC message `IpcMessage::Shutdown` (acknowledged by the server), used by `stop` / `/stop`, with a `SIGTERM`-by-pid fallback. A headless agent has no console to answer a y/N prompt, so it auto-approves its own tool execution.
+  - Docs updated: `doc/usage.md` (Detached agents), `doc/tools.md` (opt-in `spawn` tool), `doc/architecture.md` (§7.1), `README.md`, `README_ja.md`.
 - `Tab` completes the slash command being typed in the REPL (`app.rs::command_completion`). A single match completes it and appends a space so an argument can follow (`/sen` → `/send `); several matches extend the line as far as the candidates agree (`/rel` → `/reload-`). Nothing to add, no match, or an argument already started leaves the line untouched. Built-in and custom commands complete alike.
 
 ### Changed
 
 - The live command-candidate list is now drawn on the row **above** the prompt instead of below it, so the line being typed stays where the eye already is. The hint row is part of the tracked render block and is cleared with it.
+
+### Fixed
+
+- The `--provider` help text (`agent-cli --help` / `run --help`) now lists all seven backend kinds, including the previously-omitted `claude-code`.
 
 ## [0.3.0]
 
@@ -78,4 +91,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/HEAD...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/aquaxis/agent-cli/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/aquaxis/agent-cli/releases/tag/v0.3.0
