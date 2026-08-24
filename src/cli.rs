@@ -27,6 +27,23 @@ pub enum Command {
     /// Start REPL and begin conversation as one agent
     Run,
 
+    /// Run headless: register and serve peers over IPC without an interactive
+    /// REPL. This is the target a detached `spawn` launches; it can also be run
+    /// directly to get a foreground headless agent.
+    Serve,
+
+    /// Spawn a detached agent-cli process that does not depend on this one:
+    /// it runs in its own session, self-registers as a peer, and outlives the
+    /// launcher. Stop it later with `stop`.
+    Spawn,
+
+    /// Stop a running peer by sending a graceful shutdown request (falls back
+    /// to SIGTERM by pid on transport failure).
+    Stop {
+        /// Destination agent-id or display name
+        peer: String,
+    },
+
     /// List running peers
     List,
 
@@ -75,7 +92,7 @@ pub struct RunArgs {
     #[arg(long, global = true)]
     pub name: Option<String>,
 
-    /// AI backend (claude / codex / ollama / opencode / opencode-go / llama.cpp)
+    /// AI backend (claude / claude-code / codex / ollama / opencode / opencode-go / llama.cpp)
     #[arg(long, global = true)]
     pub provider: Option<String>,
 
@@ -116,6 +133,9 @@ mod tests {
             .collect();
         for required in &[
             "run",
+            "serve",
+            "spawn",
+            "stop",
             "list",
             "send",
             "providers",
@@ -215,6 +235,31 @@ mod tests {
                 assert_eq!(timeout, 120);
             }
             other => panic!("expected Ask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_spawn_with_run_args() {
+        let cli = Cli::try_parse_from(["agent-cli", "spawn", "--name", "worker", "--provider", "ollama"])
+            .expect("parse spawn");
+        assert!(matches!(cli.command, Some(Command::Spawn)));
+        assert_eq!(cli.run_args.name.as_deref(), Some("worker"));
+        assert_eq!(cli.run_args.provider.as_deref(), Some("ollama"));
+    }
+
+    #[test]
+    fn cli_parses_serve() {
+        let cli = Cli::try_parse_from(["agent-cli", "serve", "--name", "worker"]).expect("parse serve");
+        assert!(matches!(cli.command, Some(Command::Serve)));
+        assert_eq!(cli.run_args.name.as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn cli_parses_stop() {
+        let cli = Cli::try_parse_from(["agent-cli", "stop", "worker"]).expect("parse stop");
+        match cli.command {
+            Some(Command::Stop { peer }) => assert_eq!(peer, "worker"),
+            other => panic!("expected Stop, got {other:?}"),
         }
     }
 

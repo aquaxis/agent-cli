@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::AgentEvent;
 use crate::ai::ToolSpec;
-use crate::config::Config;
+use crate::config::{Config, ConfigSource};
 use crate::error::Result;
 use crate::id::AgentId;
 
@@ -20,6 +20,7 @@ pub mod grep;
 pub mod monitor;
 pub mod read;
 pub mod send_to;
+pub mod spawn;
 pub mod webfetch;
 pub mod websearch;
 pub mod write;
@@ -49,6 +50,9 @@ impl ToolOutput {
 pub struct ToolCtx {
     pub self_id: AgentId,
     pub registry_dir: PathBuf,
+    /// This agent's config source (path), forwarded to the `spawn` tool so a
+    /// spawned peer inherits the same config file (hence the same registry_dir).
+    pub config_source: ConfigSource,
     /// Optional event channel for tools that stream progress (e.g. `monitor`).
     /// Most tools ignore this field.
     pub event_tx: Option<mpsc::Sender<AgentEvent>>,
@@ -96,6 +100,7 @@ impl ToolRegistry {
             ("read", Arc::new(read::ReadTool)),
             ("write", Arc::new(write::WriteTool)),
             ("send_to", Arc::new(send_to::SendToTool)),
+            ("spawn", Arc::new(spawn::SpawnTool)),
             ("monitor", Arc::new(monitor::MonitorTool)),
             ("edit", Arc::new(edit::EditTool)),
             ("glob", Arc::new(glob::GlobTool)),

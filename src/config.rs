@@ -479,7 +479,7 @@ impl UiConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConfigSource {
     pub path: PathBuf,
     pub from_explicit: bool,

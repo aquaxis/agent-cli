@@ -49,6 +49,33 @@ Approval skip (auto-approve) paths:
 
 In the implementation, `auto_approve` is shared between the agent and REPL as `Arc<AtomicBool>`, so it can be toggled at any time during the session via `/auto on`/`/auto off`.
 
+## `spawn` (opt-in — not enabled by default)
+
+Creates a detached agent-cli peer that runs headless in its own session and does
+not depend on the current process. It is registered in the tool set but, unlike
+the ten tools above, is **not** in the default `[tools] enabled`, because
+autonomous process creation is more impactful than peer messaging; add `spawn`
+to `[tools] enabled` (or a persona's `allowed_tools`) to offer it to the model.
+It is the tool-level equivalent of the `agent-cli spawn` subcommand /
+`/spawn` REPL command (see [`usage.md`](usage.md) "Detached agents").
+
+### Arguments
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `name` | string | No | Display name for the new agent |
+| `provider` | string | No | Backend override (`claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`) |
+| `model` | string | No | Model override |
+| `persona` | string | No | Persona file path |
+| `prompt` | string | No | Initial prompt delivered to the new agent (fire-and-forget); use `send_to` for a reply |
+
+### Return
+
+`ok` with the new agent's `id` / `name` / `provider` / `model` / `socket`. The
+new agent shares this agent's config file (hence the same `registry_dir`), so it
+is immediately reachable with `send_to`. It runs headless and therefore
+auto-approves its own tool execution.
+
 ## `bash`
 
 Executes a bash command (equivalent to Claude Code `Bash`).

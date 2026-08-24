@@ -10,6 +10,7 @@
 - Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch — the REPL and tools never call out to the `claude` CLI. (Driving that CLI is available separately, as the opt-in `claude-code` backend below.)
 - Seven backends: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
+- Detached agents — `agent-cli spawn` (or `/spawn`) creates a headless peer in its own session that outlives the launcher; stop it with `agent-cli stop <peer>` (or `/stop`).
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
 - Built-in tools: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`. Approval mode can be flipped at runtime with `/auto on`.
 - Custom slash commands — drop a Markdown file into `.agent-cli/commands/` and it becomes `/<name>`, with `$ARGUMENTS` / `$1`…`$N` / `@file` expansion and prefix auto-execution.
@@ -302,6 +303,9 @@ See [`doc/config.md`](doc/config.md) for the full reference and [`doc/troublesho
 | Command | Purpose |
 |---------|---------|
 | `agent-cli run` | Start the REPL (one agent per process) |
+| `agent-cli spawn [...]` | Create a detached headless peer that outlives the launcher (same options as `run`) |
+| `agent-cli stop <peer>` | Stop a running peer (id or name); graceful IPC shutdown, `SIGTERM` fallback |
+| `agent-cli serve [...]` | Run headless (register + serve peers, no REPL) — the target `spawn` launches |
 | `agent-cli list` | List running peers |
 | `agent-cli send <peer> <text>` | Send a one-shot prompt to a peer (no response) |
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for the answer, print it (default 120 s) |
@@ -318,6 +322,8 @@ REPL commands inside `agent-cli run`:
 |---------|---------|
 | `/list` | List running peers |
 | `/send <peer> <text>` | Send a prompt to a peer |
+| `/spawn [name] [provider]` | Create a detached peer that outlives this session |
+| `/stop <peer>` | Stop a running peer (id or name), detached agents included |
 | `/tools` | List tools enabled for this agent |
 | `/persona` | Show this agent's persona (role / skills / source path) |
 | `/reload-persona` | Re-resolve and reload the persona file (history is preserved) |
@@ -332,6 +338,25 @@ REPL commands inside `agent-cli run`:
 | `/quit`, `/exit` | Terminate (full aliases) |
 
 User prompts and executed slash commands are persisted to `<runtime.log_dir>/history.txt` (last 200 entries) and reloaded on next startup; `/quit` and `/exit` are excluded. See [`doc/usage.md`](doc/usage.md) for full details.
+
+### Detached agents
+
+`agent-cli spawn` creates a peer without a second terminal. The child runs
+headless in its own session and does not depend on the launcher — it survives
+the launcher's exit, `Ctrl+C`, and terminal hang-up:
+
+```bash
+agent-cli spawn --name worker      # start a detached headless peer
+agent-cli list                     # `worker` is registered like any peer
+agent-cli ask worker "..."         # talk to it (send / ask / send_to tool)
+agent-cli stop worker              # ask it to shut down cleanly
+```
+
+The child inherits the launcher's config file (hence the same
+`[runtime] registry_dir`), so it is immediately discoverable. Having no console
+to answer a y/N prompt, a headless agent auto-approves tool execution. Inside a
+REPL the same is available as `/spawn [name] [provider]` and `/stop <peer>`. See
+[`doc/usage.md`](doc/usage.md) "Detached agents".
 
 ### Skipping tool approval
 

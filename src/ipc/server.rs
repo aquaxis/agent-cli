@@ -88,7 +88,9 @@ async fn handle_conn(stream: tokio::net::UnixStream, tx: mpsc::Sender<IpcMessage
         match serde_json::from_str::<IpcMessage>(&line) {
             Ok(msg) => {
                 let response = match &msg {
-                    IpcMessage::Prompt { .. } | IpcMessage::PromptReply { .. } => Some(IpcMessage::Ack { id: 0 }),
+                    IpcMessage::Prompt { .. }
+                    | IpcMessage::PromptReply { .. }
+                    | IpcMessage::Shutdown => Some(IpcMessage::Ack { id: 0 }),
                     IpcMessage::Ping => Some(IpcMessage::Pong),
                     _ => None,
                 };
@@ -163,6 +165,27 @@ mod tests {
             "socket file should be removed by Drop, but {} still exists",
             path.display()
         );
+    }
+
+    #[tokio::test]
+    async fn server_acks_and_forwards_shutdown() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("shutdown.sock");
+        let mut server = IpcServer::bind(path.clone()).await.unwrap();
+        let mut rx = server.take_rx().expect("rx not taken yet");
+
+        let resp = client::send(&path, &IpcMessage::Shutdown).await.unwrap();
+        assert!(
+            matches!(resp, IpcMessage::Ack { .. }),
+            "expected Ack for Shutdown, got {:?}",
+            resp
+        );
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("recv timeout")
+            .expect("channel closed");
+        assert!(matches!(received, IpcMessage::Shutdown));
     }
 
     #[tokio::test]

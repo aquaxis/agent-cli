@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::ai::{Message, Provider, ProviderEvent, ToolCall};
-use crate::config::Config;
+use crate::config::{Config, ConfigSource};
 use crate::error::Result;
 use crate::id::AgentId;
 use crate::log::{ConversationLog, LogEvent};
@@ -74,6 +74,9 @@ pub struct Agent {
     pub tools: ToolRegistry,
     #[allow(dead_code)]
     pub config: Config,
+    /// Path to this agent's config file, forwarded to the `spawn` tool so a
+    /// spawned peer inherits the same config (hence the same registry_dir).
+    pub config_source: ConfigSource,
     pub registry_dir: std::path::PathBuf,
     pub log: Option<ConversationLog>,
     /// Shared via `Arc<AtomicBool>` for runtime toggle via `/auto` REPL command (FR-04-2).
@@ -323,6 +326,7 @@ impl Agent {
             let ctx = ToolCtx {
                 self_id: self.id.clone(),
                 registry_dir: self.registry_dir.clone(),
+                config_source: self.config_source.clone(),
                 event_tx: Some(event_tx.clone()),
             };
             for (id, name, args) in pending_tools {
@@ -592,6 +596,7 @@ mod tests {
             provider: Box::new(MockProvider::new(scripts)),
             tools,
             config: cfg,
+            config_source: crate::config::ConfigSource::default(),
             registry_dir: PathBuf::from("/tmp/agent-cli-tests"),
             log: None,
             auto_approve: Arc::new(AtomicBool::new(true)),

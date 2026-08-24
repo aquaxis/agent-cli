@@ -130,6 +130,7 @@ mod tests {
         ToolCtx {
             self_id: AgentId::new(),
             registry_dir: registry_dir.clone(),
+            config_source: Default::default(),
             event_tx: None,
         }
     }

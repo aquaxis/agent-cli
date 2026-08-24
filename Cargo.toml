@@ -47,6 +47,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Terminal
 crossterm = "0.27"
 
+# Unix session detachment (setsid) and signals (kill) for detached spawn
+libc = "0.2"
+
 # Path / dirs
 dirs = "5"
 shellexpand = "3"

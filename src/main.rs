@@ -55,6 +55,18 @@ async fn run() -> Result<()> {
             let cfg = config::load(&source)?;
             app::run(cfg, source, cli.run_args).await
         }
+        Command::Serve => {
+            let cfg = config::load(&source)?;
+            app::run_headless(cfg, source, cli.run_args).await
+        }
+        Command::Spawn => {
+            let cfg = config::load(&source)?;
+            commands::spawn(&cfg, &source, cli.run_args).await
+        }
+        Command::Stop { peer } => {
+            let cfg = config::load(&source)?;
+            commands::stop(&cfg, &peer).await
+        }
         Command::List => {
             let cfg = config::load(&source)?;
             commands::list(&cfg).await

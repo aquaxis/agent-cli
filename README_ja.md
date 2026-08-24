@@ -10,6 +10,7 @@
 - ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（REPL とツール自体は `claude` CLI を呼び出しません）。なお `claude` CLI を駆動する方法は、後述の `claude-code` バックエンドとして別途選択できます。
 - 7 つのバックエンド: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
 - マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します。
+- デタッチドエージェント — `agent-cli spawn`（または `/spawn`）は、起動元プロセスに依存せず独自セッションで動くヘッドレスなピアを作成します。`agent-cli stop <peer>`（または `/stop`）で停止します。
 - ペルソナファイル（YAML フロントマター + Markdown 本文）でロール、スキル、ツールの許可/拒否リスト、モデル、temperature を定義します。
 - 組み込みツール: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`。承認モードは実行中に `/auto on` で切り替えられます。
 - カスタムスラッシュコマンド — `.agent-cli/commands/` に Markdown ファイルを置くだけで `/<name>` として使えます。`$ARGUMENTS` / `$1`…`$N` / `@file` の展開と、前方一致による自動実行に対応します。
@@ -301,6 +302,9 @@ keep_recent_turns  = 6
 | コマンド | 用途 |
 |---------|---------|
 | `agent-cli run` | REPL を起動（1 プロセス 1 エージェント） |
+| `agent-cli spawn [...]` | 起動元より長く生きるデタッチドなヘッドレスピアを作成（`run` と同じオプション） |
+| `agent-cli stop <peer>` | 稼働中のピア（id または名前）を停止。IPC 経由の穏当なシャットダウン、失敗時は `SIGTERM` にフォールバック |
+| `agent-cli serve [...]` | ヘッドレス実行（登録 + ピアへの応答のみ、REPL なし）。`spawn` が起動する対象 |
 | `agent-cli list` | 稼働中のピアを一覧表示 |
 | `agent-cli send <peer> <text>` | ピアにワンショットのプロンプトを送信（応答は待ちません） |
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | ピアにプロンプトを送り、応答を待って表示（デフォルト 120 秒） |
@@ -317,6 +321,8 @@ keep_recent_turns  = 6
 |---------|---------|
 | `/list` | 稼働中のピアを一覧表示 |
 | `/send <peer> <text>` | ピアにプロンプトを送信 |
+| `/spawn [name] [provider]` | このセッションより長く生きるデタッチドなピアを作成 |
+| `/stop <peer>` | 稼働中のピア（id または名前）を停止。デタッチドエージェントも対象 |
 | `/tools` | このエージェントで有効なツールを一覧表示 |
 | `/persona` | このエージェントのペルソナを表示（ロール / スキル / ソースパス） |
 | `/reload-persona` | ペルソナファイルを再解決して再読み込み（履歴は保持） |
@@ -331,6 +337,25 @@ keep_recent_turns  = 6
 | `/quit`, `/exit` | 終了（完全なエイリアス） |
 
 ユーザープロンプトと実行したスラッシュコマンドは `<runtime.log_dir>/history.txt`（直近 200 件）に永続化され、次回起動時に再読み込みされます（`/quit` と `/exit` は除外）。詳細は [`doc/usage.md`](doc/usage.md) を参照してください。
+
+### デタッチドエージェント
+
+`agent-cli spawn` は、2 つ目のターミナルを開かずにピアを作成します。子プロセスは
+独自セッションでヘッドレスに動作し、起動元に依存しません。起動元の終了・`Ctrl+C`・
+端末切断のいずれでも生き残ります:
+
+```bash
+agent-cli spawn --name worker      # デタッチドなヘッドレスピアを起動
+agent-cli list                     # `worker` は通常のピアとして登録される
+agent-cli ask worker "..."         # 通常どおり送受信（send / ask / send_to ツール）
+agent-cli stop worker              # 穏当にシャットダウンを要求
+```
+
+子プロセスは起動元の設定ファイル（したがって同じ `[runtime] registry_dir`）を
+引き継ぐため、直ちに検出可能です。y/N 承認を答えるコンソールを持たないため、
+ヘッドレスエージェントはツール実行を自動承認します。REPL 内では同じ操作が
+`/spawn [name] [provider]` と `/stop <peer>` として利用できます。詳細は
+[`doc/usage.md`](doc/usage.md) の "Detached agents" を参照してください。
 
 ### ツール承認のスキップ
 

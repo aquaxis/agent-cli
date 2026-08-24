@@ -1,10 +1,157 @@
+use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
 
 use crate::ai;
+use crate::cli::RunArgs;
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 use crate::id::AgentId;
+use crate::ipc::registry::RegistryEntry;
 use crate::ipc::{client, registry, IpcMessage};
+
+/// Launch a detached, headless agent-cli process that does not depend on this
+/// one. Prints the child's registry identity and returns; the child keeps
+/// running in its own session (FR-04 – FR-07).
+pub async fn spawn(cfg: &Config, source: &ConfigSource, args: RunArgs) -> Result<()> {
+    let entry = spawn_detached(&source.path, &cfg.registry_dir()?, &args).await?;
+    println!(
+        "spawned detached agent: id={} name={} pid={} socket={}",
+        entry.id,
+        entry.name.as_deref().unwrap_or("-"),
+        entry.pid,
+        entry.socket.display()
+    );
+    Ok(())
+}
+
+/// Spawn `current_exe() --config <config_path> serve <passthrough run args>`
+/// detached from this process and wait (bounded) for it to self-register.
+///
+/// The child shares this process's `registry_dir` (it is launched with the same
+/// config file), so it is immediately a discoverable peer. It is launched with a
+/// **double fork**: the intermediate process `setsid`s and `_exit`s, so the real
+/// `serve` process is reparented to init — it survives the launcher's exit,
+/// `Ctrl+C`, and terminal hang-up, and it never lingers as a zombie under a
+/// long-lived launcher. Because the double fork means the launched child's pid
+/// is not the serve process's pid, registration is matched by the *new* registry
+/// id (and by `--name` when given), not by pid.
+pub async fn spawn_detached(
+    config_path: &Path,
+    registry_dir: &Path,
+    args: &RunArgs,
+) -> Result<RegistryEntry> {
+    let exe =
+        std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
+
+    // Snapshot existing registry ids so we can identify the one the child adds.
+    let before: std::collections::HashSet<String> = registry::list_entries(registry_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| e.id.to_string())
+        .collect();
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--config").arg(config_path).arg("serve");
+    if let Some(name) = &args.name {
+        cmd.arg("--name").arg(name);
+    }
+    if let Some(provider) = &args.provider {
+        cmd.arg("--provider").arg(provider);
+    }
+    if let Some(model) = &args.model {
+        cmd.arg("--model").arg(model);
+    }
+    if let Some(persona) = &args.persona {
+        cmd.arg("--persona").arg(persona);
+    }
+    if args.auto_approve_tools {
+        cmd.arg("--auto-approve-tools");
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    // Double fork so the serve process is fully detached: a new session
+    // (setsid) makes it immune to the launcher's terminal signals, and being
+    // reparented to init means it neither dies with the launcher nor lingers as
+    // a zombie under a long-lived one. Safety: the closure runs in the forked
+    // child before exec and calls only async-signal-safe primitives.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            match libc::fork() {
+                -1 => return Err(std::io::Error::last_os_error()),
+                0 => {}              // grandchild: fall through to setsid + exec
+                _ => libc::_exit(0), // intermediate: exit so init adopts the grandchild
+            }
+            libc::setsid();
+            Ok(())
+        });
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| AppError::Other(format!("spawn detached agent: {e}")))?;
+    // Reap the intermediate (it _exit(0)s immediately after forking the
+    // grandchild), so it never becomes a zombie. The grandchild is already
+    // reparented to init and is unaffected.
+    let _ = child.wait();
+
+    // Wait (bounded) for the grandchild to self-register: a registry entry whose
+    // id is new since the snapshot (and matches --name when one was requested).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let entries = registry::list_entries(registry_dir).unwrap_or_default();
+        let found = entries.into_iter().find(|e| {
+            !before.contains(&e.id.to_string())
+                && args
+                    .name
+                    .as_deref()
+                    .map_or(true, |n| e.name.as_deref() == Some(n))
+        });
+        if let Some(e) = found {
+            return Ok(e);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(AppError::Other(
+                "detached agent did not register within 5s".to_string(),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Stop a running peer by id or name (FR-10).
+pub async fn stop(cfg: &Config, peer: &str) -> Result<()> {
+    stop_peer(&cfg.registry_dir()?, peer).await
+}
+
+/// Resolve `peer` in `registry_dir` and request a graceful shutdown over IPC;
+/// on transport failure, fall back to SIGTERM by the registered pid. Shared by
+/// the `stop` subcommand and the REPL `/stop` command.
+pub async fn stop_peer(registry_dir: &Path, peer: &str) -> Result<()> {
+    let entry = registry::resolve_peer(registry_dir, peer)?;
+    match client::send(&entry.socket, &IpcMessage::Shutdown).await {
+        Ok(IpcMessage::Ack { .. }) => {
+            println!("stop requested: {} ({peer})", entry.id);
+            Ok(())
+        }
+        other => {
+            // Transport failed or unexpected reply: fall back to SIGTERM by pid.
+            let rc = unsafe { libc::kill(entry.pid as libc::pid_t, libc::SIGTERM) };
+            if rc == 0 {
+                println!("sent SIGTERM to {} (pid {})", entry.id, entry.pid);
+                Ok(())
+            } else {
+                Err(AppError::Other(format!(
+                    "failed to stop {} ({peer}); ipc reply: {other:?}",
+                    entry.id
+                )))
+            }
+        }
+    }
+}
 
 pub async fn list(cfg: &Config) -> Result<()> {
     let dir = cfg.registry_dir()?;
@@ -469,6 +616,7 @@ async fn stage_bash_tool(cfg: &Config) -> Result<()> {
     let ctx = ToolCtx {
         self_id: crate::id::AgentId::new(),
         registry_dir: std::path::PathBuf::from("/tmp/agent-cli-selftest-noop"),
+        config_source: Default::default(),
         event_tx: None,
     };
     let out = tool

@@ -17,6 +17,9 @@ agent-cli [--config <path>] <subcommand>
 | Form | Purpose |
 |------|---------|
 | `agent-cli run [...]` | Start the REPL (default) |
+| `agent-cli spawn [...]` | Create a **detached** agent that does not depend on this process: it runs headless in its own session, self-registers as a peer, and outlives the launcher. Accepts the same options as `run`. See [Detached agents](#detached-agents) |
+| `agent-cli stop <peer>` | Stop a running peer (id or name) by requesting a graceful shutdown; falls back to `SIGTERM` if the socket is unreachable |
+| `agent-cli serve [...]` | Run headless (register + serve peers over IPC, no REPL). This is the target `spawn` launches; running it directly gives a foreground headless agent |
 | `agent-cli list` | List running peers |
 | `agent-cli send <peer> <text>` | Send a prompt to a peer and exit (does not wait for a response) |
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for its AI response, print it, and exit (default timeout 120 seconds) |
@@ -37,6 +40,38 @@ agent-cli [--config <path>] <subcommand>
 | `--persona <path>` | Explicit persona file path |
 | `--auto-approve-tools` | Skip y/N approval for tool invocations |
 
+`spawn` and `serve` accept the same options as `run` (`--name` / `--provider` / `--model` / `--persona` / `--auto-approve-tools`).
+
+## Detached agents
+
+Every agent-cli process is already an independent peer, discovered through the
+shared registry directory ([`architecture.md`](architecture.md) §1). `spawn`
+lets a running agent-cli (or a one-shot command) **create** such a peer without
+opening a second terminal:
+
+```text
+agent-cli spawn --name worker            # start a detached headless peer
+agent-cli list                           # `worker` appears in the registry
+agent-cli ask worker "summarise X"       # talk to it like any peer
+agent-cli stop worker                    # ask it to shut down cleanly
+```
+
+- The child inherits the launcher's config file (hence the same
+  `[runtime] registry_dir`), so it is immediately visible to `list` / `send` /
+  `ask` / the `send_to` tool. Per-child overrides are limited to the `run`
+  options above.
+- The child runs **headless** (`serve` mode): it has no REPL and no controlling
+  terminal, it self-registers, answers peer prompts over IPC, and — having no
+  console to answer a y/N prompt — auto-approves tool execution.
+- It is **independent**: launched in a new session (`setsid`) with detached
+  stdio, it survives the launcher's exit, the launcher's `Ctrl+C`, and terminal
+  hang-up. Stop it with `agent-cli stop <peer>` / `/stop <peer>` (a graceful
+  IPC shutdown, falling back to `SIGTERM`), or with an OS signal. A crashed
+  detached agent is reaped lazily from the registry like any other peer.
+
+From inside a REPL the same is available as `/spawn [name] [provider]` and
+`/stop <peer>`.
+
 ## REPL Commands
 
 In the REPL, lines starting with `/` are commands; everything else is a normal prompt to the active agent.
@@ -45,6 +80,8 @@ In the REPL, lines starting with `/` are commands; everything else is a normal p
 |---------|---------|
 | `/list` | List peers (id, name, provider, model, role) |
 | `/send <peer> <text>` | Send a prompt to a peer |
+| `/spawn [name] [provider]` | Create a detached agent peer (see [Detached agents](#detached-agents)) that outlives this session |
+| `/stop <peer>` | Stop a running peer (id or name), including detached agents |
 | `/tools` | List tools enabled for this agent (agent-cli's own registry; not offered to the model under `claude-code` delegation) |
 | `/persona` | Show this agent's persona (role / skills / description / tool restrictions / source path) |
 | `/reload-persona` | Re-resolve and reload the persona file, updating the system prompt (history preserved) |
