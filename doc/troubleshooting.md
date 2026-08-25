@@ -45,7 +45,7 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
 ### Not sure which config file is being used
 
 - `agent-cli config path` prints the resolved config file path.
-- Resolution order: `--config <path>` → `AGENT_CLI_CONFIG` env var → default path (`$XDG_CONFIG_HOME/agent-cli/config.toml`, or `~/.config/agent-cli/config.toml` if unset).
+- Resolution order: `--config <path>` → `AGENT_CLI_CONFIG` env var → project-local `./.agent-cli/config.toml` (only if it already exists) → default path (`$XDG_CONFIG_HOME/agent-cli/config.toml`, or `~/.config/agent-cli/config.toml` if unset).
 - Provider HTTP error messages also include the resolved `config` line, so you can cross-check with `agent-cli config path` output to catch unexpected file usage.
 
 ## Ollama / llama.cpp Issues
@@ -296,6 +296,7 @@ For detailed troubleshooting, see [`doc/personas.md`](personas.md) section 11 "T
 ### `error: config file not found: ...`
 
 - An explicit path specified via `--config` or `AGENT_CLI_CONFIG` must exist; it will not be auto-generated.
+- A project-local `./.agent-cli/config.toml` is used only when it already exists; it is never auto-generated (its absence falls through to the default path).
 - The default path (`~/.config/agent-cli/config.toml`) is auto-generated on first run.
 
 ### `provider error (claude): [provider.claude] missing`

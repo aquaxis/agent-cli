@@ -21,15 +21,17 @@ This document provides a comprehensive guide to configuring `agent-cli`. For a q
 `agent-cli` resolves the configuration file path in the following priority order:
 
 ```text
-1. --config <path>             <- Highest priority (explicit specification)
+1. --config <path>                 <- Highest priority (explicit specification)
 2. Environment variable AGENT_CLI_CONFIG   <- Next
-3. ~/.config/agent-cli/config.toml <- Default
+3. ./.agent-cli/config.toml        <- Project-local (only if it already exists)
+4. ~/.config/agent-cli/config.toml <- Default
 ```
 
 Behavior:
 
 - If the file specified by option 1 or 2 **does not exist**, the process exits with an error. No auto-generation is performed.
-- When option 3 is used and the file does not exist, it is **auto-generated** with default values.
+- Option 3 is the `.agent-cli/config.toml` file under the **current working directory**. It is used **only when it already exists**; it is never auto-generated, and its absence silently falls through to option 4. The path is resolved to an absolute path so a detached agent spawned from here reads the same file. Only the current directory is checked — parent directories are not walked.
+- When option 4 is used and the file does not exist, it is **auto-generated** with default values.
 - The resolved path can be confirmed with `agent-cli config path`.
 
 ```bash

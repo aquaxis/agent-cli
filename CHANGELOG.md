@@ -4,6 +4,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.5.0]
+
+### Added
+
+- Project-local configuration — when neither `--config` nor `AGENT_CLI_CONFIG` is set, `agent-cli` now uses a `./.agent-cli/config.toml` under the current working directory if one exists, taking precedence over the default `~/.config/agent-cli/config.toml`. The file is used only when it already exists (never auto-generated), its path is resolved to an absolute path so a detached agent spawned from there reads the same file, and only the current directory is checked (parent directories are not walked). Docs updated: `doc/config.md` §1, `doc/usage.md`, `doc/troubleshooting.md`, `README.md`, `README_ja.md`.
+
 ## [0.4.0]
 
 ### Added

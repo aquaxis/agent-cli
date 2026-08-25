@@ -161,9 +161,10 @@ agent-cli ask bob "現在の設計上のリスクをまとめて"
 
 1. `--config <path>`（明示指定）
 2. `AGENT_CLI_CONFIG` 環境変数
-3. デフォルト `~/.config/agent-cli/config.toml`
+3. プロジェクトローカル `./.agent-cli/config.toml`（存在する場合のみ使用）
+4. デフォルト `~/.config/agent-cli/config.toml`
 
-明示指定したパスは存在している必要があります（自動生成しません）。デフォルトパスは初回起動時に適切なテンプレートを自動生成します。全セクションにコメントを付けた雛形として [`example/config.example.toml`](example/config.example.toml) も利用できます。
+明示指定したパスは存在している必要があります（自動生成しません）。カレントディレクトリに `.agent-cli/config.toml` があれば自動的に使用されます（自動生成はされず、親ディレクトリは辿らずカレントディレクトリのみを確認します）。デフォルトパスは初回起動時に適切なテンプレートを自動生成します。全セクションにコメントを付けた雛形として [`example/config.example.toml`](example/config.example.toml) も利用できます。
 
 `[provider] kind` でアクティブなバックエンドを選択します。埋める必要があるのはそのバックエンドの `[provider.*]` テーブルだけですが、複数のテーブルを 1 つのファイルに残しておき、`kind`（または `--provider`）で切り替えることもできます。
 

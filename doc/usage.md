@@ -10,7 +10,7 @@ agent-cli [--config <path>] <subcommand>
 
 | Option | Description |
 |--------|-------------|
-| `--config <path>` | Config file to use. The `AGENT_CLI_CONFIG` environment variable is also accepted |
+| `--config <path>` | Config file to use. The `AGENT_CLI_CONFIG` environment variable is also accepted. When neither is set, a project-local `./.agent-cli/config.toml` (if it exists) takes precedence over the default `~/.config/agent-cli/config.toml`. See [`doc/config.md`](config.md) §1 |
 
 ### Subcommands
 

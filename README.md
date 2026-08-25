@@ -162,9 +162,10 @@ Config files are TOML. Resolution order:
 
 1. `--config <path>` (explicit)
 2. `AGENT_CLI_CONFIG` environment variable
-3. Default `~/.config/agent-cli/config.toml`
+3. Project-local `./.agent-cli/config.toml` (used only when it already exists)
+4. Default `~/.config/agent-cli/config.toml`
 
-Explicit paths must exist (no auto-creation). The default path auto-generates a sensible template on first run, and [`example/config.example.toml`](example/config.example.toml) is a fully commented starting point covering every section.
+Explicit paths must exist (no auto-creation). A project-local `.agent-cli/config.toml` in the current directory is picked up automatically when present (never auto-created; only the current directory is checked, not parents). The default path auto-generates a sensible template on first run, and [`example/config.example.toml`](example/config.example.toml) is a fully commented starting point covering every section.
 
 `[provider] kind` selects the active backend; only that backend's `[provider.*]` table needs to be filled in, but you can keep several tables in one file and switch with `kind` (or `--provider`).
 
