@@ -20,6 +20,7 @@
 - Streaming responses are synchronized with the REPL prompt so a fresh `> ` is always redrawn after the response completes.
 - Reliable shutdown — any of `/quit`, `/exit`, `Ctrl+D`, `Ctrl+C`, or `SIGTERM` exits within ~1 s and cleans up the IPC socket and registry metadata automatically.
 - Self-diagnostics with `agent-cli doctor` and a 5-stage smoke test with `agent-cli selftest` (Provider OK / bash tool / IPC / subprocess registration / subprocess AI response).
+- Self-update with `agent-cli update` — checks the latest GitHub release and rebuilds from source into your install prefix; `--check` reports availability without changing anything.
 - Configurable tool-use loop cap via `[runtime] max_tool_iterations` (default 24, max `u32::MAX`) — see "[info] max tool-use iterations reached" below.
 - Ollama `message.thinking` field is decoded as `[thinking]` for thinking-capable models such as `glm-5.1:cloud`.
 - Opt-in context-efficiency features (all default OFF): Claude prompt caching, opencode local persistent session, and hybrid history-window management (summarize-then-drop). See [`doc/config.md`](doc/config.md) §11.
@@ -314,6 +315,7 @@ See [`doc/config.md`](doc/config.md) for the full reference and [`doc/troublesho
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for the answer, print it (default 120 s) |
 | `agent-cli providers` | Show backend status |
 | `agent-cli doctor` | Sanity-check config / API keys / connectivity / registry / `bash` |
+| `agent-cli update [--check] [--force] [--yes] [--ref <ref>]` | Update to the latest release (source build via `cargo`) |
 | `agent-cli selftest [--provider <kind>]` | Smoke test in 5 stages |
 | `agent-cli config show` | Print current config |
 | `agent-cli config edit` | Open config in `$EDITOR` |
@@ -378,6 +380,23 @@ agent-cli groups                              # team  2  lead, helper
 `agent-cli groups` scans the live registry and lists the distinct groups
 currently running with their member counts (ungrouped agents fall under a `-`
 bucket). A group is fixed at launch. See [`doc/usage.md`](doc/usage.md) "Groups".
+
+### Updating
+
+`agent-cli update` upgrades an installed agent-cli to the latest release. Since
+agent-cli ships no prebuilt binaries (install is a source build), the update is
+too: it looks up the latest GitHub release, then runs `cargo install --git … --tag
+<version>` into the running binary's prefix and verifies the new `--version`. It
+needs the Rust toolchain (`cargo`) and is Linux-only.
+
+```bash
+agent-cli update --check     # report current vs latest; change nothing
+agent-cli update             # confirm, then rebuild + replace if newer
+agent-cli update --yes       # skip the confirmation prompt
+agent-cli update --ref main  # build from a branch/tag (e.g. before a release is tagged)
+```
+
+See [`doc/usage.md`](doc/usage.md) "Updating".
 
 ### Skipping tool approval
 

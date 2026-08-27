@@ -26,6 +26,7 @@ agent-cli [--config <path>] <subcommand>
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for its AI response, print it, and exit (default timeout 120 seconds) |
 | `agent-cli providers` | Show available backend status |
 | `agent-cli doctor` | Sanity-check config / API keys / connectivity / registry / bash |
+| `agent-cli update [--check] [--force] [--yes] [--ref <ref>]` | Update agent-cli to the latest released version (a source build via `cargo`). See [Updating](#updating) |
 | `agent-cli selftest [--provider <name>]` | Run smoke test |
 | `agent-cli config show` | Print current configuration |
 | `agent-cli config edit` | Open config in `$EDITOR` |
@@ -104,6 +105,36 @@ agent-cli groups                             # team  2  lead, helper
 
 A group is fixed at launch; there is no command to move a running agent between
 groups.
+
+## Updating
+
+`agent-cli update` upgrades an installed agent-cli to the latest released
+version. Because agent-cli ships no prebuilt binaries and is installed by a
+source build (see [Install](../README.md#install)), the update is also a source
+build: it runs `cargo install --git <repo> --tag <version> agent-cli` into the
+running binary's install prefix, then verifies the new `--version`. It therefore
+needs the **Rust toolchain (`cargo`)** on `PATH` and is **Linux-only**.
+
+```text
+agent-cli update --check          # report current vs latest; make no changes
+agent-cli update                  # if newer, confirm, then build + replace
+agent-cli update --yes            # skip the confirmation prompt
+agent-cli update --ref main       # build from a branch (or a specific tag) instead
+agent-cli update --force          # reinstall even if already up to date
+```
+
+- `--check` prints the current and latest versions and whether an update is
+  available, then exits without touching the binary — safe for scripts/CI.
+- Without `--check`, if a newer release exists it asks for confirmation (showing
+  the from→to versions and the target prefix) before rebuilding. `--yes` (or
+  `--force`) skips the prompt; on a non-interactive stdin the command refuses
+  unless `--yes` is given.
+- The latest version is looked up from the project's GitHub releases (falling
+  back to tags). If the project has no published release yet, use
+  `--ref main` (or an explicit tag) to update from a specific ref.
+- The install is delegated to `cargo install`, which builds to a temporary
+  location and moves the binary into place; success is reported only after the
+  new binary answers `--version`.
 
 ## REPL Commands
 

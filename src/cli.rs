@@ -79,6 +79,23 @@ pub enum Command {
     /// Check configuration, API keys, backend connectivity, registry, and shell tools
     Doctor,
 
+    /// Update agent-cli to the latest released version (a source build via
+    /// `cargo`, like the installer). Use `--check` to only report availability.
+    Update {
+        /// Only check whether a newer version is available; make no changes
+        #[arg(long)]
+        check: bool,
+        /// Install even if already up to date (and allow a same/older `--ref`)
+        #[arg(long)]
+        force: bool,
+        /// Do not prompt for confirmation before replacing the binary
+        #[arg(long)]
+        yes: bool,
+        /// Update to a specific tag (vX.Y.Z) or branch instead of the latest release
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
+    },
+
     /// Smoke test with a short prompt and tool execution
     Selftest {
         /// Backend to verify (defaults to config.provider.kind when unspecified)
@@ -153,6 +170,7 @@ mod tests {
             "send",
             "providers",
             "doctor",
+            "update",
             "selftest",
             "config",
             "ask",
@@ -301,6 +319,29 @@ mod tests {
     fn cli_parses_groups() {
         let cli = Cli::try_parse_from(["agent-cli", "groups"]).expect("parse groups");
         assert!(matches!(cli.command, Some(Command::Groups)));
+    }
+
+    #[test]
+    fn cli_parses_update() {
+        let cli = Cli::try_parse_from(["agent-cli", "update"]).expect("parse update");
+        match cli.command {
+            Some(Command::Update { check, force, yes, git_ref }) => {
+                assert!(!check && !force && !yes && git_ref.is_none());
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "agent-cli", "update", "--check", "--force", "--yes", "--ref", "v0.6.0",
+        ])
+        .expect("parse update with flags");
+        match cli.command {
+            Some(Command::Update { check, force, yes, git_ref }) => {
+                assert!(check && force && yes);
+                assert_eq!(git_ref.as_deref(), Some("v0.6.0"));
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
     }
 
     #[test]

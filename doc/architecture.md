@@ -357,6 +357,24 @@ Text and thinking deltas arrive as Anthropic-shaped SSE wrapped in
 `stream_event`, so `ai/claude.rs::handle_frame` is reused after one unwrap.
 See [`doc/providers/claude-code.md`](providers/claude-code.md).
 
+## 8.2 Self-update (`update`)
+
+`src/update.rs` implements `agent-cli update`. It has a **pure core** (semver
+parse/compare, `owner/repo` from `CARGO_PKG_REPOSITORY`, tag extraction from the
+GitHub JSON, and install-prefix derivation from `current_exe()`) wrapped by three
+thin I/O edges: a `reqwest` GET to the GitHub releases API (`releases/latest`,
+falling back to `tags`), a `cargo install --git <repo> --tag <version> agent-cli
+--root <prefix>`, and a `--version` verify of the result.
+
+Because agent-cli publishes no prebuilt binaries — installation is a source build
+(`install.sh` → `cargo install`, §[Install](../README.md#install)) — the update
+mirrors that: it rebuilds from the released tag into the running binary's prefix
+(the grandparent of `<prefix>/bin/agent-cli`). `cargo install` builds to a temp
+dir and moves the binary into place, so the self-replace is atomic; success is
+claimed only after the new binary answers `--version`. The command needs `cargo`
+on `PATH` and is Linux-only, like the installer. `--check` performs only the
+lookup/compare and writes nothing.
+
 ## 9. Target OS
 
 Linux only. The implementation assumes Unix domain sockets, `XDG_RUNTIME_DIR`, `/proc/<pid>`, and `tokio::signal::unix`.
