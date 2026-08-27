@@ -67,7 +67,7 @@ src/
 │   ├── webfetch.rs      ... URL fetch + HTML-to-text
 │   └── send_to.rs       ... peer prompt delivery
 └── ipc/
-    ├── mod.rs           ... IpcMessage
+    ├── mod.rs           ... IpcMessage (Prompt / PromptReply / Ack / Error / Ping / Pong / Shutdown)
     ├── server.rs        ... UnixListener (0600) / Drop performs accept abort + socket deletion
     ├── client.rs        ... UnixStream
     └── registry.rs      ... <agent-id>.{sock,json} scan / Drop performs automatic cleanup
@@ -186,6 +186,7 @@ Agent::process_turn (auto_approve=false)
 {
   "id":"agent-01HX...",
   "name":"alice",
+  "group":"team",
   "pid":12345,
   "started_at":"2026-05-01T10:00:00Z",
   "provider":"claude",
@@ -195,11 +196,23 @@ Agent::process_turn (auto_approve=false)
 }
 ```
 
+`group` is optional: it is a label shared by agents launched together (a cohort),
+resolved at launch from `--group` / `[runtime] group` and inherited by detached
+children (see §7.1). The key is omitted for ungrouped agents, and a registry file
+written before the group feature (no `group` key) still loads. A group lives
+*inside* an entry — the `registry_dir` remains the sole discovery boundary; a
+group is not a separate directory or socket.
+
 During scanning:
 
 - Reads `*.json` and verifies the corresponding `*.sock` exists
 - Confirms PID liveness via `/proc/<pid>` existence
 - If either is missing, treats as stale and cleans up `<agent-id>.{sock,json}`
+
+`agent-cli list [--group <id>]` renders these entries (with a `GROUP` column and
+an optional filter), and `agent-cli groups` aggregates the live entries by group
+— since scanning already reaps dead pids, a group is reported as running iff at
+least one member is alive.
 
 ## 5. Provider Abstraction
 
@@ -272,6 +285,38 @@ Regardless of the trigger -- `/quit` / `/exit` / `Ctrl+D` (EOF) / `Ctrl+C` (SIGI
 - `main` explicitly calls `std::process::exit(0/1)` to avoid the tokio runtime drop waiting for the `tokio::io::stdin()` blocking thread.
 - On development machines, all 5 paths confirmed normal termination within 1 second with no registry remnants (`/quit` 110ms / `/exit` 110ms / `Ctrl+D` 110ms / `SIGINT` 19ms / `SIGTERM` 3ms).
 - When awaiting approval (`AwaitingApproval`), on input loop break, `oneshot::Sender::send(false)` provides a fail-safe default (see 3.3).
+
+## 7.1 Detached agents (`spawn` / `serve` / `stop`)
+
+`app::run` is the interactive front end; `app::run_headless` is its
+non-interactive sibling. `run_headless` builds the same provider / IPC server /
+registry / agent / display stack but omits the stdin input loop — a detached
+process has `stdin` at `/dev/null`, and `run` treats stdin EOF as shutdown, which
+would kill it. Having no console to answer tool approval, `serve` forces
+`auto_approve = true` and builds the agent with `approval_tx: None`.
+
+```text
+ parent (interactive `run`, or one-shot `spawn`)
+   │ commands::spawn_detached()
+   │   current_exe()  --config <same>  serve  [--name…]  [--group <launcher group>]
+   │   pre_exec(setsid) + stdin/out/err = /dev/null + drop child (no wait, no kill_on_drop)
+   ▼
+ child (`serve` → app::run_headless): self-registers in the SHARED registry_dir,
+   serves peers over IPC, shuts down on SIGINT | SIGTERM | IpcMessage::Shutdown
+```
+
+The launcher passes its own effective group to the child as `--group`, so a
+spawned cohort shares one group (§4). Because the child resolves `--group` ahead
+of `[runtime] group`, the inherited value wins even if the child's config names a
+different default; an explicit group on the `spawn` call overrides the inherited
+one.
+
+Independence follows from three facts: `setsid` isolates the child from the
+parent's terminal signals; stdio is detached; and the parent never holds the
+child with `kill_on_drop` nor `wait()`s on it, so dropping the handle leaves it
+running (a spawned agent-cli already has no lifetime tie to its launcher). `stop`
+resolves the peer and sends `IpcMessage::Shutdown` (the receiver Acks it and
+converges on the §7 shutdown), falling back to `SIGTERM` by the registered pid.
 
 ## 8. Context-efficiency Features (opt-in)
 

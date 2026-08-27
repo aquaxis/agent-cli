@@ -92,6 +92,12 @@ pub(crate) struct ReplState {
     commands_dir: PathBuf,
     /// Discovered custom commands, refreshable via `/reload-commands`.
     commands: RwLock<Vec<CustomCommand>>,
+    /// This session's config source path, used by `/spawn` to launch a detached
+    /// peer that shares the same config file (hence the same registry_dir).
+    config_source: ConfigSource,
+    /// This session's effective group; `/spawn` passes it to a detached child so
+    /// the child inherits the launcher's group.
+    group: Option<crate::id::GroupId>,
 }
 
 const HISTORY_LIMIT: usize = 200;
@@ -164,6 +170,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
 
     let id = AgentId::new();
     let name = args.name.clone();
+    let group = config.resolve_group(args.group.as_deref());
     let agents_dir = config.agents_dir()?;
     let resolution: PersonaResolution = persona::resolve(
         args.persona.as_deref(),
@@ -197,6 +204,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let entry = RegistryEntry {
         id: id.clone(),
         name: name.clone(),
+        group: group.clone(),
         pid: std::process::id(),
         started_at: Utc::now(),
         provider: config.provider.kind.clone(),
@@ -228,10 +236,12 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let agent = Agent {
         id: id.clone(),
         name: name.clone(),
+        group: group.clone(),
         persona: resolution.persona,
         provider,
         tools,
         config: config.clone(),
+        config_source: source.clone(),
         registry_dir: registry_dir.clone(),
         log: Some(log),
         auto_approve: auto_approve.clone(),
@@ -256,6 +266,8 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         auto_approve: auto_approve.clone(),
         commands_dir,
         commands: RwLock::new(initial_commands),
+        config_source: source.clone(),
+        group: group.clone(),
     });
 
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
@@ -295,6 +307,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let input_tx_for_ipc = input_tx.clone();
     let ipc_task = {
         let mut shutdown_rx = shutdown_rx.clone();
+        let shutdown_tx = shutdown_tx.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -308,6 +321,11 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
                                 {
                                     break;
                                 }
+                            }
+                            // A peer requested we shut down (e.g. `agent-cli stop` / `/stop`).
+                            Some(IpcMessage::Shutdown) => {
+                                let _ = shutdown_tx.send(true);
+                                break;
                             }
                             Some(_) => {}
                             None => break,
@@ -397,6 +415,192 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
 
     // IPC server and registry handle are auto-cleaned on Drop, but explicit cleanup
     // is harmless and ensures thoroughness.
+    drop(ipc_server);
+    registry_handle.cleanup();
+    IpcServer::cleanup(&socket_path);
+    Ok(())
+}
+
+/// Headless run: register and serve peer prompts over IPC with no interactive
+/// REPL. This is the target a detached `spawn` launches (`Command::Serve`); it
+/// may also be run directly for a foreground headless agent.
+///
+/// It builds the same provider / IPC server / registry / agent / display stack
+/// as [`run`], but omits the stdin input loop entirely — a detached process has
+/// `stdin` pointed at `/dev/null`, and [`run`] treats stdin EOF as shutdown,
+/// which would kill the agent immediately. With no console to answer tool
+/// approval, serve mode forces `auto_approve = true` and builds the agent with
+/// `approval_tx: None`, so it never blocks on a y/N prompt. Shutdown converges
+/// on `SIGINT` / `SIGTERM` (via the signal task) or an `IpcMessage::Shutdown`.
+pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArgs) -> Result<()> {
+    config.apply_overrides(args.provider.as_deref(), args.model.as_deref());
+
+    let id = AgentId::new();
+    let name = args.name.clone();
+    let group = config.resolve_group(args.group.as_deref());
+    let agents_dir = config.agents_dir()?;
+    let resolution: PersonaResolution = persona::resolve(
+        args.persona.as_deref(),
+        &config.runtime.persona_file,
+        &agents_dir,
+        name.as_deref(),
+    )?;
+
+    config.apply_persona_overrides(
+        resolution.persona.frontmatter.model.as_deref(),
+        resolution.persona.frontmatter.temperature,
+    );
+
+    let provider = ai::build(&mut config, &source)?;
+
+    let registry_dir = config.registry_dir()?;
+    let socket_path = registry_dir.join(format!("{}.sock", id.as_str()));
+
+    let mut ipc_server = IpcServer::bind(socket_path.clone()).await?;
+    let mut ipc_rx = ipc_server
+        .take_rx()
+        .expect("IpcServer rx should be available immediately after bind");
+
+    let entry = RegistryEntry {
+        id: id.clone(),
+        name: name.clone(),
+        group: group.clone(),
+        pid: std::process::id(),
+        started_at: Utc::now(),
+        provider: config.provider.kind.clone(),
+        model: provider.model().to_string(),
+        socket: socket_path.clone(),
+        persona: Some(resolution.persona.summary()),
+    };
+    let registry_handle = RegistryHandle::register(&registry_dir, &entry).await?;
+    let registry_handle = Arc::new(registry_handle);
+
+    let log = ConversationLog::open(&config.log_dir()?, &id).await?;
+
+    let allowed = resolution.persona.frontmatter.allowed_tools.clone();
+    let denied = resolution.persona.frontmatter.denied_tools.clone();
+    let tools = ToolRegistry::build(&config, allowed.as_deref(), denied.as_deref());
+
+    let history = Agent::build_initial_history(&resolution.persona);
+    // A headless agent has no console to answer tool-approval prompts, so it
+    // must auto-approve and never request confirmation (approval_tx: None).
+    let auto_approve = Arc::new(AtomicBool::new(true));
+
+    let agent = Agent {
+        id: id.clone(),
+        name: name.clone(),
+        group: group.clone(),
+        persona: resolution.persona,
+        provider,
+        tools,
+        config: config.clone(),
+        config_source: source.clone(),
+        registry_dir: registry_dir.clone(),
+        log: Some(log),
+        auto_approve,
+        approval_tx: None,
+        history,
+    };
+
+    let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
+    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    println!(
+        "agent-cli serving headless: id={} name={} provider={} model={}",
+        id.as_str(),
+        name.as_deref().unwrap_or("-"),
+        config.provider.kind,
+        agent.provider.model(),
+    );
+    let _ = std::io::stdout().flush();
+
+    let agent_handle = tokio::spawn(async move { agent.run(input_rx, event_tx).await });
+
+    // SIGINT / SIGTERM handler
+    let signal_task = {
+        let shutdown_tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            wait_for_termination_signal().await;
+            let _ = shutdown_tx.send(true);
+        })
+    };
+
+    // Forward IPC prompts to the agent; an IpcMessage::Shutdown triggers shutdown.
+    let input_tx_for_ipc = input_tx.clone();
+    let ipc_task = {
+        let mut shutdown_rx = shutdown_rx.clone();
+        let shutdown_tx = shutdown_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    res = ipc_rx.recv() => {
+                        match res {
+                            Some(IpcMessage::Prompt { from, from_name, text, reply_to }) => {
+                                if input_tx_for_ipc
+                                    .send(AgentInput::PeerPrompt { from, from_name, text, reply_to })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            Some(IpcMessage::Shutdown) => {
+                                let _ = shutdown_tx.send(true);
+                                break;
+                            }
+                            Some(_) => {}
+                            None => break,
+                        }
+                    }
+                    changed = shutdown_rx.changed() => {
+                        if changed.is_err() || *shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+    };
+
+    let show_thinking = config.ui.show_thinking_mode();
+    let display_task = tokio::spawn(async move {
+        let mut display_state = DisplayState::new(stdin_is_tty());
+        while let Some(ev) = event_rx.recv().await {
+            display_event(ev, show_thinking, &mut display_state);
+        }
+    });
+
+    // Block until a shutdown notification arrives (signal or IPC Shutdown).
+    {
+        let mut shutdown_rx = shutdown_rx.clone();
+        loop {
+            if *shutdown_rx.borrow() {
+                break;
+            }
+            if shutdown_rx.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+
+    ipc_task.abort();
+    let _ = ipc_task.await;
+    signal_task.abort();
+    let _ = signal_task.await;
+
+    drop(input_tx);
+
+    let agent_abort = agent_handle.abort_handle();
+    let abort_timer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        agent_abort.abort();
+    });
+    let _ = agent_handle.await;
+    abort_timer.abort();
+    let _ = abort_timer.await;
+    let _ = display_task.await;
+
     drop(ipc_server);
     registry_handle.cleanup();
     IpcServer::cleanup(&socket_path);
@@ -1433,6 +1637,8 @@ const BUILTIN_COMMANDS: &[&str] = &[
     "history",
     "list",
     "send",
+    "spawn",
+    "stop",
     "tools",
     "persona",
     "reload-persona",
@@ -1592,6 +1798,8 @@ async fn handle_repl_command(
             raw_println(raw_mode, "  /tools                      List tools enabled for this agent.");
             raw_println(raw_mode, "  /persona                    Show this agent's persona (role / skills / source path).");
             raw_println(raw_mode, "  /reload-persona             Re-resolve and reload the persona; system prompt is replaced, history kept.");
+            raw_println(raw_mode, "  /spawn [name] [provider]    Create a detached agent-cli peer that outlives this session.");
+            raw_println(raw_mode, "  /stop <peer>                Stop a running peer (id or name); detached agents too.");
             raw_println(raw_mode, "  /peer <id_or_name>          Show a peer's persona summary.");
             raw_println(raw_mode, "  /history [n]                Show last n (default 20) user inputs from this session.");
             raw_println(raw_mode, "  /clear, /reset              Clear conversation history (persona / system prompt are kept).");
@@ -1640,6 +1848,8 @@ async fn handle_repl_command(
         }
         "list" => list_peers(&state.registry_dir, raw_mode),
         "send" => send_to_peer(arg, &state.registry_dir, raw_mode).await,
+        "spawn" => spawn_peer(arg, state, raw_mode).await,
+        "stop" => stop_peer_cmd(arg, &state.registry_dir, raw_mode).await,
         "tools" => {
             if state.tool_names.is_empty() {
                 raw_println(raw_mode, "(no tools enabled)");
@@ -1760,6 +1970,48 @@ async fn handle_repl_command(
     };
     push_history(state, &full_cmd).await;
     CommandResult::Continue
+}
+
+/// `/spawn [name] [provider]` — launch a detached agent-cli peer sharing this
+/// session's config (and therefore its `registry_dir`). The child outlives this
+/// process (design §5, §6).
+async fn spawn_peer(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
+    let mut it = arg.split_whitespace();
+    let name = it.next().map(|s| s.to_string());
+    let provider = it.next().map(|s| s.to_string());
+    let run_args = RunArgs {
+        name,
+        // Inherit the launcher's group so the spawned child joins the same cohort.
+        group: state.group.as_ref().map(|g| g.to_string()),
+        provider,
+        model: None,
+        persona: None,
+        auto_approve_tools: false,
+    };
+    match crate::commands::spawn_detached(&state.config_source.path, &state.registry_dir, &run_args).await {
+        Ok(entry) => raw_println(
+            raw_mode,
+            &format!(
+                "[spawn] detached agent id={} name={} pid={}",
+                entry.id,
+                entry.name.as_deref().unwrap_or("-"),
+                entry.pid
+            ),
+        ),
+        Err(e) => raw_eprintln(raw_mode, &format!("[spawn] failed: {e}")),
+    }
+}
+
+/// `/stop <peer>` — request a peer (id or name) to shut down (design §7).
+async fn stop_peer_cmd(arg: &str, registry_dir: &Path, raw_mode: bool) {
+    let peer = arg.trim();
+    if peer.is_empty() {
+        raw_eprintln(raw_mode, "usage: /stop <peer>");
+        return;
+    }
+    if let Err(e) = crate::commands::stop_peer(registry_dir, peer).await {
+        raw_eprintln(raw_mode, &format!("[stop] {e}"));
+    }
 }
 
 fn list_peers(registry_dir: &Path, raw_mode: bool) {
@@ -2076,6 +2328,11 @@ mod tests {
             auto_approve: Arc::new(AtomicBool::new(false)),
             commands_dir: dir.to_path_buf(),
             commands: RwLock::new(Vec::new()),
+            config_source: ConfigSource {
+                path: dir.join("config.toml"),
+                from_explicit: false,
+            },
+            group: None,
         })
     }
 

@@ -10,14 +10,18 @@ agent-cli [--config <path>] <subcommand>
 
 | Option | Description |
 |--------|-------------|
-| `--config <path>` | Config file to use. The `AGENT_CLI_CONFIG` environment variable is also accepted |
+| `--config <path>` | Config file to use. The `AGENT_CLI_CONFIG` environment variable is also accepted. When neither is set, a project-local `./.agent-cli/config.toml` (if it exists) takes precedence over the default `~/.config/agent-cli/config.toml`. See [`doc/config.md`](config.md) §1 |
 
 ### Subcommands
 
 | Form | Purpose |
 |------|---------|
 | `agent-cli run [...]` | Start the REPL (default) |
-| `agent-cli list` | List running peers |
+| `agent-cli spawn [...]` | Create a **detached** agent that does not depend on this process: it runs headless in its own session, self-registers as a peer, and outlives the launcher. Accepts the same options as `run`. See [Detached agents](#detached-agents) |
+| `agent-cli stop <peer>` | Stop a running peer (id or name) by requesting a graceful shutdown; falls back to `SIGTERM` if the socket is unreachable |
+| `agent-cli serve [...]` | Run headless (register + serve peers over IPC, no REPL). This is the target `spawn` launches; running it directly gives a foreground headless agent |
+| `agent-cli list [--group <id>]` | List running peers; a `GROUP` column shows each agent's group, and `--group` filters to one group. See [Groups](#groups) |
+| `agent-cli groups` | Detect and list the groups currently running as processes, with member counts. See [Groups](#groups) |
 | `agent-cli send <peer> <text>` | Send a prompt to a peer and exit (does not wait for a response) |
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for its AI response, print it, and exit (default timeout 120 seconds) |
 | `agent-cli providers` | Show available backend status |
@@ -32,10 +36,74 @@ agent-cli [--config <path>] <subcommand>
 | Option | Description |
 |--------|-------------|
 | `--name <name>` | Agent display name |
-| `--provider <kind>` | Override backend |
+| `--provider <kind>` | Override backend: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp` |
 | `--model <model>` | Override model |
 | `--persona <path>` | Explicit persona file path |
+| `--group <id>` | Group this agent joins; detached children inherit it. Overrides the `[runtime] group` config key. See [Groups](#groups) |
 | `--auto-approve-tools` | Skip y/N approval for tool invocations |
+
+`spawn` and `serve` accept the same options as `run` (`--name` / `--group` / `--provider` / `--model` / `--persona` / `--auto-approve-tools`).
+
+## Detached agents
+
+Every agent-cli process is already an independent peer, discovered through the
+shared registry directory ([`architecture.md`](architecture.md) §1). `spawn`
+lets a running agent-cli (or a one-shot command) **create** such a peer without
+opening a second terminal:
+
+```text
+agent-cli spawn --name worker            # start a detached headless peer
+agent-cli list                           # `worker` appears in the registry
+agent-cli ask worker "summarise X"       # talk to it like any peer
+agent-cli stop worker                    # ask it to shut down cleanly
+```
+
+- The child inherits the launcher's config file (hence the same
+  `[runtime] registry_dir`), so it is immediately visible to `list` / `send` /
+  `ask` / the `send_to` tool. Per-child overrides are limited to the `run`
+  options above.
+- The child runs **headless** (`serve` mode): it has no REPL and no controlling
+  terminal, it self-registers, answers peer prompts over IPC, and — having no
+  console to answer a y/N prompt — auto-approves tool execution.
+- It is **independent**: launched in a new session (`setsid`) with detached
+  stdio, it survives the launcher's exit, the launcher's `Ctrl+C`, and terminal
+  hang-up. Stop it with `agent-cli stop <peer>` / `/stop <peer>` (a graceful
+  IPC shutdown, falling back to `SIGTERM`), or with an OS signal. A crashed
+  detached agent is reaped lazily from the registry like any other peer.
+
+From inside a REPL the same is available as `/spawn [name] [provider]` and
+`/stop <peer>`.
+
+## Groups
+
+A **group** is an identifier shared by agents that were launched together — a
+root agent and the detached peers it spawns — so a whole cohort is recognizable
+at a glance. A group is a free-form label; agents carrying the same string are in
+the same group.
+
+- **Assign** a group at launch with `--group <id>`, or set a default for every
+  agent a config launches with `[runtime] group` (the flag overrides the config
+  key). With neither, an agent is ungrouped and shows `-`.
+- **Inherit**: a detached child inherits its launcher's group automatically, so
+  the group only has to be named once at the root. `spawn`/`/spawn` and the
+  `spawn` tool all propagate it; an explicit `--group` (or the tool's `group`
+  argument) overrides the inherited value.
+- **Recognize**: `agent-cli list` shows a `GROUP` column, and
+  `agent-cli list --group <id>` lists only that group's members.
+- **Detect**: `agent-cli groups` scans the live registry and lists the distinct
+  groups currently running, each with its member count — a way to discover which
+  cohorts exist without knowing any group id in advance. Ungrouped agents are
+  reported under a `-` bucket.
+
+```text
+agent-cli spawn --group team --name lead    # start a grouped detached peer
+agent-cli spawn --group team --name helper   # another member of the same group
+agent-cli list --group team                  # only team members
+agent-cli groups                             # team  2  lead, helper
+```
+
+A group is fixed at launch; there is no command to move a running agent between
+groups.
 
 ## REPL Commands
 
@@ -45,7 +113,9 @@ In the REPL, lines starting with `/` are commands; everything else is a normal p
 |---------|---------|
 | `/list` | List peers (id, name, provider, model, role) |
 | `/send <peer> <text>` | Send a prompt to a peer |
-| `/tools` | List tools enabled for this agent |
+| `/spawn [name] [provider]` | Create a detached agent peer (see [Detached agents](#detached-agents)) that outlives this session |
+| `/stop <peer>` | Stop a running peer (id or name), including detached agents |
+| `/tools` | List tools enabled for this agent (agent-cli's own registry; not offered to the model under `claude-code` delegation) |
 | `/persona` | Show this agent's persona (role / skills / description / tool restrictions / source path) |
 | `/reload-persona` | Re-resolve and reload the persona file, updating the system prompt (history preserved) |
 | `/peer <id_or_name>` | Show a peer's persona summary |
@@ -145,6 +215,14 @@ Tool invocations (bash, read, write, send_to, monitor, edit, glob, grep, websear
 
 `/auto status` (or `/auto` with no argument) shows the current value. In approval mode, each tool request displays `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted; anything else (blank input, other words) counts as denial.
 
+**Scope.** Approval governs the tools `agent-cli` itself runs. With
+`kind = "claude-code"` in the default `mode = "delegation"`, the tools are run
+inside Claude Code and reported afterwards, so `auto_approve_tools`,
+`--auto-approve-tools`, `/auto`, and persona allow / deny lists do not gate
+them. Restrict that backend with its own `tools` / `allowed_tools` /
+`disallowed_tools` / `permission_mode` keys instead — see
+[`doc/providers/claude-code.md`](providers/claude-code.md).
+
 ### Suppressing `[thinking]` Output
 
 Claude's `thinking_delta` and Ollama's `message.thinking` (e.g. `glm-5.1:cloud`) are passed to the REPL as `AgentEvent::Thinking` and rendered as `[thinking] <text>` lines. Long-reasoning models emit large amounts of thinking text, so `[ui] show_thinking` provides three levels of control:
@@ -187,7 +265,30 @@ ollama serve &
 agent-cli run --provider ollama --model glm-5.1:cloud
 ```
 
-### 3. Two-process coordination (claude x ollama)
+### 3. Local Claude Code CLI (claude-code)
+
+Uses the `claude` CLI installed on the machine as the backend, with no API key —
+Claude Code brings its own authentication.
+
+```toml
+[provider]
+kind = "claude-code"
+
+[provider.claude-code]
+# bin   = "claude"   # executable name (resolved on PATH) or an absolute path
+# model = "opus"     # omit to use Claude Code's own default
+```
+
+```bash
+agent-cli run --provider claude-code
+```
+
+In the default `mode = "delegation"` Claude Code runs its own tools inside its
+own process, so agent-cli's tools and its approval prompt are not part of the
+turn; `mode = "gateway"` is chat-only. See
+[`doc/providers/claude-code.md`](providers/claude-code.md).
+
+### 4. Two-process coordination (claude x ollama)
 
 ```toml
 # Share registry_dir in both configs
@@ -216,7 +317,7 @@ delivered to agent-01HY...
 
 Terminal B shows `[peer prompt from agent-01HX...]` and the AI responds.
 
-### 4. Role assignment (persona operation)
+### 5. Role assignment (persona operation)
 
 ```bash
 cp example/agents/reviewer.md ~/.config/agent-cli/agents/alice.md
@@ -229,7 +330,7 @@ agent-cli run --name bob      # coder persona auto-applied
 
 Type `/persona` in the REPL to see the currently applied role and skills. For the full list of frontmatter keys (`role` / `skills` / `allowed_tools` / `denied_tools` / `model` / `temperature` etc.) and operational patterns, see [`doc/personas.md`](personas.md).
 
-### 5. One-shot send from CLI
+### 6. One-shot send from CLI
 
 To send a short message to another agent without starting a REPL:
 
@@ -239,7 +340,7 @@ agent-cli send alice "stand-by"
 
 This runs as an IPC client only and exits immediately. The receiving agent continues to respond.
 
-### 6. One-shot ask from CLI (waits for the answer)
+### 7. One-shot ask from CLI (waits for the answer)
 
 When you want the peer's answer back on stdout instead of just delivering a prompt:
 
@@ -264,7 +365,7 @@ Differences from `send`:
 
 The peer must already be running. If it needs tools to answer, start it with `--auto-approve-tools`, otherwise it will stop at an approval prompt that no one can answer.
 
-### 7. Configuration switching
+### 8. Configuration switching
 
 ```bash
 agent-cli --config ./project-a.toml run --name proj-a

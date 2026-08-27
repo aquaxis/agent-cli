@@ -9,6 +9,25 @@ Describes the argument schemas, return values, limitations, and approval flow fo
 - Approval flow: When `auto_approve_tools=false` (default), a y/N prompt is obtained via the REPL input loop before execution. See "Tool Execution Approval" below for details. When denied, `user denied tool execution` is returned to the AI.
 - Available tools can be controlled via the persona's `allowed_tools`/`denied_tools` (see `doc/config.md`).
 
+### Which backends see these tools
+
+The ten tools below are `agent-cli`'s own registry. They are offered to the
+model by the HTTP backends (`claude`, `codex`, `ollama`, `opencode`,
+`opencode-go`, `llama.cpp`), which return `tool_use` requests that `agent-cli`
+executes through the approval flow described below.
+
+The `claude-code` backend is different, because the model it drives is Claude
+Code, which carries tools of its own:
+
+| `[provider.claude-code] mode` | Tools the model can use | This document applies |
+|---|---|---|
+| `"delegation"` (default) | Claude Code's own, executed inside Claude Code and reported afterwards | No — configure that set with `tools` / `allowed_tools` / `disallowed_tools` / `permission_mode` |
+| `"gateway"` | none (`--tools ""`, chat only) | No |
+
+`agent-cli`'s registry is never handed to that backend, so neither the approval
+flow nor persona `allowed_tools` / `denied_tools` restrict what Claude Code
+runs. See [`providers/claude-code.md`](providers/claude-code.md).
+
 ## Tool Execution Approval
 
 The approval y/N input/output is **integrated into the REPL's main input loop** (it does not read directly via `std::io::stdin().read_line()`). This prevents approval input from being confused with the user's normal prompt.
@@ -29,6 +48,36 @@ Approval skip (auto-approve) paths:
 | REPL command | `/auto on` | Immediate. `/auto off` returns to approval mode; `/auto status` shows current value |
 
 In the implementation, `auto_approve` is shared between the agent and REPL as `Arc<AtomicBool>`, so it can be toggled at any time during the session via `/auto on`/`/auto off`.
+
+## `spawn` (opt-in — not enabled by default)
+
+Creates a detached agent-cli peer that runs headless in its own session and does
+not depend on the current process. It is registered in the tool set but, unlike
+the ten tools above, is **not** in the default `[tools] enabled`, because
+autonomous process creation is more impactful than peer messaging; add `spawn`
+to `[tools] enabled` (or a persona's `allowed_tools`) to offer it to the model.
+It is the tool-level equivalent of the `agent-cli spawn` subcommand /
+`/spawn` REPL command (see [`usage.md`](usage.md) "Detached agents").
+
+### Arguments
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `name` | string | No | Display name for the new agent |
+| `provider` | string | No | Backend override (`claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`) |
+| `model` | string | No | Model override |
+| `persona` | string | No | Persona file path |
+| `group` | string | No | Group id for the new agent; omit to inherit this agent's group (see [`usage.md`](usage.md) "Groups") |
+| `prompt` | string | No | Initial prompt delivered to the new agent (fire-and-forget); use `send_to` for a reply |
+
+### Return
+
+`ok` with the new agent's `id` / `name` / `provider` / `model` / `socket`. The
+new agent shares this agent's config file (hence the same `registry_dir`), so it
+is immediately reachable with `send_to`. It runs headless and therefore
+auto-approves its own tool execution. When `group` is omitted the new agent
+inherits this agent's group, so a model spawning a fleet keeps the whole cohort
+under one recognizable group id.
 
 ## `bash`
 

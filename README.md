@@ -10,6 +10,8 @@
 - Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch — the REPL and tools never call out to the `claude` CLI. (Driving that CLI is available separately, as the opt-in `claude-code` backend below.)
 - Seven backends: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
+- Detached agents — `agent-cli spawn` (or `/spawn`) creates a headless peer in its own session that outlives the launcher; stop it with `agent-cli stop <peer>` (or `/stop`).
+- Groups — tag a launched cohort with `--group <id>` (detached children inherit it); filter with `agent-cli list --group <id>` and discover running cohorts with `agent-cli groups`.
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
 - Built-in tools: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`. Approval mode can be flipped at runtime with `/auto on`.
 - Custom slash commands — drop a Markdown file into `.agent-cli/commands/` and it becomes `/<name>`, with `$ARGUMENTS` / `$1`…`$N` / `@file` expansion and prefix auto-execution.
@@ -161,9 +163,10 @@ Config files are TOML. Resolution order:
 
 1. `--config <path>` (explicit)
 2. `AGENT_CLI_CONFIG` environment variable
-3. Default `~/.config/agent-cli/config.toml`
+3. Project-local `./.agent-cli/config.toml` (used only when it already exists)
+4. Default `~/.config/agent-cli/config.toml`
 
-Explicit paths must exist (no auto-creation). The default path auto-generates a sensible template on first run, and [`example/config.example.toml`](example/config.example.toml) is a fully commented starting point covering every section.
+Explicit paths must exist (no auto-creation). A project-local `.agent-cli/config.toml` in the current directory is picked up automatically when present (never auto-created; only the current directory is checked, not parents). The default path auto-generates a sensible template on first run, and [`example/config.example.toml`](example/config.example.toml) is a fully commented starting point covering every section.
 
 `[provider] kind` selects the active backend; only that backend's `[provider.*]` table needs to be filled in, but you can keep several tables in one file and switch with `kind` (or `--provider`).
 
@@ -302,7 +305,11 @@ See [`doc/config.md`](doc/config.md) for the full reference and [`doc/troublesho
 | Command | Purpose |
 |---------|---------|
 | `agent-cli run` | Start the REPL (one agent per process) |
-| `agent-cli list` | List running peers |
+| `agent-cli spawn [...]` | Create a detached headless peer that outlives the launcher (same options as `run`) |
+| `agent-cli stop <peer>` | Stop a running peer (id or name); graceful IPC shutdown, `SIGTERM` fallback |
+| `agent-cli serve [...]` | Run headless (register + serve peers, no REPL) — the target `spawn` launches |
+| `agent-cli list [--group <id>]` | List running peers (with a `GROUP` column; `--group` filters to one group) |
+| `agent-cli groups` | Detect and list the groups currently running, with member counts |
 | `agent-cli send <peer> <text>` | Send a one-shot prompt to a peer (no response) |
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for the answer, print it (default 120 s) |
 | `agent-cli providers` | Show backend status |
@@ -318,6 +325,8 @@ REPL commands inside `agent-cli run`:
 |---------|---------|
 | `/list` | List running peers |
 | `/send <peer> <text>` | Send a prompt to a peer |
+| `/spawn [name] [provider]` | Create a detached peer that outlives this session |
+| `/stop <peer>` | Stop a running peer (id or name), detached agents included |
 | `/tools` | List tools enabled for this agent |
 | `/persona` | Show this agent's persona (role / skills / source path) |
 | `/reload-persona` | Re-resolve and reload the persona file (history is preserved) |
@@ -333,9 +342,46 @@ REPL commands inside `agent-cli run`:
 
 User prompts and executed slash commands are persisted to `<runtime.log_dir>/history.txt` (last 200 entries) and reloaded on next startup; `/quit` and `/exit` are excluded. See [`doc/usage.md`](doc/usage.md) for full details.
 
+### Detached agents
+
+`agent-cli spawn` creates a peer without a second terminal. The child runs
+headless in its own session and does not depend on the launcher — it survives
+the launcher's exit, `Ctrl+C`, and terminal hang-up:
+
+```bash
+agent-cli spawn --name worker      # start a detached headless peer
+agent-cli list                     # `worker` is registered like any peer
+agent-cli ask worker "..."         # talk to it (send / ask / send_to tool)
+agent-cli stop worker              # ask it to shut down cleanly
+```
+
+The child inherits the launcher's config file (hence the same
+`[runtime] registry_dir`), so it is immediately discoverable. Having no console
+to answer a y/N prompt, a headless agent auto-approves tool execution. Inside a
+REPL the same is available as `/spawn [name] [provider]` and `/stop <peer>`. See
+[`doc/usage.md`](doc/usage.md) "Detached agents".
+
+### Groups
+
+A **group** is a shared identifier for agents launched together, so a whole
+cohort is recognizable. Assign one with `--group <id>` (or the `[runtime] group`
+config key); a detached child inherits its launcher's group automatically, so the
+id is named once at the root:
+
+```bash
+agent-cli spawn --group team --name lead     # a grouped detached peer
+agent-cli spawn --group team --name helper    # inherits nothing to restate — same group
+agent-cli list --group team                   # only team members (GROUP column)
+agent-cli groups                              # team  2  lead, helper
+```
+
+`agent-cli groups` scans the live registry and lists the distinct groups
+currently running with their member counts (ungrouped agents fall under a `-`
+bucket). A group is fixed at launch. See [`doc/usage.md`](doc/usage.md) "Groups".
+
 ### Skipping tool approval
 
-Tool invocations (bash, read, write, send_to, edit, glob, grep, monitor, websearch, webfetch) request a y/N approval by default. There are three ways to skip approval:
+Tool invocations (bash, read, write, send_to, monitor, edit, glob, grep, websearch, webfetch) request a y/N approval by default. There are three ways to skip approval:
 
 | Method | Example |
 |--------|---------|
@@ -344,6 +390,11 @@ Tool invocations (bash, read, write, send_to, edit, glob, grep, monitor, websear
 | REPL command | `/auto on` (`/auto off` returns to approval mode, `/auto status` shows the current value) |
 
 In approval mode, each tool request shows `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted; anything else (blank input, other words) counts as denial.
+
+This governs the tools `agent-cli` runs itself. With `kind = "claude-code"` in
+`delegation` mode the tools run inside Claude Code, so none of the three methods
+apply — use that backend's `permission_mode` / `tools` / `allowed_tools` /
+`disallowed_tools` keys instead.
 
 ### Custom slash commands
 

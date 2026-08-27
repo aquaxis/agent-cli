@@ -1,6 +1,6 @@
 [package]
 name = "agent-cli"
-version = "0.3.0"
+version = "0.6.0"
 edition = "2021"
 license = "MIT"
 description = "Standalone multi-agent CLI with Claude Code-equivalent functionality"
@@ -46,6 +46,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Terminal
 crossterm = "0.27"
+
+# Unix session detachment (setsid) and signals (kill) for detached spawn
+libc = "0.2"
 
 # Path / dirs
 dirs = "5"

@@ -1,19 +1,175 @@
+use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
 
 use crate::ai;
+use crate::cli::RunArgs;
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 use crate::id::AgentId;
+use crate::ipc::registry::RegistryEntry;
 use crate::ipc::{client, registry, IpcMessage};
 
-pub async fn list(cfg: &Config) -> Result<()> {
+/// Launch a detached, headless agent-cli process that does not depend on this
+/// one. Prints the child's registry identity and returns; the child keeps
+/// running in its own session (FR-04 – FR-07).
+pub async fn spawn(cfg: &Config, source: &ConfigSource, args: RunArgs) -> Result<()> {
+    let entry = spawn_detached(&source.path, &cfg.registry_dir()?, &args).await?;
+    println!(
+        "spawned detached agent: id={} name={} pid={} socket={}",
+        entry.id,
+        entry.name.as_deref().unwrap_or("-"),
+        entry.pid,
+        entry.socket.display()
+    );
+    Ok(())
+}
+
+/// Spawn `current_exe() --config <config_path> serve <passthrough run args>`
+/// detached from this process and wait (bounded) for it to self-register.
+///
+/// The child shares this process's `registry_dir` (it is launched with the same
+/// config file), so it is immediately a discoverable peer. It is launched with a
+/// **double fork**: the intermediate process `setsid`s and `_exit`s, so the real
+/// `serve` process is reparented to init — it survives the launcher's exit,
+/// `Ctrl+C`, and terminal hang-up, and it never lingers as a zombie under a
+/// long-lived launcher. Because the double fork means the launched child's pid
+/// is not the serve process's pid, registration is matched by the *new* registry
+/// id (and by `--name` when given), not by pid.
+pub async fn spawn_detached(
+    config_path: &Path,
+    registry_dir: &Path,
+    args: &RunArgs,
+) -> Result<RegistryEntry> {
+    let exe =
+        std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
+
+    // Snapshot existing registry ids so we can identify the one the child adds.
+    let before: std::collections::HashSet<String> = registry::list_entries(registry_dir)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| e.id.to_string())
+        .collect();
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--config").arg(config_path).arg("serve");
+    if let Some(name) = &args.name {
+        cmd.arg("--name").arg(name);
+    }
+    if let Some(group) = &args.group {
+        cmd.arg("--group").arg(group);
+    }
+    if let Some(provider) = &args.provider {
+        cmd.arg("--provider").arg(provider);
+    }
+    if let Some(model) = &args.model {
+        cmd.arg("--model").arg(model);
+    }
+    if let Some(persona) = &args.persona {
+        cmd.arg("--persona").arg(persona);
+    }
+    if args.auto_approve_tools {
+        cmd.arg("--auto-approve-tools");
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    // Double fork so the serve process is fully detached: a new session
+    // (setsid) makes it immune to the launcher's terminal signals, and being
+    // reparented to init means it neither dies with the launcher nor lingers as
+    // a zombie under a long-lived one. Safety: the closure runs in the forked
+    // child before exec and calls only async-signal-safe primitives.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            match libc::fork() {
+                -1 => return Err(std::io::Error::last_os_error()),
+                0 => {}              // grandchild: fall through to setsid + exec
+                _ => libc::_exit(0), // intermediate: exit so init adopts the grandchild
+            }
+            libc::setsid();
+            Ok(())
+        });
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| AppError::Other(format!("spawn detached agent: {e}")))?;
+    // Reap the intermediate (it _exit(0)s immediately after forking the
+    // grandchild), so it never becomes a zombie. The grandchild is already
+    // reparented to init and is unaffected.
+    let _ = child.wait();
+
+    // Wait (bounded) for the grandchild to self-register: a registry entry whose
+    // id is new since the snapshot (and matches --name when one was requested).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let entries = registry::list_entries(registry_dir).unwrap_or_default();
+        let found = entries.into_iter().find(|e| {
+            !before.contains(&e.id.to_string())
+                && args
+                    .name
+                    .as_deref()
+                    .map_or(true, |n| e.name.as_deref() == Some(n))
+        });
+        if let Some(e) = found {
+            return Ok(e);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(AppError::Other(
+                "detached agent did not register within 5s".to_string(),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Stop a running peer by id or name (FR-10).
+pub async fn stop(cfg: &Config, peer: &str) -> Result<()> {
+    stop_peer(&cfg.registry_dir()?, peer).await
+}
+
+/// Resolve `peer` in `registry_dir` and request a graceful shutdown over IPC;
+/// on transport failure, fall back to SIGTERM by the registered pid. Shared by
+/// the `stop` subcommand and the REPL `/stop` command.
+pub async fn stop_peer(registry_dir: &Path, peer: &str) -> Result<()> {
+    let entry = registry::resolve_peer(registry_dir, peer)?;
+    match client::send(&entry.socket, &IpcMessage::Shutdown).await {
+        Ok(IpcMessage::Ack { .. }) => {
+            println!("stop requested: {} ({peer})", entry.id);
+            Ok(())
+        }
+        other => {
+            // Transport failed or unexpected reply: fall back to SIGTERM by pid.
+            let rc = unsafe { libc::kill(entry.pid as libc::pid_t, libc::SIGTERM) };
+            if rc == 0 {
+                println!("sent SIGTERM to {} (pid {})", entry.id, entry.pid);
+                Ok(())
+            } else {
+                Err(AppError::Other(format!(
+                    "failed to stop {} ({peer}); ipc reply: {other:?}",
+                    entry.id
+                )))
+            }
+        }
+    }
+}
+
+pub async fn list(cfg: &Config, group_filter: Option<&str>) -> Result<()> {
     let dir = cfg.registry_dir()?;
-    let entries = registry::list_entries(&dir)?;
+    let mut entries = registry::list_entries(&dir)?;
+    if let Some(g) = group_filter {
+        entries.retain(|e| e.group.as_ref().map(|gid| gid.as_str()) == Some(g));
+    }
     if entries.is_empty() {
-        println!("no agents running.");
+        match group_filter {
+            Some(g) => println!("no agents running in group {g}."),
+            None => println!("no agents running."),
+        }
         return Ok(());
     }
-    let rows: Vec<[String; 6]> = entries
+    let rows: Vec<[String; 7]> = entries
         .into_iter()
         .map(|e| {
             let role = e
@@ -29,6 +185,7 @@ pub async fn list(cfg: &Config) -> Result<()> {
             [
                 e.id.to_string(),
                 e.name.clone().unwrap_or_else(|| "-".into()),
+                e.group.map(|g| g.to_string()).unwrap_or_else(|| "-".into()),
                 e.provider,
                 e.model,
                 role,
@@ -36,7 +193,7 @@ pub async fn list(cfg: &Config) -> Result<()> {
             ]
         })
         .collect();
-    let headers = ["ID", "NAME", "PROVIDER", "MODEL", "ROLE", "SKILLS"];
+    let headers = ["ID", "NAME", "GROUP", "PROVIDER", "MODEL", "ROLE", "SKILLS"];
     let mut widths = headers.map(|s| s.len());
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
@@ -45,7 +202,7 @@ pub async fn list(cfg: &Config) -> Result<()> {
             }
         }
     }
-    let render = |cells: &[String; 6]| -> String {
+    let render = |cells: &[String; 7]| -> String {
         cells
             .iter()
             .enumerate()
@@ -53,7 +210,100 @@ pub async fn list(cfg: &Config) -> Result<()> {
             .collect::<Vec<_>>()
             .join("  ")
     };
-    let header_row: [String; 6] = headers.map(|s| s.to_string());
+    let header_row: [String; 7] = headers.map(|s| s.to_string());
+    println!("{}", render(&header_row));
+    for row in &rows {
+        println!("{}", render(row));
+    }
+    Ok(())
+}
+
+/// One detected cohort: a group (or the ungrouped bucket) and its live members.
+pub struct GroupSummary {
+    /// The group id, or `None` for the ungrouped bucket.
+    pub group: Option<crate::id::GroupId>,
+    pub members: Vec<RegistryEntry>,
+}
+
+/// Detect the groups currently running by aggregating the live registry entries
+/// (`list_entries` already reaps dead pids / missing sockets, so a group appears
+/// iff at least one member process is alive). Grouped buckets come first, sorted
+/// by group id; the ungrouped (`None`) bucket, if any, is last — a deterministic
+/// order so callers and tests are stable (FR-14, FR-15).
+pub fn group_summary(registry_dir: &Path) -> Result<Vec<GroupSummary>> {
+    Ok(aggregate_groups(registry::list_entries(registry_dir)?))
+}
+
+/// Pure aggregation of registry entries into deterministic group buckets:
+/// grouped buckets sorted by id first, the ungrouped (`None`) bucket last.
+fn aggregate_groups(entries: Vec<RegistryEntry>) -> Vec<GroupSummary> {
+    let mut grouped: std::collections::BTreeMap<String, Vec<RegistryEntry>> =
+        std::collections::BTreeMap::new();
+    let mut ungrouped: Vec<RegistryEntry> = Vec::new();
+    for e in entries {
+        match &e.group {
+            Some(g) => grouped.entry(g.to_string()).or_default().push(e),
+            None => ungrouped.push(e),
+        }
+    }
+    let mut out: Vec<GroupSummary> = grouped
+        .into_iter()
+        .map(|(g, members)| GroupSummary {
+            group: Some(crate::id::GroupId(g)),
+            members,
+        })
+        .collect();
+    if !ungrouped.is_empty() {
+        out.push(GroupSummary {
+            group: None,
+            members: ungrouped,
+        });
+    }
+    out
+}
+
+pub async fn groups(cfg: &Config) -> Result<()> {
+    let dir = cfg.registry_dir()?;
+    let summary = group_summary(&dir)?;
+    if summary.is_empty() {
+        println!("no agents running.");
+        return Ok(());
+    }
+    let rows: Vec<[String; 3]> = summary
+        .iter()
+        .map(|s| {
+            let group = s
+                .group
+                .as_ref()
+                .map(|g| g.to_string())
+                .unwrap_or_else(|| "-".into());
+            let agents = s
+                .members
+                .iter()
+                .map(|m| m.name.clone().unwrap_or_else(|| m.id.to_string()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            [group, s.members.len().to_string(), agents]
+        })
+        .collect();
+    let headers = ["GROUP", "MEMBERS", "AGENTS"];
+    let mut widths = headers.map(|s| s.len());
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            if cell.chars().count() > widths[i] {
+                widths[i] = cell.chars().count();
+            }
+        }
+    }
+    let render = |cells: &[String; 3]| -> String {
+        cells
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{:<width$}", c, width = widths[i]))
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    let header_row: [String; 3] = headers.map(|s| s.to_string());
     println!("{}", render(&header_row));
     for row in &rows {
         println!("{}", render(row));
@@ -468,7 +718,9 @@ async fn stage_bash_tool(cfg: &Config) -> Result<()> {
         .ok_or_else(|| AppError::Other("bash tool is not enabled".into()))?;
     let ctx = ToolCtx {
         self_id: crate::id::AgentId::new(),
+        group: None,
         registry_dir: std::path::PathBuf::from("/tmp/agent-cli-selftest-noop"),
+        config_source: Default::default(),
         event_tx: None,
     };
     let out = tool
@@ -815,6 +1067,39 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
+    fn entry_with_group(name: &str, group: Option<&str>) -> RegistryEntry {
+        RegistryEntry {
+            id: AgentId::new(),
+            name: Some(name.into()),
+            group: group.map(|g| crate::id::GroupId(g.into())),
+            pid: 1,
+            started_at: Utc::now(),
+            provider: "mock".into(),
+            model: "mock".into(),
+            socket: PathBuf::from("/tmp/x.sock"),
+            persona: None,
+        }
+    }
+
+    #[test]
+    fn aggregate_groups_buckets_and_orders() {
+        let entries = vec![
+            entry_with_group("a", Some("team")),
+            entry_with_group("b", None),
+            entry_with_group("c", Some("team")),
+            entry_with_group("d", Some("alpha")),
+        ];
+        let out = aggregate_groups(entries);
+        // grouped buckets sorted by id first (alpha, team), ungrouped last.
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].group.as_ref().map(|g| g.to_string()), Some("alpha".into()));
+        assert_eq!(out[0].members.len(), 1);
+        assert_eq!(out[1].group.as_ref().map(|g| g.to_string()), Some("team".into()));
+        assert_eq!(out[1].members.len(), 2);
+        assert!(out[2].group.is_none());
+        assert_eq!(out[2].members.len(), 1);
+    }
+
     /// Write a registry entry JSON file manually (without RegistryHandle, so it
     /// is not cleaned up by Drop when the setup function returns).
     fn write_registry_entry(dir: &PathBuf, entry: &RegistryEntry) {
@@ -856,6 +1141,7 @@ mod tests {
         let entry = RegistryEntry {
             id: id.clone(),
             name: Some(name.into()),
+            group: None,
             pid: std::process::id(),
             started_at: Utc::now(),
             provider: "mock".into(),
@@ -921,6 +1207,7 @@ registry_dir = {:?}
         let entry = RegistryEntry {
             id: id.clone(),
             name: Some("silent-peer".into()),
+            group: None,
             pid: std::process::id(),
             started_at: Utc::now(),
             provider: "mock".into(),

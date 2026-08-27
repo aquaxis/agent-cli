@@ -290,6 +290,11 @@ pub struct RuntimeConfig {
     /// string falls back to the default (`.agent-cli/commands`). See FR-14.
     #[serde(default = "default_commands_dir")]
     pub commands_dir: String,
+    /// Default group id for agents this config launches. Empty / unset means no
+    /// group unless `--group` is given on the command line. Detached children
+    /// inherit their launcher's effective group.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 fn default_max_tool_iterations() -> u32 {
@@ -310,6 +315,7 @@ impl Default for RuntimeConfig {
             persona_file: String::new(),
             max_tool_iterations: default_max_tool_iterations(),
             commands_dir: default_commands_dir(),
+            group: None,
         }
     }
 }
@@ -479,7 +485,7 @@ impl UiConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConfigSource {
     pub path: PathBuf,
     pub from_explicit: bool,
@@ -491,11 +497,37 @@ pub fn default_path() -> Result<PathBuf> {
     Ok(base.join("agent-cli").join("config.toml"))
 }
 
+/// Project-local config file: `.agent-cli/config.toml` under the current
+/// working directory. Returns it only when it exists, resolved to an absolute
+/// path so a detached child launched with `--config <path>` reads the same file
+/// regardless of the working directory it inherits.
+pub fn local_path() -> Option<PathBuf> {
+    local_path_in(&std::env::current_dir().ok()?)
+}
+
+/// Project-local config path under `dir`, returned only when it exists.
+fn local_path_in(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join(".agent-cli").join("config.toml");
+    path.is_file().then_some(path)
+}
+
+/// Resolve which config file to use, in order of precedence:
+///
+/// 1. an explicit `--config <path>` (highest),
+/// 2. a project-local `.agent-cli/config.toml` in the current directory (used
+///    only when it already exists),
+/// 3. the user-level default `~/.config/agent-cli/config.toml`.
 pub fn resolve_path(explicit: Option<&Path>) -> Result<ConfigSource> {
     if let Some(p) = explicit {
         return Ok(ConfigSource {
             path: expand_path(p.to_string_lossy().as_ref())?,
             from_explicit: true,
+        });
+    }
+    if let Some(path) = local_path() {
+        return Ok(ConfigSource {
+            path,
+            from_explicit: false,
         });
     }
     Ok(ConfigSource {
@@ -557,6 +589,16 @@ impl Config {
             "llama.cpp" => self.provider.llamacpp.as_ref(),
             _ => None,
         }
+    }
+
+    /// Effective group for a launch: CLI `--group` wins, else `[runtime] group`,
+    /// else `None`. Empty strings are treated as unset.
+    pub fn resolve_group(&self, cli_group: Option<&str>) -> Option<crate::id::GroupId> {
+        cli_group
+            .or(self.runtime.group.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| crate::id::GroupId(s.to_string()))
     }
 
     pub fn apply_overrides(&mut self, provider: Option<&str>, model: Option<&str>) {
@@ -651,6 +693,29 @@ pub(crate) fn tests_default_config() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_path_in_found_only_when_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        // No `.agent-cli/config.toml` yet.
+        assert!(local_path_in(dir.path()).is_none());
+        // A bare `.agent-cli` dir (no config file) is still not a match.
+        std::fs::create_dir(dir.path().join(".agent-cli")).unwrap();
+        assert!(local_path_in(dir.path()).is_none());
+        // The file existing makes it a match, returning that exact path.
+        let cfg = dir.path().join(".agent-cli").join("config.toml");
+        std::fs::write(&cfg, "[provider]\nkind = \"claude\"\n").unwrap();
+        assert_eq!(local_path_in(dir.path()), Some(cfg));
+    }
+
+    #[test]
+    fn resolve_path_prefers_explicit_over_local() {
+        // An explicit `--config` always wins and is marked explicit, regardless
+        // of any project-local file in the current directory.
+        let src = resolve_path(Some(Path::new("/etc/agent-cli/custom.toml"))).unwrap();
+        assert_eq!(src.path, PathBuf::from("/etc/agent-cli/custom.toml"));
+        assert!(src.from_explicit);
+    }
 
     #[test]
     fn parse_default_config() {

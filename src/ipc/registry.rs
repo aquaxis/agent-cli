@@ -5,13 +5,18 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
-use crate::id::AgentId;
+use crate::id::{AgentId, GroupId};
 use crate::persona::PersonaSummary;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryEntry {
     pub id: AgentId,
     pub name: Option<String>,
+    /// Group this agent belongs to (a cohort launched together). Absent for
+    /// ungrouped agents; `#[serde(default)]` keeps registry files written by
+    /// older versions (which have no `group` key) loadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<GroupId>,
     pub pid: u32,
     pub started_at: DateTime<Utc>,
     pub provider: String,
@@ -116,4 +121,56 @@ pub fn resolve_peer(dir: &Path, key: &str) -> Result<RegistryEntry> {
     Err(AppError::registry(format!(
         "peer not found by id or name: {key}"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(group: Option<GroupId>) -> RegistryEntry {
+        RegistryEntry {
+            id: AgentId::new(),
+            name: Some("a".into()),
+            group,
+            pid: 1,
+            started_at: Utc::now(),
+            provider: "ollama".into(),
+            model: "m".into(),
+            socket: PathBuf::from("/tmp/a.sock"),
+            persona: None,
+        }
+    }
+
+    #[test]
+    fn entry_roundtrips_with_group() {
+        let entry = sample(Some(GroupId("team".into())));
+        let raw = serde_json::to_string(&entry).unwrap();
+        assert!(raw.contains("\"group\""));
+        let back: RegistryEntry = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.group.as_ref().map(GroupId::as_str), Some("team"));
+    }
+
+    #[test]
+    fn ungrouped_entry_omits_group_key() {
+        let entry = sample(None);
+        let raw = serde_json::to_string(&entry).unwrap();
+        assert!(!raw.contains("\"group\""));
+    }
+
+    #[test]
+    fn legacy_entry_without_group_loads() {
+        // A registry JSON written before the group feature has no `group` key.
+        let legacy = r#"{
+            "id": "agent-01",
+            "name": "old",
+            "pid": 1,
+            "started_at": "2026-01-01T00:00:00Z",
+            "provider": "ollama",
+            "model": "m",
+            "socket": "/tmp/old.sock",
+            "persona": null
+        }"#;
+        let parsed: RegistryEntry = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.group.is_none());
+    }
 }

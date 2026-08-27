@@ -48,6 +48,10 @@ pub enum IpcMessage {
     Ping,
     /// Connectivity check (response).
     Pong,
+    /// Request the receiving agent to shut down gracefully. The receiver Acks
+    /// this and then converges on its normal shutdown/cleanup sequence. Used to
+    /// stop a headless (detached `serve`) agent that has no controlling TTY.
+    Shutdown,
 }
 
 #[cfg(test)]
@@ -79,6 +83,14 @@ mod tests {
             }
             other => panic!("expected Prompt, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn shutdown_roundtrips() {
+        let json = serde_json::to_string(&IpcMessage::Shutdown).unwrap();
+        assert_eq!(json, r#"{"kind":"shutdown"}"#);
+        let back: IpcMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, IpcMessage::Shutdown));
     }
 
     #[test]

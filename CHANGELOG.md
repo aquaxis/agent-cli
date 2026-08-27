@@ -4,13 +4,43 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.6.0]
+
 ### Added
 
+- Group identifier for launched agents — agents that are launched together (a root and the detached peers it spawns) can now carry a shared **group** id, so a whole cohort is recognizable at a glance.
+  - New global option `--group <id>` (available on `run` / `serve` / `spawn`) and a new `[runtime] group` config key set the group; the flag overrides the config key, and with neither the agent is ungrouped. A group is a free-form label persisted on the registry entry (`RegistryEntry.group`); registry files written by older versions (no `group` key) still load, and an ungrouped agent's file is byte-unchanged.
+  - Detached children **inherit** their launcher's effective group automatically, so the id is named once at the root: `agent-cli spawn` / `/spawn` / the `spawn` tool all propagate it (an explicit `--group`, or the tool's `group` argument, overrides). Because the child resolves `--group` ahead of `[runtime] group`, the inherited value wins even if the child's config names a different default.
+  - `agent-cli list` gains a `GROUP` column and a `--group <id>` filter (`agent-cli list --group team` lists only that group's members).
+  - New `agent-cli groups` subcommand detects the distinct groups currently running as processes and lists them with member counts (aggregated from the live registry, so a group is reported iff at least one member is alive; ungrouped agents fall under a `-` bucket).
+  - Docs updated: `doc/usage.md` (Groups), `doc/architecture.md` (§4, §7.1), `doc/config.md` (`[runtime] group`), `doc/tools.md` (`spawn` tool `group` argument), `README.md`, `README_ja.md`.
+
+## [0.5.0]
+
+### Added
+
+- Project-local configuration — when neither `--config` nor `AGENT_CLI_CONFIG` is set, `agent-cli` now uses a `./.agent-cli/config.toml` under the current working directory if one exists, taking precedence over the default `~/.config/agent-cli/config.toml`. The file is used only when it already exists (never auto-generated), its path is resolved to an absolute path so a detached agent spawned from there reads the same file, and only the current directory is checked (parent directories are not walked). Docs updated: `doc/config.md` §1, `doc/usage.md`, `doc/troubleshooting.md`, `README.md`, `README_ja.md`.
+
+## [0.4.0]
+
+### Added
+
+- Detached agent creation — a running (or one-shot) `agent-cli` can now **create** an `agent-cli` process that does not depend on the parent: it runs headless in its own session, self-registers as a peer, and outlives the launcher.
+  - New subcommands: `agent-cli spawn [...]` launches a detached peer (same options as `run`) and returns once it has registered; `agent-cli serve [...]` runs headless (register + serve peers over IPC, no interactive REPL — the target `spawn` launches; usable directly for a foreground headless agent); `agent-cli stop <peer>` requests a graceful shutdown.
+  - The detached child is launched with a **double fork + `setsid`**: the intermediate process exits (reaped by the launcher) and the `serve` process is reparented to init, so it survives the launcher's exit, `Ctrl+C`, and terminal hang-up, and never lingers as a zombie. It shares the launcher's config file (hence the same `[runtime] registry_dir`), so it is immediately reachable via `list` / `send` / `ask` / the `send_to` tool.
+  - New REPL commands `/spawn [name] [provider]` and `/stop <peer>`.
+  - New **opt-in** LLM tool `spawn` (registered as a candidate but not in the default `[tools] enabled`, since autonomous process creation is higher-impact than peer messaging) that lets the model create a detached peer, with an optional fire-and-forget initial prompt.
+  - New IPC message `IpcMessage::Shutdown` (acknowledged by the server), used by `stop` / `/stop`, with a `SIGTERM`-by-pid fallback. A headless agent has no console to answer a y/N prompt, so it auto-approves its own tool execution.
+  - Docs updated: `doc/usage.md` (Detached agents), `doc/tools.md` (opt-in `spawn` tool), `doc/architecture.md` (§7.1), `README.md`, `README_ja.md`.
 - `Tab` completes the slash command being typed in the REPL (`app.rs::command_completion`). A single match completes it and appends a space so an argument can follow (`/sen` → `/send `); several matches extend the line as far as the candidates agree (`/rel` → `/reload-`). Nothing to add, no match, or an argument already started leaves the line untouched. Built-in and custom commands complete alike.
 
 ### Changed
 
 - The live command-candidate list is now drawn on the row **above** the prompt instead of below it, so the line being typed stays where the eye already is. The hint row is part of the tracked render block and is cleared with it.
+
+### Fixed
+
+- The `--provider` help text (`agent-cli --help` / `run --help`) now lists all seven backend kinds, including the previously-omitted `claude-code`.
 
 ## [0.3.0]
 
@@ -78,4 +108,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/HEAD...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/aquaxis/agent-cli/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/aquaxis/agent-cli/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/aquaxis/agent-cli/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/aquaxis/agent-cli/releases/tag/v0.3.0

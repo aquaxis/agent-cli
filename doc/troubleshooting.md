@@ -45,7 +45,7 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
 ### Not sure which config file is being used
 
 - `agent-cli config path` prints the resolved config file path.
-- Resolution order: `--config <path>` → `AGENT_CLI_CONFIG` env var → default path (`$XDG_CONFIG_HOME/agent-cli/config.toml`, or `~/.config/agent-cli/config.toml` if unset).
+- Resolution order: `--config <path>` → `AGENT_CLI_CONFIG` env var → project-local `./.agent-cli/config.toml` (only if it already exists) → default path (`$XDG_CONFIG_HOME/agent-cli/config.toml`, or `~/.config/agent-cli/config.toml` if unset).
 - Provider HTTP error messages also include the resolved `config` line, so you can cross-check with `agent-cli config path` output to catch unexpected file usage.
 
 ## Ollama / llama.cpp Issues
@@ -106,6 +106,69 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
   transparently on a stale-session server error. This is expected; prior
   context is rebuilt from agent-cli's replayed history.
 - `persistent_session` is ignored in cloud mode (no local session concept).
+
+## Claude Code Backend Issues
+
+Applies to `kind = "claude-code"`, which drives the local `claude` CLI as a
+child process. Full reference: [`doc/providers/claude-code.md`](providers/claude-code.md).
+Behaviour below was observed with Claude Code `2.1.233`.
+
+### `Claude Code executable not found` at startup, or `doctor` reports `bin ...: NOT found`
+
+- `[provider.claude-code] bin` (default `claude`) could not be resolved. A value
+  containing a path separator is used as-is; anything else is looked up on
+  `PATH` and must be executable.
+- Install Claude Code, or set `bin` to an absolute path. `agent-cli doctor`
+  prints the resolved path and the CLI's `--version` when it succeeds, and exits
+  with a non-zero status when it does not.
+- This backend has no `api_key_env`: authentication belongs to Claude Code
+  itself, so a missing API key is never the cause here.
+
+### The turn ends with `claude-code: turn timed out`
+
+- The turn exceeded `[provider.claude-code] turn_timeout_secs` (default `900`).
+  The child process is killed and the session is dropped; the next turn starts a
+  fresh child, so the REPL stays usable.
+- Raise the limit for turns that legitimately run long (large refactors, test
+  suites), or split the task.
+
+### The model describes the tool it would use instead of using it
+
+- `mode = "gateway"` passes `--tools ""`, which makes the backend chat-only.
+  agent-cli's own tools cannot be offered to `claude -p` either, so no tool can
+  run in that mode.
+- Switch to `mode = "delegation"` (the default) to let Claude Code use its tools.
+
+### Tools run without an approval prompt
+
+- Expected in `delegation` mode: Claude Code executes the tool inside its own
+  process and reports it afterwards, so `[runtime] auto_approve_tools`, `/auto`,
+  and persona `allowed_tools` / `denied_tools` have nothing to gate.
+- Restrict with the backend's own keys: `permission_mode`, `tools`,
+  `allowed_tools`, `disallowed_tools`.
+
+### The session stops early with a budget error
+
+- `max_budget_usd` was reached (`error_max_budget_usd`). Cost accumulates per
+  Claude Code turn, and one user prompt can trigger several of them, so set the
+  cap with headroom — a short session runs on the order of a few cents.
+
+### Context appears to be lost between turns
+
+- `session = "ephemeral"` re-sends the transcript every turn and adds
+  `--no-session-persistence`; the default `"persistent"` reuses one Claude Code
+  session and sends only new messages.
+- A child killed **between** turns is absorbed silently — the next turn respawns
+  it — while a child killed **mid-turn** surfaces an error and the turn ends.
+  Either way the following turn runs on a fresh child.
+- `/clear` and `/reload-persona` change what agent-cli sends; Claude Code's own
+  session is restarted when the system prompt changes.
+
+### Stray `claude` processes after exiting
+
+- Children are spawned with `kill_on_drop`, so a normal exit — `/quit`,
+  `Ctrl+D`, `Ctrl+C`, `SIGTERM` — leaves none behind. A `claude` process that
+  outlives the REPL was not started by `agent-cli`.
 
 ## Registry / IPC Issues
 
@@ -190,9 +253,14 @@ User-side workarounds (in recommended order):
 
 ## Shell Tool Issues
 
-### `timed out after 60 seconds: ...`
+### `timed out after <N> ms: ...`
 
-- The default timeout was exceeded. Increase `[tools.bash] timeout_ms` or instruct the AI to use shorter commands.
+- The command exceeded its timeout. The value is `[tools.bash] timeout_ms`
+  (default `120000`, i.e. 120 seconds) unless the call itself passed a
+  `timeout_ms` argument, and `<N>` in the message is the value that applied.
+- Raise `[tools.bash] timeout_ms`, or instruct the AI to use shorter commands.
+- For a command that is meant to run long, the `monitor` tool is the better fit:
+  it collects output while the command runs. See [`doc/tools.md`](tools.md).
 
 ### Output ending with `...[truncated]`
 
@@ -228,6 +296,7 @@ For detailed troubleshooting, see [`doc/personas.md`](personas.md) section 11 "T
 ### `error: config file not found: ...`
 
 - An explicit path specified via `--config` or `AGENT_CLI_CONFIG` must exist; it will not be auto-generated.
+- A project-local `./.agent-cli/config.toml` is used only when it already exists; it is never auto-generated (its absence falls through to the default path).
 - The default path (`~/.config/agent-cli/config.toml`) is auto-generated on first run.
 
 ### `provider error (claude): [provider.claude] missing`

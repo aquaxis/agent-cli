@@ -76,7 +76,7 @@ base_url = "https://proxy.example.com/anthropic"
 
 ## Known Limitations
 
-- Long responses with many tool_use calls may exceed `reqwest`'s timeout (120 seconds). For long-running operations, manage timeouts on the tool side.
+- A response may exceed the HTTP client timeout, which covers the whole request including streaming. The default is 900 seconds; raise it with `[provider.claude] request_timeout_secs`. Tool-side timeouts (`[tools.bash] timeout_ms`) are separate and apply per command.
 - `thinking_delta` output is rendered line-by-line, which may affect readability depending on terminal width. The default `[ui] show_thinking = "collapsed"` (first 80 chars + first line) is generally the best choice. Use `"hidden"` to suppress entirely, or `"expanded"` for debugging. See [`doc/config.md`](../config.md) "UI display modes" for details.
 
 ## Troubleshooting

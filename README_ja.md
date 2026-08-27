@@ -10,6 +10,8 @@
 - ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（REPL とツール自体は `claude` CLI を呼び出しません）。なお `claude` CLI を駆動する方法は、後述の `claude-code` バックエンドとして別途選択できます。
 - 7 つのバックエンド: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
 - マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します。
+- デタッチドエージェント — `agent-cli spawn`（または `/spawn`）は、起動元プロセスに依存せず独自セッションで動くヘッドレスなピアを作成します。`agent-cli stop <peer>`（または `/stop`）で停止します。
+- グループ — 起動したコホートを `--group <id>` でタグ付け（デタッチドな子が継承）。`agent-cli list --group <id>` で絞り込み、`agent-cli groups` で稼働中のコホートを検出します。
 - ペルソナファイル（YAML フロントマター + Markdown 本文）でロール、スキル、ツールの許可/拒否リスト、モデル、temperature を定義します。
 - 組み込みツール: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`。承認モードは実行中に `/auto on` で切り替えられます。
 - カスタムスラッシュコマンド — `.agent-cli/commands/` に Markdown ファイルを置くだけで `/<name>` として使えます。`$ARGUMENTS` / `$1`…`$N` / `@file` の展開と、前方一致による自動実行に対応します。
@@ -160,9 +162,10 @@ agent-cli ask bob "現在の設計上のリスクをまとめて"
 
 1. `--config <path>`（明示指定）
 2. `AGENT_CLI_CONFIG` 環境変数
-3. デフォルト `~/.config/agent-cli/config.toml`
+3. プロジェクトローカル `./.agent-cli/config.toml`（存在する場合のみ使用）
+4. デフォルト `~/.config/agent-cli/config.toml`
 
-明示指定したパスは存在している必要があります（自動生成しません）。デフォルトパスは初回起動時に適切なテンプレートを自動生成します。全セクションにコメントを付けた雛形として [`example/config.example.toml`](example/config.example.toml) も利用できます。
+明示指定したパスは存在している必要があります（自動生成しません）。カレントディレクトリに `.agent-cli/config.toml` があれば自動的に使用されます（自動生成はされず、親ディレクトリは辿らずカレントディレクトリのみを確認します）。デフォルトパスは初回起動時に適切なテンプレートを自動生成します。全セクションにコメントを付けた雛形として [`example/config.example.toml`](example/config.example.toml) も利用できます。
 
 `[provider] kind` でアクティブなバックエンドを選択します。埋める必要があるのはそのバックエンドの `[provider.*]` テーブルだけですが、複数のテーブルを 1 つのファイルに残しておき、`kind`（または `--provider`）で切り替えることもできます。
 
@@ -301,7 +304,11 @@ keep_recent_turns  = 6
 | コマンド | 用途 |
 |---------|---------|
 | `agent-cli run` | REPL を起動（1 プロセス 1 エージェント） |
-| `agent-cli list` | 稼働中のピアを一覧表示 |
+| `agent-cli spawn [...]` | 起動元より長く生きるデタッチドなヘッドレスピアを作成（`run` と同じオプション） |
+| `agent-cli stop <peer>` | 稼働中のピア（id または名前）を停止。IPC 経由の穏当なシャットダウン、失敗時は `SIGTERM` にフォールバック |
+| `agent-cli serve [...]` | ヘッドレス実行（登録 + ピアへの応答のみ、REPL なし）。`spawn` が起動する対象 |
+| `agent-cli list [--group <id>]` | 稼働中のピアを一覧表示（`GROUP` 列付き。`--group` で 1 グループに絞り込み） |
+| `agent-cli groups` | 稼働中のグループを検出して一覧表示（メンバー数付き） |
 | `agent-cli send <peer> <text>` | ピアにワンショットのプロンプトを送信（応答は待ちません） |
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | ピアにプロンプトを送り、応答を待って表示（デフォルト 120 秒） |
 | `agent-cli providers` | バックエンドの状態を表示 |
@@ -317,6 +324,8 @@ keep_recent_turns  = 6
 |---------|---------|
 | `/list` | 稼働中のピアを一覧表示 |
 | `/send <peer> <text>` | ピアにプロンプトを送信 |
+| `/spawn [name] [provider]` | このセッションより長く生きるデタッチドなピアを作成 |
+| `/stop <peer>` | 稼働中のピア（id または名前）を停止。デタッチドエージェントも対象 |
 | `/tools` | このエージェントで有効なツールを一覧表示 |
 | `/persona` | このエージェントのペルソナを表示（ロール / スキル / ソースパス） |
 | `/reload-persona` | ペルソナファイルを再解決して再読み込み（履歴は保持） |
@@ -332,6 +341,44 @@ keep_recent_turns  = 6
 
 ユーザープロンプトと実行したスラッシュコマンドは `<runtime.log_dir>/history.txt`（直近 200 件）に永続化され、次回起動時に再読み込みされます（`/quit` と `/exit` は除外）。詳細は [`doc/usage.md`](doc/usage.md) を参照してください。
 
+### デタッチドエージェント
+
+`agent-cli spawn` は、2 つ目のターミナルを開かずにピアを作成します。子プロセスは
+独自セッションでヘッドレスに動作し、起動元に依存しません。起動元の終了・`Ctrl+C`・
+端末切断のいずれでも生き残ります:
+
+```bash
+agent-cli spawn --name worker      # デタッチドなヘッドレスピアを起動
+agent-cli list                     # `worker` は通常のピアとして登録される
+agent-cli ask worker "..."         # 通常どおり送受信（send / ask / send_to ツール）
+agent-cli stop worker              # 穏当にシャットダウンを要求
+```
+
+子プロセスは起動元の設定ファイル（したがって同じ `[runtime] registry_dir`）を
+引き継ぐため、直ちに検出可能です。y/N 承認を答えるコンソールを持たないため、
+ヘッドレスエージェントはツール実行を自動承認します。REPL 内では同じ操作が
+`/spawn [name] [provider]` と `/stop <peer>` として利用できます。詳細は
+[`doc/usage.md`](doc/usage.md) の "Detached agents" を参照してください。
+
+### グループ
+
+**グループ**は、まとめて起動したエージェント群が共有する識別子で、コホート全体を
+ひと目で認識できるようにします。`--group <id>`（または `[runtime] group` 設定キー）
+で付与します。デタッチドな子は起動元のグループを自動的に引き継ぐため、id はルートで
+一度だけ指定すれば済みます:
+
+```bash
+agent-cli spawn --group team --name lead     # グループ付きのデタッチドピア
+agent-cli spawn --group team --name helper    # 何も指定し直さず同じグループを継承
+agent-cli list --group team                   # team のメンバーだけ（GROUP 列）
+agent-cli groups                              # team  2  lead, helper
+```
+
+`agent-cli groups` はライブなレジストリを走査し、稼働中の各グループをメンバー数
+付きで一覧表示します（グループなしのエージェントは `-` バケットにまとめられます）。
+グループは起動時に固定されます。詳細は [`doc/usage.md`](doc/usage.md) の "Groups"
+を参照してください。
+
 ### ツール承認のスキップ
 
 ツール呼び出し（bash, read, write, send_to, monitor, edit, glob, grep, websearch, webfetch）はデフォルトで y/N の承認を求めます。承認をスキップする方法は 3 つあります:
@@ -343,6 +390,11 @@ keep_recent_turns  = 6
 | REPL コマンド | `/auto on`（`/auto off` で承認モードに戻る、`/auto status` で現在値を表示） |
 
 承認モードでは、各ツール要求が `[tool approval] <tool> <args>` と `approve? [y/N]:` を表示します。受理されるのは `y` / `yes` のみで、それ以外（空入力や他の語）は拒否として扱われます。
+
+これは `agent-cli` 自身が実行するツールに対する仕組みです。`kind = "claude-code"`
+を `delegation` モードで使う場合、ツールは Claude Code 内部で実行されるため、上記
+3 つの方法はいずれも適用されません。そのバックエンドの `permission_mode` /
+`tools` / `allowed_tools` / `disallowed_tools` で制御してください。
 
 ### カスタムスラッシュコマンド
 
