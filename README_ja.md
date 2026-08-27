@@ -20,6 +20,7 @@
 - ストリーミング応答は REPL のプロンプトと同期しており、応答完了後は常に新しい `> ` が再描画されます。
 - 確実なシャットダウン — `/quit`、`/exit`、`Ctrl+D`、`Ctrl+C`、`SIGTERM` のいずれでも約 1 秒以内に終了し、IPC ソケットとレジストリのメタデータを自動的に後始末します。
 - `agent-cli doctor` による自己診断と、`agent-cli selftest` による 5 段階のスモークテスト（Provider OK / bash ツール / IPC / 子プロセス登録 / 子プロセスの AI 応答）。
+- `agent-cli update` による自己アップデート — 最新の GitHub リリースを確認し、インストール先へソースからビルドし直します。`--check` は変更を加えずに更新の有無だけを報告します。
 - `[runtime] max_tool_iterations` でツール使用ループ上限を設定可能（デフォルト 24、最大 `u32::MAX`）。下記「[info] max tool-use iterations reached」を参照。
 - Ollama の `message.thinking` フィールドは、`glm-5.1:cloud` のような思考対応モデル向けに `[thinking]` としてデコードされます。
 - オプトインのコンテキスト効率化機能（すべてデフォルト OFF）: Claude プロンプトキャッシュ、opencode ローカル永続セッション、ハイブリッド履歴ウィンドウ管理（要約してから破棄）。[`doc/config.md`](doc/config.md) §11 を参照。
@@ -313,6 +314,7 @@ keep_recent_turns  = 6
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | ピアにプロンプトを送り、応答を待って表示（デフォルト 120 秒） |
 | `agent-cli providers` | バックエンドの状態を表示 |
 | `agent-cli doctor` | 設定 / API キー / 接続性 / レジストリ / `bash` を健全性チェック |
+| `agent-cli update [--check] [--force] [--yes] [--ref <ref>]` | 最新リリースへ更新（`cargo` でソースからビルド） |
 | `agent-cli selftest [--provider <kind>]` | 5 段階のスモークテスト |
 | `agent-cli config show` | 現在の設定を表示 |
 | `agent-cli config edit` | `$EDITOR` で設定を開く |
@@ -378,6 +380,23 @@ agent-cli groups                              # team  2  lead, helper
 付きで一覧表示します（グループなしのエージェントは `-` バケットにまとめられます）。
 グループは起動時に固定されます。詳細は [`doc/usage.md`](doc/usage.md) の "Groups"
 を参照してください。
+
+### アップデート
+
+`agent-cli update` は、インストール済みの agent-cli を最新リリースへ更新します。
+agent-cli はビルド済みバイナリを配布しておらず（インストールはソースビルド）、
+アップデートも同様です: 最新の GitHub リリースを調べ、`cargo install --git … --tag
+<version>` を実行中バイナリのインストール先へ実行し、新しい `--version` を検証します。
+Rust ツールチェーン（`cargo`）が必要で、Linux 専用です。
+
+```bash
+agent-cli update --check     # 現在と最新を報告。変更しない
+agent-cli update             # 新しければ確認のうえ再ビルドして置き換え
+agent-cli update --yes       # 確認プロンプトをスキップ
+agent-cli update --ref main  # ブランチ/タグからビルド（リリース未タグ時など）
+```
+
+詳細は [`doc/usage.md`](doc/usage.md) の "Updating" を参照してください。
 
 ### ツール承認のスキップ
 

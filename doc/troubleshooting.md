@@ -322,6 +322,31 @@ For detailed troubleshooting, see [`doc/personas.md`](personas.md) section 11 "T
   source "$HOME/.cargo/env"
   ```
 
+## Update Issues (`agent-cli update`)
+
+### `cargo not found on PATH`
+
+- `agent-cli update` upgrades by a **source build**, so it needs the Rust toolchain (`cargo`), like the installer. Install it as above, then re-run `agent-cli update`.
+
+### `no published releases or vX.Y.Z tags`
+
+- The default `update` targets the latest GitHub release/tag. If the project has none yet, update from a branch or an explicit ref instead:
+  ```bash
+  agent-cli update --ref main
+  ```
+
+### Update check fails offline / rate-limited
+
+- The version lookup calls the GitHub API. With no network (or after hitting the unauthenticated rate limit) it errors without changing anything. Retry later, or install directly with `--ref <tag|branch>`.
+
+### `refusing to update without a TTY`
+
+- When stdin is not a terminal (pipes, CI), the confirmation prompt cannot be answered. Pass `--yes` to proceed non-interactively, or `--check` to only report availability.
+
+### Updating from a build tree
+
+- The install prefix is derived from the running binary's path (`<prefix>/bin/agent-cli`). If you run `agent-cli` from `target/debug`, the resolved prefix shown in the confirmation may be unexpected — abort and run the installed binary, or pass an explicit prefix by reinstalling with `cargo install --root <prefix>`.
+
 ## Context-efficiency Features (opt-in)
 
 These are all default-OFF; see [`doc/config.md`](config.md) §11.

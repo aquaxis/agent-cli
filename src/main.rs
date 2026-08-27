@@ -16,6 +16,7 @@ mod ipc;
 mod log;
 mod persona;
 mod tools;
+mod update;
 
 use crate::cli::{Cli, Command, ConfigAction};
 use crate::error::Result;
@@ -90,6 +91,11 @@ async fn run() -> Result<()> {
         Command::Doctor => {
             let mut cfg = config::load(&source)?;
             commands::doctor(&mut cfg, &source).await
+        }
+        // `update` depends only on compile-time identity + the network, not on
+        // the config file, so it is dispatched without `config::load`.
+        Command::Update { check, force, yes, git_ref } => {
+            update::run(update::UpdateOpts { check, force, yes, git_ref }).await
         }
         Command::Selftest { provider } => {
             let cfg = config::load(&source)?;

@@ -4,6 +4,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- Self-update — a new `agent-cli update` subcommand upgrades an installed agent-cli to the latest released version.
+  - Since agent-cli ships no prebuilt binaries (installation is a source build via `cargo install`), the update is also a source build: it looks up the latest GitHub release (`releases/latest`, falling back to `tags`), compares it to the running version, and — if newer — runs `cargo install --git <repo> --tag <version> agent-cli --root <prefix>` into the running binary's install prefix (derived from `current_exe()`), then verifies the new `--version`. Needs the Rust toolchain (`cargo`); Linux-only.
+  - Flags: `--check` (report current/latest/availability and exit without changing anything — script/CI-safe), `--force` (reinstall even when already up to date, and allow a same/older `--ref`), `--yes` (skip the confirmation prompt; on a non-TTY the command refuses without it), and `--ref <tag|branch>` (build from a specific ref instead of the latest release — e.g. `--ref main` before a release is tagged).
+  - Version comparison is a small hand-rolled semver (no new dependency); the network/`cargo` edges wrap a pure, unit-tested core (semver, repo-slug, tag extraction, prefix derivation).
+  - Docs updated: `doc/usage.md` (Updating), `doc/architecture.md` (§8.2), `doc/troubleshooting.md` (Update Issues), `README.md`, `README_ja.md`.
+
 ## [0.6.0]
 
 ### Added
