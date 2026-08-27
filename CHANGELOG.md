@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.6.0]
+
 ### Added
 
 - Group identifier for launched agents — agents that are launched together (a root and the detached peers it spawns) can now carry a shared **group** id, so a whole cohort is recognizable at a glance.
@@ -106,7 +108,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/aquaxis/agent-cli/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aquaxis/agent-cli/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aquaxis/agent-cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aquaxis/agent-cli/releases/tag/v0.3.0
