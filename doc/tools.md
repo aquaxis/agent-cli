@@ -67,6 +67,7 @@ It is the tool-level equivalent of the `agent-cli spawn` subcommand /
 | `provider` | string | No | Backend override (`claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`) |
 | `model` | string | No | Model override |
 | `persona` | string | No | Persona file path |
+| `group` | string | No | Group id for the new agent; omit to inherit this agent's group (see [`usage.md`](usage.md) "Groups") |
 | `prompt` | string | No | Initial prompt delivered to the new agent (fire-and-forget); use `send_to` for a reply |
 
 ### Return
@@ -74,7 +75,9 @@ It is the tool-level equivalent of the `agent-cli spawn` subcommand /
 `ok` with the new agent's `id` / `name` / `provider` / `model` / `socket`. The
 new agent shares this agent's config file (hence the same `registry_dir`), so it
 is immediately reachable with `send_to`. It runs headless and therefore
-auto-approves its own tool execution.
+auto-approves its own tool execution. When `group` is omitted the new agent
+inherits this agent's group, so a model spawning a fleet keeps the whole cohort
+under one recognizable group id.
 
 ## `bash`
 

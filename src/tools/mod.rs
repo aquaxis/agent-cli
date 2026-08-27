@@ -49,6 +49,9 @@ impl ToolOutput {
 
 pub struct ToolCtx {
     pub self_id: AgentId,
+    /// This agent's group, forwarded to the `spawn` tool so a spawned peer
+    /// inherits the same group when the tool call does not override it.
+    pub group: Option<crate::id::GroupId>,
     pub registry_dir: PathBuf,
     /// This agent's config source (path), forwarded to the `spawn` tool so a
     /// spawned peer inherits the same config file (hence the same registry_dir).

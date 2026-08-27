@@ -20,7 +20,8 @@ agent-cli [--config <path>] <subcommand>
 | `agent-cli spawn [...]` | Create a **detached** agent that does not depend on this process: it runs headless in its own session, self-registers as a peer, and outlives the launcher. Accepts the same options as `run`. See [Detached agents](#detached-agents) |
 | `agent-cli stop <peer>` | Stop a running peer (id or name) by requesting a graceful shutdown; falls back to `SIGTERM` if the socket is unreachable |
 | `agent-cli serve [...]` | Run headless (register + serve peers over IPC, no REPL). This is the target `spawn` launches; running it directly gives a foreground headless agent |
-| `agent-cli list` | List running peers |
+| `agent-cli list [--group <id>]` | List running peers; a `GROUP` column shows each agent's group, and `--group` filters to one group. See [Groups](#groups) |
+| `agent-cli groups` | Detect and list the groups currently running as processes, with member counts. See [Groups](#groups) |
 | `agent-cli send <peer> <text>` | Send a prompt to a peer and exit (does not wait for a response) |
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for its AI response, print it, and exit (default timeout 120 seconds) |
 | `agent-cli providers` | Show available backend status |
@@ -38,9 +39,10 @@ agent-cli [--config <path>] <subcommand>
 | `--provider <kind>` | Override backend: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp` |
 | `--model <model>` | Override model |
 | `--persona <path>` | Explicit persona file path |
+| `--group <id>` | Group this agent joins; detached children inherit it. Overrides the `[runtime] group` config key. See [Groups](#groups) |
 | `--auto-approve-tools` | Skip y/N approval for tool invocations |
 
-`spawn` and `serve` accept the same options as `run` (`--name` / `--provider` / `--model` / `--persona` / `--auto-approve-tools`).
+`spawn` and `serve` accept the same options as `run` (`--name` / `--group` / `--provider` / `--model` / `--persona` / `--auto-approve-tools`).
 
 ## Detached agents
 
@@ -71,6 +73,37 @@ agent-cli stop worker                    # ask it to shut down cleanly
 
 From inside a REPL the same is available as `/spawn [name] [provider]` and
 `/stop <peer>`.
+
+## Groups
+
+A **group** is an identifier shared by agents that were launched together — a
+root agent and the detached peers it spawns — so a whole cohort is recognizable
+at a glance. A group is a free-form label; agents carrying the same string are in
+the same group.
+
+- **Assign** a group at launch with `--group <id>`, or set a default for every
+  agent a config launches with `[runtime] group` (the flag overrides the config
+  key). With neither, an agent is ungrouped and shows `-`.
+- **Inherit**: a detached child inherits its launcher's group automatically, so
+  the group only has to be named once at the root. `spawn`/`/spawn` and the
+  `spawn` tool all propagate it; an explicit `--group` (or the tool's `group`
+  argument) overrides the inherited value.
+- **Recognize**: `agent-cli list` shows a `GROUP` column, and
+  `agent-cli list --group <id>` lists only that group's members.
+- **Detect**: `agent-cli groups` scans the live registry and lists the distinct
+  groups currently running, each with its member count — a way to discover which
+  cohorts exist without knowing any group id in advance. Ungrouped agents are
+  reported under a `-` bucket.
+
+```text
+agent-cli spawn --group team --name lead    # start a grouped detached peer
+agent-cli spawn --group team --name helper   # another member of the same group
+agent-cli list --group team                  # only team members
+agent-cli groups                             # team  2  lead, helper
+```
+
+A group is fixed at launch; there is no command to move a running agent between
+groups.
 
 ## REPL Commands
 

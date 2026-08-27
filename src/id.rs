@@ -48,6 +48,47 @@ impl FromStr for AgentId {
     }
 }
 
+/// Identifier for a cohort of agents launched together.
+///
+/// A free-form label: agents that carry the same string are "in the same group".
+/// Assigned at launch (`--group` / `[runtime] group`) and inherited by detached
+/// children so a spawn tree is one recognizable group. `generate()` yields
+/// `group-<ULID>` for auto-created groups.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GroupId(pub String);
+
+impl GroupId {
+    /// Generate a fresh, collision-resistant group id (`group-<ULID>`).
+    /// Reserved for auto-created groups (a launcher forming a cohort id for its
+    /// spawned children); currently used only by tests.
+    #[allow(dead_code)]
+    pub fn generate() -> Self {
+        GroupId(format!("group-{}", Ulid::new()))
+    }
+
+    /// Return the inner `&str`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for GroupId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for GroupId {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        if s.is_empty() {
+            return Err(AppError::config("group id must not be empty"));
+        }
+        Ok(GroupId(s.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +107,14 @@ mod tests {
         let s = id.to_string();
         let parsed: AgentId = s.parse().unwrap();
         assert_eq!(id, parsed);
+    }
+
+    #[test]
+    fn group_generate_and_parse() {
+        let g = GroupId::generate();
+        assert!(g.as_str().starts_with("group-"));
+        let parsed: GroupId = "team".parse().unwrap();
+        assert_eq!(parsed.as_str(), "team");
+        assert!("".parse::<GroupId>().is_err());
     }
 }

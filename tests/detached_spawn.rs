@@ -74,6 +74,106 @@ enabled = []
     (cfg_path, registry_dir)
 }
 
+/// Spawn two detached agents into the same group and verify the group is carried
+/// on their registry entries, that `list --group` filters to them, and that
+/// `groups` detects the running cohort (FR-06, FR-09, FR-10, FR-14; AC-01/02/03).
+#[test]
+fn spawn_group_is_inherited_and_detected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (cfg_path, registry_dir) = write_config(tmp.path());
+
+    let spawn = |name: &str| {
+        let out = Command::new(bin())
+            .arg("--config")
+            .arg(&cfg_path)
+            .arg("spawn")
+            .arg("--group")
+            .arg("teamX")
+            .arg("--name")
+            .arg(name)
+            .output()
+            .expect("run spawn");
+        assert!(
+            out.status.success(),
+            "spawn {name} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    spawn("grp-root");
+    spawn("grp-child");
+
+    // Both entries carry the same group on their registry JSON.
+    let mut pids = Vec::new();
+    for name in ["grp-root", "grp-child"] {
+        let entry = find_entry(&registry_dir, name).expect("agent should be registered");
+        assert_eq!(
+            entry.get("group").and_then(|g| g.as_str()),
+            Some("teamX"),
+            "{name} should carry group teamX"
+        );
+        pids.push(entry.get("pid").and_then(|p| p.as_u64()).unwrap());
+    }
+
+    // `list --group teamX` lists exactly these two.
+    let out = Command::new(bin())
+        .arg("--config")
+        .arg(&cfg_path)
+        .arg("list")
+        .arg("--group")
+        .arg("teamX")
+        .output()
+        .expect("run list --group");
+    let list_out = String::from_utf8_lossy(&out.stdout);
+    assert!(list_out.contains("GROUP"), "list header: {list_out}");
+    assert!(list_out.contains("grp-root"), "list: {list_out}");
+    assert!(list_out.contains("grp-child"), "list: {list_out}");
+
+    // `groups` detects the running cohort with a member count of 2.
+    let out = Command::new(bin())
+        .arg("--config")
+        .arg(&cfg_path)
+        .arg("groups")
+        .output()
+        .expect("run groups");
+    let groups_out = String::from_utf8_lossy(&out.stdout);
+    assert!(groups_out.contains("teamX"), "groups: {groups_out}");
+    let teamx_line = groups_out
+        .lines()
+        .find(|l| l.contains("teamX"))
+        .expect("teamX line");
+    assert!(
+        teamx_line.contains('2'),
+        "teamX should have 2 members: {teamx_line}"
+    );
+
+    // Stop both and confirm cleanup.
+    for name in ["grp-root", "grp-child"] {
+        let _ = Command::new(bin())
+            .arg("--config")
+            .arg(&cfg_path)
+            .arg("stop")
+            .arg(name)
+            .output()
+            .expect("run stop");
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if pids.iter().all(|&pid| !proc_alive(pid)) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            for &pid in &pids {
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+            panic!("group agents did not stop within 5s");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn spawn_detached_agent_outlives_launcher_then_stops() {
     let tmp = tempfile::tempdir().unwrap();

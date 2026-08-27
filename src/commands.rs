@@ -56,6 +56,9 @@ pub async fn spawn_detached(
     if let Some(name) = &args.name {
         cmd.arg("--name").arg(name);
     }
+    if let Some(group) = &args.group {
+        cmd.arg("--group").arg(group);
+    }
     if let Some(provider) = &args.provider {
         cmd.arg("--provider").arg(provider);
     }
@@ -153,14 +156,20 @@ pub async fn stop_peer(registry_dir: &Path, peer: &str) -> Result<()> {
     }
 }
 
-pub async fn list(cfg: &Config) -> Result<()> {
+pub async fn list(cfg: &Config, group_filter: Option<&str>) -> Result<()> {
     let dir = cfg.registry_dir()?;
-    let entries = registry::list_entries(&dir)?;
+    let mut entries = registry::list_entries(&dir)?;
+    if let Some(g) = group_filter {
+        entries.retain(|e| e.group.as_ref().map(|gid| gid.as_str()) == Some(g));
+    }
     if entries.is_empty() {
-        println!("no agents running.");
+        match group_filter {
+            Some(g) => println!("no agents running in group {g}."),
+            None => println!("no agents running."),
+        }
         return Ok(());
     }
-    let rows: Vec<[String; 6]> = entries
+    let rows: Vec<[String; 7]> = entries
         .into_iter()
         .map(|e| {
             let role = e
@@ -176,6 +185,7 @@ pub async fn list(cfg: &Config) -> Result<()> {
             [
                 e.id.to_string(),
                 e.name.clone().unwrap_or_else(|| "-".into()),
+                e.group.map(|g| g.to_string()).unwrap_or_else(|| "-".into()),
                 e.provider,
                 e.model,
                 role,
@@ -183,7 +193,7 @@ pub async fn list(cfg: &Config) -> Result<()> {
             ]
         })
         .collect();
-    let headers = ["ID", "NAME", "PROVIDER", "MODEL", "ROLE", "SKILLS"];
+    let headers = ["ID", "NAME", "GROUP", "PROVIDER", "MODEL", "ROLE", "SKILLS"];
     let mut widths = headers.map(|s| s.len());
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
@@ -192,7 +202,7 @@ pub async fn list(cfg: &Config) -> Result<()> {
             }
         }
     }
-    let render = |cells: &[String; 6]| -> String {
+    let render = |cells: &[String; 7]| -> String {
         cells
             .iter()
             .enumerate()
@@ -200,7 +210,100 @@ pub async fn list(cfg: &Config) -> Result<()> {
             .collect::<Vec<_>>()
             .join("  ")
     };
-    let header_row: [String; 6] = headers.map(|s| s.to_string());
+    let header_row: [String; 7] = headers.map(|s| s.to_string());
+    println!("{}", render(&header_row));
+    for row in &rows {
+        println!("{}", render(row));
+    }
+    Ok(())
+}
+
+/// One detected cohort: a group (or the ungrouped bucket) and its live members.
+pub struct GroupSummary {
+    /// The group id, or `None` for the ungrouped bucket.
+    pub group: Option<crate::id::GroupId>,
+    pub members: Vec<RegistryEntry>,
+}
+
+/// Detect the groups currently running by aggregating the live registry entries
+/// (`list_entries` already reaps dead pids / missing sockets, so a group appears
+/// iff at least one member process is alive). Grouped buckets come first, sorted
+/// by group id; the ungrouped (`None`) bucket, if any, is last — a deterministic
+/// order so callers and tests are stable (FR-14, FR-15).
+pub fn group_summary(registry_dir: &Path) -> Result<Vec<GroupSummary>> {
+    Ok(aggregate_groups(registry::list_entries(registry_dir)?))
+}
+
+/// Pure aggregation of registry entries into deterministic group buckets:
+/// grouped buckets sorted by id first, the ungrouped (`None`) bucket last.
+fn aggregate_groups(entries: Vec<RegistryEntry>) -> Vec<GroupSummary> {
+    let mut grouped: std::collections::BTreeMap<String, Vec<RegistryEntry>> =
+        std::collections::BTreeMap::new();
+    let mut ungrouped: Vec<RegistryEntry> = Vec::new();
+    for e in entries {
+        match &e.group {
+            Some(g) => grouped.entry(g.to_string()).or_default().push(e),
+            None => ungrouped.push(e),
+        }
+    }
+    let mut out: Vec<GroupSummary> = grouped
+        .into_iter()
+        .map(|(g, members)| GroupSummary {
+            group: Some(crate::id::GroupId(g)),
+            members,
+        })
+        .collect();
+    if !ungrouped.is_empty() {
+        out.push(GroupSummary {
+            group: None,
+            members: ungrouped,
+        });
+    }
+    out
+}
+
+pub async fn groups(cfg: &Config) -> Result<()> {
+    let dir = cfg.registry_dir()?;
+    let summary = group_summary(&dir)?;
+    if summary.is_empty() {
+        println!("no agents running.");
+        return Ok(());
+    }
+    let rows: Vec<[String; 3]> = summary
+        .iter()
+        .map(|s| {
+            let group = s
+                .group
+                .as_ref()
+                .map(|g| g.to_string())
+                .unwrap_or_else(|| "-".into());
+            let agents = s
+                .members
+                .iter()
+                .map(|m| m.name.clone().unwrap_or_else(|| m.id.to_string()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            [group, s.members.len().to_string(), agents]
+        })
+        .collect();
+    let headers = ["GROUP", "MEMBERS", "AGENTS"];
+    let mut widths = headers.map(|s| s.len());
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            if cell.chars().count() > widths[i] {
+                widths[i] = cell.chars().count();
+            }
+        }
+    }
+    let render = |cells: &[String; 3]| -> String {
+        cells
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{:<width$}", c, width = widths[i]))
+            .collect::<Vec<_>>()
+            .join("  ")
+    };
+    let header_row: [String; 3] = headers.map(|s| s.to_string());
     println!("{}", render(&header_row));
     for row in &rows {
         println!("{}", render(row));
@@ -615,6 +718,7 @@ async fn stage_bash_tool(cfg: &Config) -> Result<()> {
         .ok_or_else(|| AppError::Other("bash tool is not enabled".into()))?;
     let ctx = ToolCtx {
         self_id: crate::id::AgentId::new(),
+        group: None,
         registry_dir: std::path::PathBuf::from("/tmp/agent-cli-selftest-noop"),
         config_source: Default::default(),
         event_tx: None,
@@ -963,6 +1067,39 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
+    fn entry_with_group(name: &str, group: Option<&str>) -> RegistryEntry {
+        RegistryEntry {
+            id: AgentId::new(),
+            name: Some(name.into()),
+            group: group.map(|g| crate::id::GroupId(g.into())),
+            pid: 1,
+            started_at: Utc::now(),
+            provider: "mock".into(),
+            model: "mock".into(),
+            socket: PathBuf::from("/tmp/x.sock"),
+            persona: None,
+        }
+    }
+
+    #[test]
+    fn aggregate_groups_buckets_and_orders() {
+        let entries = vec![
+            entry_with_group("a", Some("team")),
+            entry_with_group("b", None),
+            entry_with_group("c", Some("team")),
+            entry_with_group("d", Some("alpha")),
+        ];
+        let out = aggregate_groups(entries);
+        // grouped buckets sorted by id first (alpha, team), ungrouped last.
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].group.as_ref().map(|g| g.to_string()), Some("alpha".into()));
+        assert_eq!(out[0].members.len(), 1);
+        assert_eq!(out[1].group.as_ref().map(|g| g.to_string()), Some("team".into()));
+        assert_eq!(out[1].members.len(), 2);
+        assert!(out[2].group.is_none());
+        assert_eq!(out[2].members.len(), 1);
+    }
+
     /// Write a registry entry JSON file manually (without RegistryHandle, so it
     /// is not cleaned up by Drop when the setup function returns).
     fn write_registry_entry(dir: &PathBuf, entry: &RegistryEntry) {
@@ -1004,6 +1141,7 @@ mod tests {
         let entry = RegistryEntry {
             id: id.clone(),
             name: Some(name.into()),
+            group: None,
             pid: std::process::id(),
             started_at: Utc::now(),
             provider: "mock".into(),
@@ -1069,6 +1207,7 @@ registry_dir = {:?}
         let entry = RegistryEntry {
             id: id.clone(),
             name: Some("silent-peer".into()),
+            group: None,
             pid: std::process::id(),
             started_at: Utc::now(),
             provider: "mock".into(),

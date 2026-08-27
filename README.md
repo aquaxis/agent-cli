@@ -11,6 +11,7 @@
 - Seven backends: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
 - Detached agents — `agent-cli spawn` (or `/spawn`) creates a headless peer in its own session that outlives the launcher; stop it with `agent-cli stop <peer>` (or `/stop`).
+- Groups — tag a launched cohort with `--group <id>` (detached children inherit it); filter with `agent-cli list --group <id>` and discover running cohorts with `agent-cli groups`.
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
 - Built-in tools: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`. Approval mode can be flipped at runtime with `/auto on`.
 - Custom slash commands — drop a Markdown file into `.agent-cli/commands/` and it becomes `/<name>`, with `$ARGUMENTS` / `$1`…`$N` / `@file` expansion and prefix auto-execution.
@@ -307,7 +308,8 @@ See [`doc/config.md`](doc/config.md) for the full reference and [`doc/troublesho
 | `agent-cli spawn [...]` | Create a detached headless peer that outlives the launcher (same options as `run`) |
 | `agent-cli stop <peer>` | Stop a running peer (id or name); graceful IPC shutdown, `SIGTERM` fallback |
 | `agent-cli serve [...]` | Run headless (register + serve peers, no REPL) — the target `spawn` launches |
-| `agent-cli list` | List running peers |
+| `agent-cli list [--group <id>]` | List running peers (with a `GROUP` column; `--group` filters to one group) |
+| `agent-cli groups` | Detect and list the groups currently running, with member counts |
 | `agent-cli send <peer> <text>` | Send a one-shot prompt to a peer (no response) |
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for the answer, print it (default 120 s) |
 | `agent-cli providers` | Show backend status |
@@ -358,6 +360,24 @@ The child inherits the launcher's config file (hence the same
 to answer a y/N prompt, a headless agent auto-approves tool execution. Inside a
 REPL the same is available as `/spawn [name] [provider]` and `/stop <peer>`. See
 [`doc/usage.md`](doc/usage.md) "Detached agents".
+
+### Groups
+
+A **group** is a shared identifier for agents launched together, so a whole
+cohort is recognizable. Assign one with `--group <id>` (or the `[runtime] group`
+config key); a detached child inherits its launcher's group automatically, so the
+id is named once at the root:
+
+```bash
+agent-cli spawn --group team --name lead     # a grouped detached peer
+agent-cli spawn --group team --name helper    # inherits nothing to restate — same group
+agent-cli list --group team                   # only team members (GROUP column)
+agent-cli groups                              # team  2  lead, helper
+```
+
+`agent-cli groups` scans the live registry and lists the distinct groups
+currently running with their member counts (ungrouped agents fall under a `-`
+bucket). A group is fixed at launch. See [`doc/usage.md`](doc/usage.md) "Groups".
 
 ### Skipping tool approval
 

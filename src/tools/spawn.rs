@@ -27,6 +27,10 @@ struct SpawnArgs {
     /// Persona file path for the new agent (optional).
     #[serde(default)]
     persona: Option<String>,
+    /// Group id for the new agent (optional). When omitted, the new agent
+    /// inherits this agent's group.
+    #[serde(default)]
+    group: Option<String>,
     /// If set, an initial prompt delivered to the new agent once it is running
     /// (fire-and-forget). Use `send_to` for a reply.
     #[serde(default)]
@@ -51,6 +55,7 @@ impl Tool for SpawnTool {
                 "provider": {"type": "string", "description": "Backend override (claude / claude-code / codex / ollama / opencode / opencode-go / llama.cpp)."},
                 "model": {"type": "string", "description": "Model override."},
                 "persona": {"type": "string", "description": "Persona file path."},
+                "group": {"type": "string", "description": "Group id for the new agent. Omit to inherit this agent's group."},
                 "prompt": {"type": "string", "description": "Optional initial prompt delivered to the new agent (fire-and-forget)."}
             }
         })
@@ -60,6 +65,10 @@ impl Tool for SpawnTool {
         let parsed: SpawnArgs = serde_json::from_value(args)?;
         let run_args = RunArgs {
             name: parsed.name,
+            // Explicit group wins; otherwise inherit this agent's group.
+            group: parsed
+                .group
+                .or_else(|| ctx.group.as_ref().map(|g| g.to_string())),
             provider: parsed.provider,
             model: parsed.model,
             persona: parsed.persona.map(std::path::PathBuf::from),
@@ -123,6 +132,7 @@ mod tests {
         // All fields optional: no "required" array.
         assert!(schema.get("required").is_none());
         assert!(schema["properties"].get("name").is_some());
+        assert!(schema["properties"].get("group").is_some());
         assert!(schema["properties"].get("prompt").is_some());
     }
 
@@ -132,6 +142,13 @@ mod tests {
         let parsed: SpawnArgs = serde_json::from_value(json!({})).unwrap();
         assert!(parsed.name.is_none());
         assert!(parsed.provider.is_none());
+        assert!(parsed.group.is_none());
         assert!(parsed.prompt.is_none());
+    }
+
+    #[test]
+    fn spawn_args_parses_group() {
+        let parsed: SpawnArgs = serde_json::from_value(json!({"group": "team"})).unwrap();
+        assert_eq!(parsed.group.as_deref(), Some("team"));
     }
 }

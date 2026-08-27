@@ -95,6 +95,10 @@ persona_file       = ""                   # empty => built-in default persona
 # Max tool-use iterations per turn (one iteration = LLM call -> tool calls + results).
 # Default 24; raise for design-then-debug orchestrators that iterate on lint feedback.
 max_tool_iterations = 24
+# group           = ""                    # default group id for agents this config launches;
+                                          # --group overrides it, detached children inherit it.
+                                          # Filter with `agent-cli list --group <id>`; discover
+                                          # running cohorts with `agent-cli groups`.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tools: which built-in tools the agent can call, and per-tool tuning.

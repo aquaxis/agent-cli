@@ -11,6 +11,7 @@
 - 7 つのバックエンド: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
 - マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します。
 - デタッチドエージェント — `agent-cli spawn`（または `/spawn`）は、起動元プロセスに依存せず独自セッションで動くヘッドレスなピアを作成します。`agent-cli stop <peer>`（または `/stop`）で停止します。
+- グループ — 起動したコホートを `--group <id>` でタグ付け（デタッチドな子が継承）。`agent-cli list --group <id>` で絞り込み、`agent-cli groups` で稼働中のコホートを検出します。
 - ペルソナファイル（YAML フロントマター + Markdown 本文）でロール、スキル、ツールの許可/拒否リスト、モデル、temperature を定義します。
 - 組み込みツール: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`。承認モードは実行中に `/auto on` で切り替えられます。
 - カスタムスラッシュコマンド — `.agent-cli/commands/` に Markdown ファイルを置くだけで `/<name>` として使えます。`$ARGUMENTS` / `$1`…`$N` / `@file` の展開と、前方一致による自動実行に対応します。
@@ -306,7 +307,8 @@ keep_recent_turns  = 6
 | `agent-cli spawn [...]` | 起動元より長く生きるデタッチドなヘッドレスピアを作成（`run` と同じオプション） |
 | `agent-cli stop <peer>` | 稼働中のピア（id または名前）を停止。IPC 経由の穏当なシャットダウン、失敗時は `SIGTERM` にフォールバック |
 | `agent-cli serve [...]` | ヘッドレス実行（登録 + ピアへの応答のみ、REPL なし）。`spawn` が起動する対象 |
-| `agent-cli list` | 稼働中のピアを一覧表示 |
+| `agent-cli list [--group <id>]` | 稼働中のピアを一覧表示（`GROUP` 列付き。`--group` で 1 グループに絞り込み） |
+| `agent-cli groups` | 稼働中のグループを検出して一覧表示（メンバー数付き） |
 | `agent-cli send <peer> <text>` | ピアにワンショットのプロンプトを送信（応答は待ちません） |
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | ピアにプロンプトを送り、応答を待って表示（デフォルト 120 秒） |
 | `agent-cli providers` | バックエンドの状態を表示 |
@@ -357,6 +359,25 @@ agent-cli stop worker              # 穏当にシャットダウンを要求
 ヘッドレスエージェントはツール実行を自動承認します。REPL 内では同じ操作が
 `/spawn [name] [provider]` と `/stop <peer>` として利用できます。詳細は
 [`doc/usage.md`](doc/usage.md) の "Detached agents" を参照してください。
+
+### グループ
+
+**グループ**は、まとめて起動したエージェント群が共有する識別子で、コホート全体を
+ひと目で認識できるようにします。`--group <id>`（または `[runtime] group` 設定キー）
+で付与します。デタッチドな子は起動元のグループを自動的に引き継ぐため、id はルートで
+一度だけ指定すれば済みます:
+
+```bash
+agent-cli spawn --group team --name lead     # グループ付きのデタッチドピア
+agent-cli spawn --group team --name helper    # 何も指定し直さず同じグループを継承
+agent-cli list --group team                   # team のメンバーだけ（GROUP 列）
+agent-cli groups                              # team  2  lead, helper
+```
+
+`agent-cli groups` はライブなレジストリを走査し、稼働中の各グループをメンバー数
+付きで一覧表示します（グループなしのエージェントは `-` バケットにまとめられます）。
+グループは起動時に固定されます。詳細は [`doc/usage.md`](doc/usage.md) の "Groups"
+を参照してください。
 
 ### ツール承認のスキップ
 

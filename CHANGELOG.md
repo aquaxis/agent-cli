@@ -4,6 +4,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- Group identifier for launched agents — agents that are launched together (a root and the detached peers it spawns) can now carry a shared **group** id, so a whole cohort is recognizable at a glance.
+  - New global option `--group <id>` (available on `run` / `serve` / `spawn`) and a new `[runtime] group` config key set the group; the flag overrides the config key, and with neither the agent is ungrouped. A group is a free-form label persisted on the registry entry (`RegistryEntry.group`); registry files written by older versions (no `group` key) still load, and an ungrouped agent's file is byte-unchanged.
+  - Detached children **inherit** their launcher's effective group automatically, so the id is named once at the root: `agent-cli spawn` / `/spawn` / the `spawn` tool all propagate it (an explicit `--group`, or the tool's `group` argument, overrides). Because the child resolves `--group` ahead of `[runtime] group`, the inherited value wins even if the child's config names a different default.
+  - `agent-cli list` gains a `GROUP` column and a `--group <id>` filter (`agent-cli list --group team` lists only that group's members).
+  - New `agent-cli groups` subcommand detects the distinct groups currently running as processes and lists them with member counts (aggregated from the live registry, so a group is reported iff at least one member is alive; ungrouped agents fall under a `-` bucket).
+  - Docs updated: `doc/usage.md` (Groups), `doc/architecture.md` (§4, §7.1), `doc/config.md` (`[runtime] group`), `doc/tools.md` (`spawn` tool `group` argument), `README.md`, `README_ja.md`.
+
 ## [0.5.0]
 
 ### Added
@@ -97,6 +106,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/aquaxis/agent-cli/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aquaxis/agent-cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aquaxis/agent-cli/releases/tag/v0.3.0

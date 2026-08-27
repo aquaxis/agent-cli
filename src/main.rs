@@ -67,9 +67,13 @@ async fn run() -> Result<()> {
             let cfg = config::load(&source)?;
             commands::stop(&cfg, &peer).await
         }
-        Command::List => {
+        Command::List { group } => {
             let cfg = config::load(&source)?;
-            commands::list(&cfg).await
+            commands::list(&cfg, group.as_deref()).await
+        }
+        Command::Groups => {
+            let cfg = config::load(&source)?;
+            commands::groups(&cfg).await
         }
         Command::Send { peer, text } => {
             let cfg = config::load(&source)?;

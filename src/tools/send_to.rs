@@ -129,6 +129,7 @@ mod tests {
     fn build_ctx(registry_dir: &PathBuf) -> ToolCtx {
         ToolCtx {
             self_id: AgentId::new(),
+            group: None,
             registry_dir: registry_dir.clone(),
             config_source: Default::default(),
             event_tx: None,
@@ -180,6 +181,7 @@ mod tests {
         let entry = RegistryEntry {
             id: id.clone(),
             name: Some(name.into()),
+            group: None,
             pid: std::process::id(),
             started_at: Utc::now(),
             provider: "mock".into(),
@@ -212,6 +214,7 @@ mod tests {
         let entry = RegistryEntry {
             id: id.clone(),
             name: Some(name.into()),
+            group: None,
             pid: std::process::id(),
             started_at: Utc::now(),
             provider: "mock".into(),

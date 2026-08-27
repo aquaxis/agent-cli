@@ -290,6 +290,11 @@ pub struct RuntimeConfig {
     /// string falls back to the default (`.agent-cli/commands`). See FR-14.
     #[serde(default = "default_commands_dir")]
     pub commands_dir: String,
+    /// Default group id for agents this config launches. Empty / unset means no
+    /// group unless `--group` is given on the command line. Detached children
+    /// inherit their launcher's effective group.
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 fn default_max_tool_iterations() -> u32 {
@@ -310,6 +315,7 @@ impl Default for RuntimeConfig {
             persona_file: String::new(),
             max_tool_iterations: default_max_tool_iterations(),
             commands_dir: default_commands_dir(),
+            group: None,
         }
     }
 }
@@ -583,6 +589,16 @@ impl Config {
             "llama.cpp" => self.provider.llamacpp.as_ref(),
             _ => None,
         }
+    }
+
+    /// Effective group for a launch: CLI `--group` wins, else `[runtime] group`,
+    /// else `None`. Empty strings are treated as unset.
+    pub fn resolve_group(&self, cli_group: Option<&str>) -> Option<crate::id::GroupId> {
+        cli_group
+            .or(self.runtime.group.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| crate::id::GroupId(s.to_string()))
     }
 
     pub fn apply_overrides(&mut self, provider: Option<&str>, model: Option<&str>) {

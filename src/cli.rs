@@ -45,7 +45,14 @@ pub enum Command {
     },
 
     /// List running peers
-    List,
+    List {
+        /// Only list agents in this group
+        #[arg(long)]
+        group: Option<String>,
+    },
+
+    /// Detect and list the groups currently running as processes
+    Groups,
 
     /// Send a prompt to the specified peer
     Send {
@@ -92,6 +99,11 @@ pub struct RunArgs {
     #[arg(long, global = true)]
     pub name: Option<String>,
 
+    /// Group id this agent joins; detached children inherit it. Overrides the
+    /// `[runtime] group` config key.
+    #[arg(long, global = true)]
+    pub group: Option<String>,
+
     /// AI backend (claude / claude-code / codex / ollama / opencode / opencode-go / llama.cpp)
     #[arg(long, global = true)]
     pub provider: Option<String>,
@@ -137,6 +149,7 @@ mod tests {
             "spawn",
             "stop",
             "list",
+            "groups",
             "send",
             "providers",
             "doctor",
@@ -252,6 +265,42 @@ mod tests {
         let cli = Cli::try_parse_from(["agent-cli", "serve", "--name", "worker"]).expect("parse serve");
         assert!(matches!(cli.command, Some(Command::Serve)));
         assert_eq!(cli.run_args.name.as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn cli_parses_group_flag() {
+        let cli = Cli::try_parse_from(["agent-cli", "spawn", "--group", "team", "--name", "w"])
+            .expect("parse spawn --group");
+        assert!(matches!(cli.command, Some(Command::Spawn)));
+        assert_eq!(cli.run_args.group.as_deref(), Some("team"));
+
+        let cli = Cli::try_parse_from(["agent-cli", "serve", "--group", "team"])
+            .expect("parse serve --group");
+        assert!(matches!(cli.command, Some(Command::Serve)));
+        assert_eq!(cli.run_args.group.as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn cli_parses_list_group() {
+        let cli = Cli::try_parse_from(["agent-cli", "list", "--group", "team"])
+            .expect("parse list --group");
+        match cli.command {
+            Some(Command::List { group }) => assert_eq!(group.as_deref(), Some("team")),
+            other => panic!("expected List, got {other:?}"),
+        }
+
+        // No filter → None
+        let cli = Cli::try_parse_from(["agent-cli", "list"]).expect("parse list");
+        match cli.command {
+            Some(Command::List { group }) => assert!(group.is_none()),
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_groups() {
+        let cli = Cli::try_parse_from(["agent-cli", "groups"]).expect("parse groups");
+        assert!(matches!(cli.command, Some(Command::Groups)));
     }
 
     #[test]

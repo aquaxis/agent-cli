@@ -69,6 +69,9 @@ pub struct Agent {
     pub id: AgentId,
     #[allow(dead_code)]
     pub name: Option<String>,
+    /// Group this agent belongs to, forwarded to the `spawn` tool so a spawned
+    /// peer inherits the same group.
+    pub group: Option<crate::id::GroupId>,
     pub persona: Persona,
     pub provider: Box<dyn Provider>,
     pub tools: ToolRegistry,
@@ -325,6 +328,7 @@ impl Agent {
             // Tool execution
             let ctx = ToolCtx {
                 self_id: self.id.clone(),
+                group: self.group.clone(),
                 registry_dir: self.registry_dir.clone(),
                 config_source: self.config_source.clone(),
                 event_tx: Some(event_tx.clone()),
@@ -592,6 +596,7 @@ mod tests {
         Agent {
             id: AgentId::new(),
             name: Some("test".into()),
+            group: None,
             persona: Persona::builtin_default(),
             provider: Box::new(MockProvider::new(scripts)),
             tools,

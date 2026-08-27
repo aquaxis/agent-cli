@@ -167,6 +167,7 @@ Two consequences worth knowing before choosing a mode:
 | `persona_file` | string | empty | Explicit persona file path. When empty, falls back to `<agents_dir>/<name>.md` or the built-in default. See [`doc/personas.md`](personas.md) for details |
 | `max_tool_iterations` | u32 | `24` | Upper limit for tool_use iterations within a single turn. Minimum is 1 (`0` or negative values are clamped to `1` internally), maximum is `u32::MAX = 4,294,967,295`. This is a safeguard to prevent infinite loops. See "Tuning `max_tool_iterations`" below for details |
 | `commands_dir` | string | `.agent-cli/commands` | Directory scanned for user-defined custom slash commands (`*.md`). Relative paths resolve against the working directory; `~` and env-style paths are expanded. An empty string falls back to the default, and a directory that does not exist is not an error — the REPL simply runs with built-in commands only. See [`doc/usage.md`](usage.md) "Custom Slash Commands" |
+| `group` | string | unset | Default group id for agents this config launches. The `--group` command-line flag overrides it; with neither, agents are ungrouped. Detached children inherit their launcher's effective group. See [`doc/usage.md`](usage.md) "Groups" |
 
 #### Tuning `max_tool_iterations`
 

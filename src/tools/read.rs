@@ -89,6 +89,7 @@ mod tests {
     fn ctx() -> ToolCtx {
         ToolCtx {
             self_id: AgentId::new(),
+            group: None,
             registry_dir: PathBuf::from("/tmp"),
             config_source: Default::default(),
             event_tx: None,

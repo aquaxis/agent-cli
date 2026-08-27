@@ -95,6 +95,9 @@ pub(crate) struct ReplState {
     /// This session's config source path, used by `/spawn` to launch a detached
     /// peer that shares the same config file (hence the same registry_dir).
     config_source: ConfigSource,
+    /// This session's effective group; `/spawn` passes it to a detached child so
+    /// the child inherits the launcher's group.
+    group: Option<crate::id::GroupId>,
 }
 
 const HISTORY_LIMIT: usize = 200;
@@ -167,6 +170,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
 
     let id = AgentId::new();
     let name = args.name.clone();
+    let group = config.resolve_group(args.group.as_deref());
     let agents_dir = config.agents_dir()?;
     let resolution: PersonaResolution = persona::resolve(
         args.persona.as_deref(),
@@ -200,6 +204,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let entry = RegistryEntry {
         id: id.clone(),
         name: name.clone(),
+        group: group.clone(),
         pid: std::process::id(),
         started_at: Utc::now(),
         provider: config.provider.kind.clone(),
@@ -231,6 +236,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let agent = Agent {
         id: id.clone(),
         name: name.clone(),
+        group: group.clone(),
         persona: resolution.persona,
         provider,
         tools,
@@ -261,6 +267,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         commands_dir,
         commands: RwLock::new(initial_commands),
         config_source: source.clone(),
+        group: group.clone(),
     });
 
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
@@ -430,6 +437,7 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
 
     let id = AgentId::new();
     let name = args.name.clone();
+    let group = config.resolve_group(args.group.as_deref());
     let agents_dir = config.agents_dir()?;
     let resolution: PersonaResolution = persona::resolve(
         args.persona.as_deref(),
@@ -456,6 +464,7 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
     let entry = RegistryEntry {
         id: id.clone(),
         name: name.clone(),
+        group: group.clone(),
         pid: std::process::id(),
         started_at: Utc::now(),
         provider: config.provider.kind.clone(),
@@ -480,6 +489,7 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
     let agent = Agent {
         id: id.clone(),
         name: name.clone(),
+        group: group.clone(),
         persona: resolution.persona,
         provider,
         tools,
@@ -1971,6 +1981,8 @@ async fn spawn_peer(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
     let provider = it.next().map(|s| s.to_string());
     let run_args = RunArgs {
         name,
+        // Inherit the launcher's group so the spawned child joins the same cohort.
+        group: state.group.as_ref().map(|g| g.to_string()),
         provider,
         model: None,
         persona: None,
@@ -2320,6 +2332,7 @@ mod tests {
                 path: dir.join("config.toml"),
                 from_explicit: false,
             },
+            group: None,
         })
     }
 
