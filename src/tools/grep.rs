@@ -41,11 +41,11 @@ fn default_true() -> bool {
 
 #[async_trait]
 impl Tool for GrepTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "grep"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Search file contents for a regex pattern under a path. Supports glob filtering, case-insensitivity, line numbers and context lines. output_mode: content | files_with_matches | count."
     }
 

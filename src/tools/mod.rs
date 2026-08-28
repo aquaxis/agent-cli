@@ -68,9 +68,9 @@ pub struct ToolCtx {
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// Tool identifier (snake_case recommended).
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     /// Brief description presented to the LLM.
-    fn description(&self) -> &'static str;
+    fn description(&self) -> &str;
     /// JSON Schema for arguments.
     fn schema(&self) -> Value;
     /// Execute the tool. On failure, return `ToolOutput::err` to the AI.
@@ -137,6 +137,33 @@ impl ToolRegistry {
             tools.insert(name.to_string(), tool);
         }
         ToolRegistry { tools }
+    }
+
+    /// Insert externally-discovered tools (e.g. from MCP servers) after the
+    /// synchronous `build`. Each tool registers under its own `name()` key,
+    /// subject to the same persona allow/deny filter as the built-ins. The
+    /// `[tools] enabled` list governs only the built-in candidates, so it does
+    /// not gate these.
+    pub fn attach(
+        &mut self,
+        extra: Vec<Arc<dyn Tool>>,
+        allowed: Option<&[String]>,
+        denied: Option<&[String]>,
+    ) {
+        for tool in extra {
+            let key = tool.name().to_string();
+            if let Some(allow) = allowed {
+                if !allow.iter().any(|a| a == &key) {
+                    continue;
+                }
+            }
+            if let Some(deny) = denied {
+                if deny.iter().any(|d| d == &key) {
+                    continue;
+                }
+            }
+            self.tools.insert(key, tool);
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {

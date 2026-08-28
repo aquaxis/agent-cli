@@ -36,11 +36,11 @@ struct BashArgs {
 
 #[async_trait]
 impl Tool for BashTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "bash"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Execute a bash command. Returns stdout, stderr and exit_code as JSON."
     }
 

@@ -109,6 +109,20 @@ show_thinking = "collapsed"
 enabled            = false
 max_context_tokens = 24000
 keep_recent_turns  = 6
+
+# Model Context Protocol (MCP) servers. Each enabled server is launched over
+# stdio at startup; its tools are registered as mcp__<name>__<tool>. Only the
+# stdio transport (and MCP tools) are supported. Example:
+# [mcp]
+# init_timeout_ms = 15000            # per-server handshake/list timeout
+#
+# [[mcp.servers]]
+# name    = "filesystem"
+# command = "npx"
+# args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+# # env     = { EXAMPLE = "1" }      # merged onto the inherited environment
+# # cwd     = "/some/dir"
+# # enabled = true                   # default: true
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +136,8 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default)]
     pub history: HistoryConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -406,6 +422,54 @@ pub struct WebSearchConfig {
     /// Search provider identifier (e.g. "tavily", "brave"). Default: "tavily".
     #[serde(default)]
     pub provider: Option<String>,
+}
+
+/// Model Context Protocol (MCP) client configuration. agent-cli connects to the
+/// declared servers at startup (stdio transport), discovers their tools, and
+/// registers each as `mcp__<server>__<tool>`. Omitting the section (no servers)
+/// leaves behaviour unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpConfig {
+    /// Declared MCP servers (`[[mcp.servers]]`).
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+    /// Per-server handshake + `tools/list` timeout in milliseconds. Applied at
+    /// connect time; defaults to `default_mcp_init_timeout_ms()` when unset.
+    #[serde(default)]
+    pub init_timeout_ms: Option<u64>,
+}
+
+/// A single MCP server launched over stdio.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Logical name; used in the tool namespace `mcp__<name>__<tool>`.
+    pub name: String,
+    /// Executable to launch (resolved on PATH or an absolute path).
+    pub command: String,
+    /// Arguments passed to `command`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment variables merged onto the inherited environment.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Working directory for the child (subject to `~`/env expansion).
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Whether this server is connected. Default: true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Transport kind; only "stdio" (the default) is supported this cycle.
+    #[serde(default)]
+    pub transport: Option<String>,
+}
+
+/// Default handshake/list timeout for an MCP server (milliseconds).
+pub fn default_mcp_init_timeout_ms() -> u64 {
+    15_000
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -732,6 +796,53 @@ mod tests {
     #[test]
     fn runtime_commands_dir_default() {
         assert_eq!(RuntimeConfig::default().commands_dir, ".agent-cli/commands");
+    }
+
+    #[test]
+    fn default_config_has_no_mcp_servers() {
+        // The shipped default only comments out [mcp], so the section is empty.
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert!(cfg.mcp.servers.is_empty());
+        assert!(cfg.mcp.init_timeout_ms.is_none());
+    }
+
+    #[test]
+    fn parses_mcp_servers_with_defaults() {
+        let toml_src = r#"
+[provider]
+kind = "claude"
+
+[mcp]
+init_timeout_ms = 9000
+
+[[mcp.servers]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+env = { EXAMPLE = "1" }
+cwd = "/tmp"
+
+[[mcp.servers]]
+name = "disabled-one"
+command = "foo"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        assert_eq!(cfg.mcp.init_timeout_ms, Some(9000));
+        assert_eq!(cfg.mcp.servers.len(), 2);
+
+        let fs = &cfg.mcp.servers[0];
+        assert_eq!(fs.name, "filesystem");
+        assert_eq!(fs.command, "npx");
+        assert_eq!(fs.args.len(), 3);
+        assert_eq!(fs.env.get("EXAMPLE").map(String::as_str), Some("1"));
+        assert_eq!(fs.cwd.as_deref(), Some("/tmp"));
+        assert!(fs.enabled, "enabled defaults to true");
+        assert!(fs.transport.is_none());
+
+        let disabled = &cfg.mcp.servers[1];
+        assert!(!disabled.enabled);
+        assert!(disabled.args.is_empty());
     }
 
     #[test]

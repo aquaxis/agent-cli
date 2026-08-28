@@ -19,11 +19,11 @@ struct EditArgs {
 
 #[async_trait]
 impl Tool for EditTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "edit"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Perform an exact string replacement in a file. By default old_string must be unique; set replace_all=true to replace every occurrence."
     }
 

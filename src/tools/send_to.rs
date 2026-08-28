@@ -21,11 +21,11 @@ struct SendArgs {
 
 #[async_trait]
 impl Tool for SendToTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "send_to"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Send a prompt to another agent (peer) running locally. Identify the peer by agent-id or display name. Set wait_reply=true to wait for the peer's response."
     }
 

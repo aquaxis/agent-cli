@@ -64,6 +64,8 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 
 [ui]                        # Display mode
 [history]                   # Opt-in history-window management
+[mcp]                       # MCP client: global options
+[[mcp.servers]]             # MCP client: one external server per entry
 ```
 
 ## 3. Full Item Reference
@@ -265,6 +267,56 @@ full conversation is replayed verbatim every turn (unchanged behavior).
 | `keep_recent_turns` | int | `6` | Most-recent messages always kept verbatim (system/persona prefix is always kept too) |
 
 See §11 for the compaction algorithm.
+
+### `[mcp]` / `[[mcp.servers]]`
+
+Model Context Protocol (MCP) **client** configuration. On `run` / `serve`,
+agent-cli launches each enabled server over **stdio**, discovers its tools via
+the MCP handshake, and registers each one under the namespaced name
+`mcp__<server>__<tool>`. Omitting the section (no servers) leaves behaviour
+unchanged. Only the stdio transport, and MCP **tools** (not resources/prompts),
+are supported; Linux-only.
+
+`[mcp]` (optional, global):
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `init_timeout_ms` | int | `15000` | Per-server handshake + `tools/list` timeout, in milliseconds. A server exceeding it is skipped |
+
+`[[mcp.servers]]` (one table per server):
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `name` | string | — (required) | Logical name; used in the tool namespace `mcp__<name>__<tool>` |
+| `command` | string | — (required) | Executable to launch (resolved on `PATH` or an absolute path) |
+| `args` | string[] | `[]` | Arguments passed to `command` |
+| `env` | table | `{}` | Extra environment variables merged onto the inherited environment |
+| `cwd` | string | unset | Working directory for the child (`~` / env expansion applied) |
+| `enabled` | bool | `true` | Whether the server is connected |
+| `transport` | string | `"stdio"` | Transport kind; only `"stdio"` is supported |
+
+MCP tools are **not** gated by `[tools] enabled` (that list governs only the
+built-ins); a declared, enabled server's tools are available by default, subject
+to the persona `allowed_tools` / `denied_tools` filter (which may name an
+individual `mcp__…` tool). MCP tool calls pass through the normal approval gate.
+A server that fails to launch, handshake, or list is logged and skipped, so a bad
+server never aborts startup.
+
+```toml
+[mcp]
+init_timeout_ms = 15000
+
+[[mcp.servers]]
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+# env     = { EXAMPLE = "1" }
+# cwd     = "/home/user"
+# enabled = true
+```
+
+Inspect configured servers with `agent-cli mcp list` (and `agent-cli doctor`).
+See [`doc/usage.md`](usage.md#mcp-servers).
 
 ## 4. Complete Examples
 

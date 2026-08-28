@@ -23,11 +23,11 @@ fn default_output_mode() -> String {
 
 #[async_trait]
 impl Tool for GlobTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "glob"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Find files matching a glob pattern (supports *, **, ?, [..]) under a directory. Returns a sorted list of matching paths."
     }
 

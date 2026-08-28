@@ -4,6 +4,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- MCP client — agent-cli can now access external **Model Context Protocol (MCP) servers** and offer their tools to the agent.
+  - Declare servers in a new `[[mcp.servers]]` config section (`name`, `command`, `args`, `env`, `cwd`, `enabled`, `transport`) with an optional `[mcp] init_timeout_ms`. On `run` / `serve`, each enabled server is launched over **stdio**, the MCP handshake runs (`initialize` → `notifications/initialized` → `tools/list`), and every discovered tool is registered under a namespaced name **`mcp__<server>__<tool>`** so it never collides with a built-in or another server.
+  - MCP tools flow through the normal agent loop and approval gate; invoking one forwards to the server's `tools/call` and flattens the result (an MCP `isError` becomes a tool error, not a hard failure). A server that fails to launch, handshake, or list within `init_timeout_ms` is logged and **skipped** — startup never aborts on a bad server, and server subprocesses are terminated on shutdown.
+  - New `agent-cli mcp list` subcommand connects to the configured servers and lists their tools; `agent-cli doctor` gains an MCP section reporting each server's reachability and tool count.
+  - Only the stdio transport and MCP tools are supported (HTTP/SSE and resources/prompts are not); Linux-only. No new dependency (JSON-RPC over `tokio::process` + `serde_json`); the `Tool` trait's `name`/`description` now return `&str` to carry runtime-discovered names (built-ins unchanged).
+  - Docs updated: `doc/config.md` (`[mcp]` / `[[mcp.servers]]`), `doc/usage.md` (MCP servers), `doc/architecture.md` (§8.3), `doc/troubleshooting.md` (MCP Issues), `README.md`, `README_ja.md`.
+
 ## [0.7.0]
 
 ### Added

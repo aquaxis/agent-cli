@@ -347,6 +347,43 @@ For detailed troubleshooting, see [`doc/personas.md`](personas.md) section 11 "T
 
 - The install prefix is derived from the running binary's path (`<prefix>/bin/agent-cli`). If you run `agent-cli` from `target/debug`, the resolved prefix shown in the confirmation may be unexpected — abort and run the installed binary, or pass an explicit prefix by reinstalling with `cargo install --root <prefix>`.
 
+## MCP Issues
+
+`agent-cli mcp list` and `agent-cli doctor` show each configured server's status;
+start there. MCP is a **client** feature: agent-cli connects to servers declared
+in `[[mcp.servers]]` over **stdio**. See [`doc/config.md`](config.md) `[mcp]`.
+
+### An MCP server is skipped at startup / shows ERROR
+
+- A server that fails to launch, handshake, or list within `init_timeout_ms` is
+  logged (`mcp server '<name>' skipped: …`) and skipped — the rest of agent-cli
+  runs normally. Run `agent-cli mcp list` to see the exact error per server.
+
+### `failed to launch '<command>'`
+
+- The `command` is not on `PATH` (or the absolute path is wrong). Verify it runs
+  standalone first (e.g. `npx -y @modelcontextprotocol/server-filesystem …`).
+  Set `env` / `cwd` in the server entry if the server needs them.
+
+### `handshake timed out`
+
+- The server did not complete `initialize` + `tools/list` in time. Raise
+  `[mcp] init_timeout_ms`, or check the server's own logs — a server that prints
+  non-JSON banners to **stdout** breaks the JSON-RPC stream (agent-cli expects
+  newline-delimited JSON-RPC on stdout; diagnostics belong on stderr).
+
+### A server tool does not appear to the model
+
+- Tools register as `mcp__<server>__<tool>`. Confirm the name with
+  `agent-cli mcp list`. If a persona sets `allowed_tools`, the MCP name must be
+  in it; if it sets `denied_tools`, make sure the MCP name is not excluded. A
+  server with `enabled = false` is not connected.
+
+### Only stdio servers work
+
+- Only the **stdio** transport and MCP **tools** are supported. HTTP/SSE servers
+  and MCP resources/prompts are not connected this release.
+
 ## Context-efficiency Features (opt-in)
 
 These are all default-OFF; see [`doc/config.md`](config.md) §11.

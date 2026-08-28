@@ -21,6 +21,7 @@
 - Reliable shutdown — any of `/quit`, `/exit`, `Ctrl+D`, `Ctrl+C`, or `SIGTERM` exits within ~1 s and cleans up the IPC socket and registry metadata automatically.
 - Self-diagnostics with `agent-cli doctor` and a 5-stage smoke test with `agent-cli selftest` (Provider OK / bash tool / IPC / subprocess registration / subprocess AI response).
 - Self-update with `agent-cli update` — checks the latest GitHub release and rebuilds from source into your install prefix; `--check` reports availability without changing anything.
+- MCP client — declare external Model Context Protocol servers in `[[mcp.servers]]`; their tools are discovered over stdio at startup and offered to the agent as `mcp__<server>__<tool>`. Inspect them with `agent-cli mcp list`.
 - Configurable tool-use loop cap via `[runtime] max_tool_iterations` (default 24, max `u32::MAX`) — see "[info] max tool-use iterations reached" below.
 - Ollama `message.thinking` field is decoded as `[thinking]` for thinking-capable models such as `glm-5.1:cloud`.
 - Opt-in context-efficiency features (all default OFF): Claude prompt caching, opencode local persistent session, and hybrid history-window management (summarize-then-drop). See [`doc/config.md`](doc/config.md) §11.
@@ -320,6 +321,7 @@ See [`doc/config.md`](doc/config.md) for the full reference and [`doc/troublesho
 | `agent-cli config show` | Print current config |
 | `agent-cli config edit` | Open config in `$EDITOR` |
 | `agent-cli config path` | Print resolved config path |
+| `agent-cli mcp list` | Connect to the configured MCP servers and list their tools |
 
 REPL commands inside `agent-cli run`:
 
@@ -397,6 +399,29 @@ agent-cli update --ref main  # build from a branch/tag (e.g. before a release is
 ```
 
 See [`doc/usage.md`](doc/usage.md) "Updating".
+
+### MCP servers
+
+agent-cli can act as a **Model Context Protocol (MCP) client**: declare external
+servers under `[[mcp.servers]]`, and on `run` / `serve` their tools are
+discovered over stdio and offered to the agent as `mcp__<server>__<tool>`
+(alongside the built-ins, through the same approval gate). Only the stdio
+transport and MCP tools are supported; Linux-only.
+
+```toml
+[[mcp.servers]]
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+```
+
+```bash
+agent-cli mcp list   # connect and list each server's tools
+```
+
+A server that fails to launch or handshake is logged and skipped, never aborting
+startup. See [`doc/config.md`](doc/config.md) "[mcp]" and
+[`doc/usage.md`](doc/usage.md) "MCP servers".
 
 ### Skipping tool approval
 

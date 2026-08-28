@@ -108,6 +108,12 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// Inspect configured MCP (Model Context Protocol) servers
+    Mcp {
+        #[command(subcommand)]
+        action: McpAction,
+    },
 }
 
 #[derive(Parser, Debug, Default, Clone)]
@@ -148,6 +154,12 @@ pub enum ConfigAction {
     Path,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum McpAction {
+    /// Connect to the configured MCP servers and list their tools
+    List,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +186,7 @@ mod tests {
             "selftest",
             "config",
             "ask",
+            "mcp",
         ] {
             assert!(
                 names.iter().any(|n| n == required),
@@ -341,6 +354,17 @@ mod tests {
                 assert_eq!(git_ref.as_deref(), Some("v0.6.0"));
             }
             other => panic!("expected Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_mcp() {
+        let cli = Cli::try_parse_from(["agent-cli", "mcp", "list"]).expect("parse mcp list");
+        match cli.command {
+            Some(Command::Mcp { action }) => {
+                assert!(matches!(action, crate::cli::McpAction::List));
+            }
+            other => panic!("expected Mcp, got {other:?}"),
         }
     }
 

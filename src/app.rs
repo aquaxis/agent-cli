@@ -221,7 +221,11 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // Tools
     let allowed = resolution.persona.frontmatter.allowed_tools.clone();
     let denied = resolution.persona.frontmatter.denied_tools.clone();
-    let tools = ToolRegistry::build(&config, allowed.as_deref(), denied.as_deref());
+    let mut tools = ToolRegistry::build(&config, allowed.as_deref(), denied.as_deref());
+    // Connect declared MCP servers and register their tools (fail-soft: a bad
+    // server is logged and skipped, never aborting startup).
+    let mcp_tools = crate::mcp::connect_all(&config.mcp).await;
+    tools.attach(mcp_tools, allowed.as_deref(), denied.as_deref());
     let tool_names = tools.names();
 
     let history = Agent::build_initial_history(&resolution.persona);
@@ -479,7 +483,9 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
 
     let allowed = resolution.persona.frontmatter.allowed_tools.clone();
     let denied = resolution.persona.frontmatter.denied_tools.clone();
-    let tools = ToolRegistry::build(&config, allowed.as_deref(), denied.as_deref());
+    let mut tools = ToolRegistry::build(&config, allowed.as_deref(), denied.as_deref());
+    let mcp_tools = crate::mcp::connect_all(&config.mcp).await;
+    tools.attach(mcp_tools, allowed.as_deref(), denied.as_deref());
 
     let history = Agent::build_initial_history(&resolution.persona);
     // A headless agent has no console to answer tool-approval prompts, so it

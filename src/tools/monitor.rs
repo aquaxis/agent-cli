@@ -26,11 +26,11 @@ struct MonitorArgs {
 
 #[async_trait]
 impl Tool for MonitorTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "monitor"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Run a long-running shell command and collect its stdout lines as events, returning them when the command exits or the timeout elapses."
     }
 

@@ -37,7 +37,8 @@ src/
 ├── editor.rs            ... input buffer and history cursor (InputState) / display-width math
 ├── custom_commands.rs   ... `.md` custom slash command discovery / `@file` + `$ARGUMENTS` expansion
 ├── agent.rs             ... single agent conversation loop / ApprovalRequest / request_approval
-├── commands.rs          ... list/send/ask/providers/doctor/selftest/config
+├── commands.rs          ... list/send/ask/providers/doctor/selftest/config/mcp_list
+├── update.rs            ... `update` self-update (GitHub lookup + cargo install)
 ├── config.rs            ... config file loading / resolution order
 ├── id.rs                ... AgentId
 ├── history.rs           ... opt-in history-window mgmt (estimate_tokens/old_span/render_transcript)
@@ -66,11 +67,15 @@ src/
 │   ├── websearch.rs     ... web search (config-driven)
 │   ├── webfetch.rs      ... URL fetch + HTML-to-text
 │   └── send_to.rs       ... peer prompt delivery
-└── ipc/
-    ├── mod.rs           ... IpcMessage (Prompt / PromptReply / Ack / Error / Ping / Pong / Shutdown)
-    ├── server.rs        ... UnixListener (0600) / Drop performs accept abort + socket deletion
-    ├── client.rs        ... UnixStream
-    └── registry.rs      ... <agent-id>.{sock,json} scan / Drop performs automatic cleanup
+├── ipc/
+│   ├── mod.rs           ... IpcMessage (Prompt / PromptReply / Ack / Error / Ping / Pong / Shutdown)
+│   ├── server.rs        ... UnixListener (0600) / Drop performs accept abort + socket deletion
+│   ├── client.rs        ... UnixStream
+│   └── registry.rs      ... <agent-id>.{sock,json} scan / Drop performs automatic cleanup
+└── mcp/
+    ├── mod.rs           ... MCP client: McpTool, connect_all / attach, probe_all
+    ├── client.rs        ... McpClient: stdio JSON-RPC transport, handshake, reader task
+    └── proto.rs         ... pure JSON-RPC + tools/list & tools/call shaping (unit-tested)
 ```
 
 Key types:
@@ -374,6 +379,38 @@ dir and moves the binary into place, so the self-replace is atomic; success is
 claimed only after the new binary answers `--version`. The command needs `cargo`
 on `PATH` and is Linux-only, like the installer. `--check` performs only the
 lookup/compare and writes nothing.
+
+## 8.3 MCP access (`mcp`)
+
+`src/mcp/` implements a **Model Context Protocol client**. It plugs into the
+existing tool architecture at a single seam — the `ToolRegistry` — so an MCP tool
+is indistinguishable from a built-in to the agent loop (dispatch already keys off
+the registry map key, not the trait name).
+
+- **Pure core** (`src/mcp/proto.rs`): tool-name mangling (`mcp__<server>__<tool>`
+  + sanitization), JSON-RPC 2.0 request/notification construction, reply parsing
+  (`result` vs `error`), and shaping of `tools/list` / `tools/call` results —
+  all unit-tested without a process.
+- **Thin edges** (`src/mcp/client.rs`): `McpClient` spawns each server over
+  **stdio** and speaks newline-delimited JSON-RPC. A background task reads the
+  child's stdout and routes replies to the awaiting caller by request `id`; the
+  handshake (`initialize` → `notifications/initialized` → `tools/list`) and every
+  call are bounded by `init_timeout_ms`. Dropping the client kills the child and
+  stops the reader.
+- **Registration** (`src/mcp/mod.rs`): `connect_all` connects every enabled
+  server (fail-soft — a bad server is logged and skipped), wraps each discovered
+  tool as an `McpTool` (`Arc<dyn Tool>` holding an `Arc<McpClient>`), and returns
+  them; `ToolRegistry::attach` inserts them under their namespaced key, honoring
+  the persona allow/deny filter. `run` / `serve` call this right after the
+  synchronous `ToolRegistry::build`. Invoking an `McpTool` forwards to the
+  server's `tools/call`; an MCP `isError` (or a JSON-RPC error) is surfaced as a
+  tool error, not a hard failure. `probe_all` backs `agent-cli mcp list` and the
+  `doctor` MCP check.
+
+The registry is owned by the `Agent` for the session, so the `McpClient` handles
+(and their subprocesses) live until the session ends, then drop and are killed.
+No new dependency is added; only the stdio transport and MCP tools are supported;
+Linux-only.
 
 ## 9. Target OS
 

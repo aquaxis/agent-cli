@@ -39,11 +39,11 @@ struct SpawnArgs {
 
 #[async_trait]
 impl Tool for SpawnTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "spawn"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Create a new detached agent-cli peer that runs headless in its own session and does not depend on this process. It shares this agent's config (same registry), so you can reach it afterwards with send_to. Optionally give it a name/provider/model/persona and an initial prompt."
     }
 

@@ -16,11 +16,11 @@ struct WriteArgs {
 
 #[async_trait]
 impl Tool for WriteTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "write"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Write UTF-8 text to a file, overwriting any existing content. Parent directories are created."
     }
 

@@ -45,11 +45,11 @@ fn html_to_text(html: &str) -> String {
 
 #[async_trait]
 impl Tool for WebFetchTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "webfetch"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Fetch a URL, convert HTML to readable text, and return it so the model can answer a prompt against the content."
     }
 

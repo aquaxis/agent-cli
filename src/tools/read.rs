@@ -19,11 +19,11 @@ struct ReadArgs {
 
 #[async_trait]
 impl Tool for ReadTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "read"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Read a UTF-8 text file. Optional offset (1-based start line) and limit (number of lines). Output is line-numbered."
     }
 

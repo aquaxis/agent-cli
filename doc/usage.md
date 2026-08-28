@@ -31,6 +31,7 @@ agent-cli [--config <path>] <subcommand>
 | `agent-cli config show` | Print current configuration |
 | `agent-cli config edit` | Open config in `$EDITOR` |
 | `agent-cli config path` | Print resolved config path |
+| `agent-cli mcp list` | Connect to the configured MCP servers and list their tools. See [MCP servers](#mcp-servers) |
 
 ### `run` subcommand options
 
@@ -135,6 +136,46 @@ agent-cli update --force          # reinstall even if already up to date
 - The install is delegated to `cargo install`, which builds to a temporary
   location and moves the binary into place; success is reported only after the
   new binary answers `--version`.
+
+## MCP servers
+
+agent-cli can act as a **Model Context Protocol (MCP) client**: it connects to
+external MCP servers declared in the config file, discovers the tools they
+expose, and makes those tools available to the agent alongside the built-ins.
+Only the **stdio** transport and MCP **tools** are supported; it is Linux-only.
+
+Declare servers under `[[mcp.servers]]` (see
+[`doc/config.md`](config.md) `[mcp]` / `[[mcp.servers]]`):
+
+```toml
+[mcp]
+init_timeout_ms = 15000            # per-server handshake/list timeout (optional)
+
+[[mcp.servers]]
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+# env     = { EXAMPLE = "1" }      # merged onto the inherited environment
+# cwd     = "/some/dir"
+# enabled = true                   # default: true
+```
+
+On `run` / `serve`, each enabled server is launched at startup, and every tool
+it advertises is registered under a namespaced name **`mcp__<server>__<tool>`**
+(e.g. `mcp__filesystem__read_file`), so it never collides with a built-in or
+another server. The model calls it exactly like any other tool, and the call
+passes through the normal approval gate (unless `--auto-approve-tools`).
+
+```text
+agent-cli mcp list                 # connect and list each server's tools
+```
+
+A server that fails to launch, handshake, or list within `init_timeout_ms` is
+logged and **skipped** — the remaining servers and the built-in tools are
+unaffected, and startup never aborts on a bad server. Server subprocesses are
+terminated when the session ends. Use `agent-cli doctor` to see each server's
+reachability and tool count. See [Troubleshooting](troubleshooting.md#mcp-issues)
+for common problems.
 
 ## REPL Commands
 
