@@ -6,6 +6,7 @@
 //! server never breaks startup.
 
 mod client;
+mod http;
 pub mod proto;
 
 use std::sync::Arc;

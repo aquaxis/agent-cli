@@ -74,8 +74,9 @@ src/
 │   └── registry.rs      ... <agent-id>.{sock,json} scan / Drop performs automatic cleanup
 └── mcp/
     ├── mod.rs           ... MCP client: McpTool, connect_all / attach, probe_all
-    ├── client.rs        ... McpClient: stdio JSON-RPC transport, handshake, reader task
-    └── proto.rs         ... pure JSON-RPC + tools/list & tools/call shaping (unit-tested)
+    ├── client.rs        ... McpClient + McpTransport seam; StdioTransport (subprocess JSON-RPC)
+    ├── http.rs          ... HttpTransport: Streamable HTTP (POST + JSON/SSE reply, session id)
+    └── proto.rs         ... pure JSON-RPC + tools/list & tools/call & SSE/header shaping (unit-tested)
 ```
 
 Key types:
@@ -391,12 +392,21 @@ the registry map key, not the trait name).
   + sanitization), JSON-RPC 2.0 request/notification construction, reply parsing
   (`result` vs `error`), and shaping of `tools/list` / `tools/call` results —
   all unit-tested without a process.
-- **Thin edges** (`src/mcp/client.rs`): `McpClient` spawns each server over
-  **stdio** and speaks newline-delimited JSON-RPC. A background task reads the
-  child's stdout and routes replies to the awaiting caller by request `id`; the
-  handshake (`initialize` → `notifications/initialized` → `tools/list`) and every
-  call are bounded by `init_timeout_ms`. Dropping the client kills the child and
-  stops the reader.
+- **Thin edges** (`src/mcp/client.rs`, `src/mcp/http.rs`): `McpClient` is
+  generalised over an `McpTransport` seam; the handshake (`initialize` →
+  `notifications/initialized` → `tools/list`) and every call are shared and
+  bounded by `init_timeout_ms`. Two backends implement the seam:
+  - `StdioTransport` (`client.rs`) — spawns the server and speaks
+    newline-delimited JSON-RPC over stdin/stdout; a background task routes
+    replies by request `id`; dropping it kills the child and stops the reader.
+  - `HttpTransport` (`http.rs`) — MCP **Streamable HTTP**: POSTs JSON-RPC to the
+    server `url` and reads either a single `application/json` reply or a
+    `text/event-stream` (SSE) stream (assembled with the shared `SseAccumulator`
+    from `src/ai/stream.rs`), selecting the message matching the request `id`. It
+    captures the `Mcp-Session-Id` and negotiated protocol version from the
+    `initialize` response and echoes them on later requests, sends static /
+    Bearer (`api_key_env`) auth headers, and ends the session with a best-effort
+    `DELETE` on drop.
 - **Registration** (`src/mcp/mod.rs`): `connect_all` connects every enabled
   server (fail-soft — a bad server is logged and skipped), wraps each discovered
   tool as an `McpTool` (`Arc<dyn Tool>` holding an `Arc<McpClient>`), and returns
@@ -408,8 +418,10 @@ the registry map key, not the trait name).
   `doctor` MCP check.
 
 The registry is owned by the `Agent` for the session, so the `McpClient` handles
-(and their subprocesses) live until the session ends, then drop and are killed.
-No new dependency is added; only the stdio transport and MCP tools are supported;
+(and any subprocesses) live until the session ends, then drop and are cleaned up.
+No new dependency is added (JSON-RPC over `tokio::process` / `reqwest` +
+`SseAccumulator`); the stdio and Streamable-HTTP transports and MCP tools are
+supported (not resources/prompts, OAuth, or the legacy HTTP+SSE transport);
 Linux-only.
 
 ## 9. Target OS

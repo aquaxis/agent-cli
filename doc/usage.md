@@ -142,7 +142,9 @@ agent-cli update --force          # reinstall even if already up to date
 agent-cli can act as a **Model Context Protocol (MCP) client**: it connects to
 external MCP servers declared in the config file, discovers the tools they
 expose, and makes those tools available to the agent alongside the built-ins.
-Only the **stdio** transport and MCP **tools** are supported; it is Linux-only.
+Servers are reached over **stdio** (a launched subprocess, the default) or
+**http** (Streamable HTTP to a URL). Only MCP **tools** are consumed
+(not resources/prompts); it is Linux-only.
 
 Declare servers under `[[mcp.servers]]` (see
 [`doc/config.md`](config.md) `[mcp]` / `[[mcp.servers]]`):
@@ -170,12 +172,34 @@ passes through the normal approval gate (unless `--auto-approve-tools`).
 agent-cli mcp list                 # connect and list each server's tools
 ```
 
-A server that fails to launch, handshake, or list within `init_timeout_ms` is
-logged and **skipped** — the remaining servers and the built-in tools are
-unaffected, and startup never aborts on a bad server. Server subprocesses are
-terminated when the session ends. Use `agent-cli doctor` to see each server's
-reachability and tool count. See [Troubleshooting](troubleshooting.md#mcp-issues)
-for common problems.
+### Remote (HTTP) servers
+
+Set `transport = "http"` and a `url` to reach a server over **Streamable HTTP**
+instead of launching a subprocess:
+
+```toml
+[[mcp.servers]]
+name        = "remote"
+transport   = "http"
+url         = "https://example.com/mcp"
+# headers     = { X-Example = "1" }        # static request headers
+# api_key_env = "REMOTE_MCP_TOKEN"         # -> Authorization: Bearer <value>
+```
+
+agent-cli POSTs JSON-RPC to `url` and accepts either a single `application/json`
+reply or a `text/event-stream` (SSE) reply, echoing the server's `Mcp-Session-Id`
+on subsequent requests. Auth is via `headers` and/or `api_key_env` (Bearer);
+OAuth and the legacy two-endpoint HTTP+SSE transport are not supported. HTTP
+servers register and behave identically to stdio ones (`mcp__<server>__<tool>`,
+same approval gate, same fail-soft handling).
+
+A server that fails to launch/connect, handshake, or list within
+`init_timeout_ms` is logged and **skipped** — the remaining servers and the
+built-in tools are unaffected, and startup never aborts on a bad server. stdio
+subprocesses are terminated when the session ends; an HTTP session is ended with
+a best-effort `DELETE`. Use `agent-cli doctor` to see each server's reachability
+and tool count. See [Troubleshooting](troubleshooting.md#mcp-issues) for common
+problems.
 
 ## REPL Commands
 

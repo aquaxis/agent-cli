@@ -4,6 +4,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- MCP HTTP/SSE transport — MCP servers can now be reached over **Streamable HTTP** (a URL), in addition to stdio.
+  - A `[[mcp.servers]]` entry with `transport = "http"` and a `url` connects over HTTP: agent-cli POSTs JSON-RPC and accepts either a single `application/json` reply or a `text/event-stream` (SSE) reply, selecting the message matching the request id. It captures the `Mcp-Session-Id` returned by `initialize` (and the negotiated protocol version) and echoes them on subsequent requests, sends static `headers` and an `api_key_env` Bearer token, and ends the session with a best-effort `DELETE` on shutdown.
+  - New per-server config keys: `url`, `headers`, `api_key_env` (http); `command`/`args`/`env`/`cwd` remain stdio-only. HTTP servers register and behave identically to stdio ones (`mcp__<server>__<tool>`, same approval gate, same fail-soft skip-on-error).
+  - `McpClient` is generalised over an `McpTransport` seam (`StdioTransport` + new `HttpTransport` in `src/mcp/http.rs`); the handshake / `tools/list` / `tools/call` logic is shared. Reuses `reqwest` and the existing `SseAccumulator` — no new dependency. Only single-endpoint Streamable HTTP is supported (no legacy two-endpoint HTTP+SSE, no OAuth, no server→client listen stream); Linux-only.
+  - Docs updated: `doc/config.md`, `doc/usage.md` (Remote (HTTP) servers), `doc/architecture.md` (§8.3), `doc/troubleshooting.md`, `README.md`, `README_ja.md`.
+
 ## [0.8.0]
 
 ### Added

@@ -379,10 +379,29 @@ in `[[mcp.servers]]` over **stdio**. See [`doc/config.md`](config.md) `[mcp]`.
   in it; if it sets `denied_tools`, make sure the MCP name is not excluded. A
   server with `enabled = false` is not connected.
 
-### Only stdio servers work
+### HTTP server: connection refused / TLS / timeout
 
-- Only the **stdio** transport and MCP **tools** are supported. HTTP/SSE servers
-  and MCP resources/prompts are not connected this release.
+- For `transport = "http"`, verify the `url` is reachable (`curl -i <url>`) and
+  the TLS certificate is valid. An unreachable endpoint is reported by
+  `agent-cli mcp list` and skipped; raise `[mcp] init_timeout_ms` for a slow
+  server.
+
+### HTTP server: `401` / `403`
+
+- The endpoint needs auth. Set `api_key_env` (its value is sent as
+  `Authorization: Bearer <value>`) and/or static `headers` in the server entry.
+  `agent-cli mcp list` shows `api_key_env '<VAR>' is not set` when the variable
+  is missing.
+
+### HTTP server: `transport=http requires a url`
+
+- An `http` server has no `url`. Add `url = "https://…/mcp"`.
+
+### Only stdio and HTTP (Streamable) servers work
+
+- The supported transports are **stdio** and **Streamable HTTP**; the legacy
+  two-endpoint HTTP+SSE transport, OAuth, and MCP resources/prompts are not
+  connected this release.
 
 ## Context-efficiency Features (opt-in)
 

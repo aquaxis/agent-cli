@@ -116,13 +116,20 @@ keep_recent_turns  = 6
 # [mcp]
 # init_timeout_ms = 15000            # per-server handshake/list timeout
 #
-# [[mcp.servers]]
+# [[mcp.servers]]                    # stdio server (a launched subprocess)
 # name    = "filesystem"
 # command = "npx"
 # args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
 # # env     = { EXAMPLE = "1" }      # merged onto the inherited environment
 # # cwd     = "/some/dir"
 # # enabled = true                   # default: true
+#
+# [[mcp.servers]]                    # http server (Streamable HTTP)
+# name        = "remote"
+# transport   = "http"
+# url         = "https://example.com/mcp"
+# # headers     = { X-Example = "1" }         # static request headers
+# # api_key_env = "REMOTE_MCP_TOKEN"          # -> Authorization: Bearer <value>
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -439,28 +446,39 @@ pub struct McpConfig {
     pub init_timeout_ms: Option<u64>,
 }
 
-/// A single MCP server launched over stdio.
+/// A single MCP server. Reached over `stdio` (a launched subprocess, the
+/// default) or `http` (Streamable HTTP to `url`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpServerConfig {
     /// Logical name; used in the tool namespace `mcp__<name>__<tool>`.
     pub name: String,
-    /// Executable to launch (resolved on PATH or an absolute path).
+    /// Executable to launch (resolved on PATH or an absolute path). stdio only.
+    #[serde(default)]
     pub command: String,
-    /// Arguments passed to `command`.
+    /// Arguments passed to `command`. stdio only.
     #[serde(default)]
     pub args: Vec<String>,
-    /// Extra environment variables merged onto the inherited environment.
+    /// Extra environment variables merged onto the inherited environment. stdio only.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
-    /// Working directory for the child (subject to `~`/env expansion).
+    /// Working directory for the child (subject to `~`/env expansion). stdio only.
     #[serde(default)]
     pub cwd: Option<String>,
     /// Whether this server is connected. Default: true.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Transport kind; only "stdio" (the default) is supported this cycle.
+    /// Transport kind: "stdio" (default) or "http" (Streamable HTTP).
     #[serde(default)]
     pub transport: Option<String>,
+    /// HTTP endpoint URL (required when `transport = "http"`). http only.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Static request headers sent on every HTTP call. http only.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Env var whose value is sent as `Authorization: Bearer <value>`. http only.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
 }
 
 /// Default handshake/list timeout for an MCP server (milliseconds).
@@ -843,6 +861,31 @@ enabled = false
         let disabled = &cfg.mcp.servers[1];
         assert!(!disabled.enabled);
         assert!(disabled.args.is_empty());
+    }
+
+    #[test]
+    fn parses_http_mcp_server() {
+        let toml_src = r#"
+[provider]
+kind = "claude"
+
+[[mcp.servers]]
+name        = "remote"
+transport   = "http"
+url         = "https://example.com/mcp"
+headers     = { X-Example = "1" }
+api_key_env = "REMOTE_MCP_TOKEN"
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        assert_eq!(cfg.mcp.servers.len(), 1);
+        let s = &cfg.mcp.servers[0];
+        assert_eq!(s.transport.as_deref(), Some("http"));
+        assert_eq!(s.url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(s.headers.get("X-Example").map(String::as_str), Some("1"));
+        assert_eq!(s.api_key_env.as_deref(), Some("REMOTE_MCP_TOKEN"));
+        // http servers need no command; it defaults to empty.
+        assert!(s.command.is_empty());
+        assert!(s.enabled);
     }
 
     #[test]

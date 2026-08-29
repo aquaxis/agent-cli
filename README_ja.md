@@ -21,7 +21,7 @@
 - 確実なシャットダウン — `/quit`、`/exit`、`Ctrl+D`、`Ctrl+C`、`SIGTERM` のいずれでも約 1 秒以内に終了し、IPC ソケットとレジストリのメタデータを自動的に後始末します。
 - `agent-cli doctor` による自己診断と、`agent-cli selftest` による 5 段階のスモークテスト（Provider OK / bash ツール / IPC / 子プロセス登録 / 子プロセスの AI 応答）。
 - `agent-cli update` による自己アップデート — 最新の GitHub リリースを確認し、インストール先へソースからビルドし直します。`--check` は変更を加えずに更新の有無だけを報告します。
-- MCP クライアント — 外部の Model Context Protocol サーバーを `[[mcp.servers]]` に宣言すると、起動時に stdio でツールが検出され、`mcp__<server>__<tool>` としてエージェントに提供されます。`agent-cli mcp list` で確認できます。
+- MCP クライアント — 外部の Model Context Protocol サーバーを `[[mcp.servers]]` に宣言すると、起動時に **stdio**（サブプロセス）または **http**（URL への Streamable HTTP）でツールが検出され、`mcp__<server>__<tool>` としてエージェントに提供されます。`agent-cli mcp list` で確認できます。
 - `[runtime] max_tool_iterations` でツール使用ループ上限を設定可能（デフォルト 24、最大 `u32::MAX`）。下記「[info] max tool-use iterations reached」を参照。
 - Ollama の `message.thinking` フィールドは、`glm-5.1:cloud` のような思考対応モデル向けに `[thinking]` としてデコードされます。
 - オプトインのコンテキスト効率化機能（すべてデフォルト OFF）: Claude プロンプトキャッシュ、opencode ローカル永続セッション、ハイブリッド履歴ウィンドウ管理（要約してから破棄）。[`doc/config.md`](doc/config.md) §11 を参照。
@@ -404,15 +404,21 @@ agent-cli update --ref main  # ブランチ/タグからビルド（リリース
 
 agent-cli は **Model Context Protocol (MCP) クライアント**として動作できます:
 外部サーバーを `[[mcp.servers]]` に宣言すると、`run` / `serve` 時にそのツールが
-stdio で検出され、（組み込みツールと並んで、同じ承認ゲートを通して）
-`mcp__<server>__<tool>` としてエージェントに提供されます。対応するのは stdio
-トランスポートと MCP ツールのみで、Linux 専用です。
+検出され、（組み込みツールと並んで、同じ承認ゲートを通して）
+`mcp__<server>__<tool>` としてエージェントに提供されます。サーバーへは **stdio**
+（サブプロセス）または **http**（URL への Streamable HTTP）で接続します。消費する
+のは MCP ツールのみで、Linux 専用です。
 
 ```toml
-[[mcp.servers]]
+[[mcp.servers]]                 # stdio
 name    = "filesystem"
 command = "npx"
 args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+
+[[mcp.servers]]                 # http (Streamable HTTP)
+name      = "remote"
+transport = "http"
+url       = "https://example.com/mcp"
 ```
 
 ```bash

@@ -60,6 +60,11 @@ pub fn jsonrpc_notification(method: &str, params: &Value) -> Value {
 /// yields `(id, Ok(Value::Null))` and is ignored by the reader.
 pub fn parse_jsonrpc_reply(line: &str) -> Result<(Option<i64>, std::result::Result<Value, String>)> {
     let v: Value = serde_json::from_str(line)?;
+    Ok(reply_from_value(&v))
+}
+
+/// Same as [`parse_jsonrpc_reply`] but on an already-parsed message value.
+fn reply_from_value(v: &Value) -> (Option<i64>, std::result::Result<Value, String>) {
     let id = v.get("id").and_then(|i| i.as_i64());
     if let Some(err) = v.get("error") {
         let msg = err
@@ -70,12 +75,65 @@ pub fn parse_jsonrpc_reply(line: &str) -> Result<(Option<i64>, std::result::Resu
             Some(code) => format!("{msg} (code {code})"),
             None => msg.to_string(),
         };
-        return Ok((id, Err(full)));
+        return (id, Err(full));
     }
     if let Some(result) = v.get("result") {
-        return Ok((id, Ok(result.clone())));
+        return (id, Ok(result.clone()));
     }
-    Ok((id, Ok(Value::Null)))
+    (id, Ok(Value::Null))
+}
+
+/// Parse de-framed SSE `data:` payloads (from `SseAccumulator::drain_frames`)
+/// into JSON-RPC messages, skipping any frame that is not valid JSON (blank
+/// lines, keepalives, `event:`-only frames).
+pub fn sse_frames_to_messages(frames: &[String]) -> Vec<Value> {
+    frames
+        .iter()
+        .filter_map(|f| serde_json::from_str::<Value>(f).ok())
+        .collect()
+}
+
+/// From a batch of JSON-RPC messages, return the reply matching `id`:
+/// `Some(Ok(result))` / `Some(Err(message))` / `None` if not present.
+pub fn select_reply_by_id(
+    messages: &[Value],
+    id: i64,
+) -> Option<std::result::Result<Value, String>> {
+    for m in messages {
+        let (mid, payload) = reply_from_value(m);
+        if mid == Some(id) {
+            return Some(payload);
+        }
+    }
+    None
+}
+
+/// Assemble the header list for an HTTP MCP request: the fixed `Content-Type` /
+/// `Accept`, then static headers, then optional Bearer / session-id / protocol
+/// version. Pure so it can be unit-tested without a client.
+pub fn http_request_headers(
+    static_pairs: &[(String, String)],
+    bearer: Option<&str>,
+    session_id: Option<&str>,
+    protocol_version: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = vec![
+        ("Content-Type".into(), "application/json".into()),
+        ("Accept".into(), "application/json, text/event-stream".into()),
+    ];
+    for (k, v) in static_pairs {
+        out.push((k.clone(), v.clone()));
+    }
+    if let Some(b) = bearer {
+        out.push(("Authorization".into(), format!("Bearer {b}")));
+    }
+    if let Some(s) = session_id {
+        out.push(("Mcp-Session-Id".into(), s.to_string()));
+    }
+    if let Some(p) = protocol_version {
+        out.push(("MCP-Protocol-Version".into(), p.to_string()));
+    }
+    out
 }
 
 /// Extract the tool definitions from a `tools/list` result. Tools without a
@@ -217,6 +275,46 @@ mod tests {
         assert_eq!(defs[1].name, "t2");
         assert_eq!(defs[1].description, "");
         assert_eq!(defs[1].input_schema, json!({"type": "object"}));
+    }
+
+    #[test]
+    fn sse_frames_parse_and_select_by_id() {
+        // Frames as SseAccumulator would yield them (data: prefixes stripped).
+        let frames = vec![
+            r#"{"jsonrpc":"2.0","method":"notifications/message","params":{}}"#.to_string(),
+            "not json - keepalive".to_string(),
+            r#"{"jsonrpc":"2.0","id":7,"result":{"ok":true}}"#.to_string(),
+        ];
+        let msgs = sse_frames_to_messages(&frames);
+        assert_eq!(msgs.len(), 2, "non-JSON frame is skipped");
+
+        // The reply with the matching id is selected past the interim notification.
+        let sel = select_reply_by_id(&msgs, 7).expect("reply present");
+        assert_eq!(sel.unwrap(), json!({"ok": true}));
+
+        // An error reply maps to Err; a missing id is None.
+        let errs = sse_frames_to_messages(&[
+            r#"{"jsonrpc":"2.0","id":8,"error":{"code":-32000,"message":"nope"}}"#.to_string(),
+        ]);
+        assert_eq!(select_reply_by_id(&errs, 8).unwrap().unwrap_err(), "nope (code -32000)");
+        assert!(select_reply_by_id(&errs, 999).is_none());
+    }
+
+    #[test]
+    fn http_headers_assembly() {
+        let statics = vec![("X-Example".to_string(), "1".to_string())];
+        let h = http_request_headers(&statics, Some("tok"), Some("sess-1"), Some("2024-11-05"));
+        assert!(h.contains(&("Content-Type".into(), "application/json".into())));
+        assert!(h.contains(&("Accept".into(), "application/json, text/event-stream".into())));
+        assert!(h.contains(&("X-Example".into(), "1".into())));
+        assert!(h.contains(&("Authorization".into(), "Bearer tok".into())));
+        assert!(h.contains(&("Mcp-Session-Id".into(), "sess-1".into())));
+        assert!(h.contains(&("MCP-Protocol-Version".into(), "2024-11-05".into())));
+
+        // Optionals omitted when None.
+        let h2 = http_request_headers(&[], None, None, None);
+        assert_eq!(h2.len(), 2);
+        assert!(!h2.iter().any(|(k, _)| k == "Authorization"));
     }
 
     #[test]
