@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.9.0]
+
 ### Added
 
 - MCP HTTP/SSE transport — MCP servers can now be reached over **Streamable HTTP** (a URL), in addition to stdio.
@@ -137,7 +139,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/aquaxis/agent-cli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/aquaxis/agent-cli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/aquaxis/agent-cli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/aquaxis/agent-cli/compare/v0.5.0...v0.6.0
