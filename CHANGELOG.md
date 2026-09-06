@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.10.0]
+
 ### Added
 
 - `Esc` during execution returns to the prompt — pressing `Esc` (or `Ctrl+C`) while the agent is streaming a response, running a tool, or waiting for tool approval stops the turn and hands the prompt straight back.
@@ -150,7 +152,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/aquaxis/agent-cli/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/aquaxis/agent-cli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/aquaxis/agent-cli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/aquaxis/agent-cli/compare/v0.6.0...v0.7.0
