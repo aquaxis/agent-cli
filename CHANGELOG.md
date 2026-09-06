@@ -4,6 +4,40 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.10.0]
+
+### Added
+
+- `Esc` during execution returns to the prompt — pressing `Esc` (or `Ctrl+C`) while the agent is streaming a response, running a tool, or waiting for tool approval stops the turn and hands the prompt straight back.
+  - The prompt never waits for the agent: the REPL prints `[cancelled]`, leaves the `Pending` state and redraws immediately, and accepts the next input at once. At the approval prompt, `Esc` also denies the pending tool (`Ctrl+C` keeps its usual clear-line / exit meaning there); at an idle prompt both keys behave exactly as before.
+  - A shared cancellation token (`AtomicBool` + `Notify`) is observed by `process_turn` at every await point — the tool-iteration boundary, the provider stream (a `biased` `select!`, so the response body read is dropped mid-stream) and the tool invocation (an already-running tool is abandoned). The turn then ends with exactly one `Done`.
+  - The conversation stays usable: every tool call left without a result is recorded as `cancelled by user`, so the assistant message's `tool_calls` stay balanced and the next prompt is still a valid request. The partial answer is kept in history.
+  - The cancelled turn's remaining output is discarded instead of printing over the new prompt, and its completion no longer releases a later turn from `Pending`.
+  - `/cancel` now raises the same signal — it stops an in-flight turn (e.g. one started by a peer prompt) rather than only requesting it.
+  - Not affected: a process a tool already spawned is not killed; it ends on its own `[tools.bash] timeout_ms`. No new dependency; Linux-only as before.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/usage.md`, `doc/config.md`, `doc/architecture.md` (§3.1), `doc/troubleshooting.md`.
+
+## [0.9.0]
+
+### Added
+
+- MCP HTTP/SSE transport — MCP servers can now be reached over **Streamable HTTP** (a URL), in addition to stdio.
+  - A `[[mcp.servers]]` entry with `transport = "http"` and a `url` connects over HTTP: agent-cli POSTs JSON-RPC and accepts either a single `application/json` reply or a `text/event-stream` (SSE) reply, selecting the message matching the request id. It captures the `Mcp-Session-Id` returned by `initialize` (and the negotiated protocol version) and echoes them on subsequent requests, sends static `headers` and an `api_key_env` Bearer token, and ends the session with a best-effort `DELETE` on shutdown.
+  - New per-server config keys: `url`, `headers`, `api_key_env` (http); `command`/`args`/`env`/`cwd` remain stdio-only. HTTP servers register and behave identically to stdio ones (`mcp__<server>__<tool>`, same approval gate, same fail-soft skip-on-error).
+  - `McpClient` is generalised over an `McpTransport` seam (`StdioTransport` + new `HttpTransport` in `src/mcp/http.rs`); the handshake / `tools/list` / `tools/call` logic is shared. Reuses `reqwest` and the existing `SseAccumulator` — no new dependency. Only single-endpoint Streamable HTTP is supported (no legacy two-endpoint HTTP+SSE, no OAuth, no server→client listen stream); Linux-only.
+  - Docs updated: `doc/config.md`, `doc/usage.md` (Remote (HTTP) servers), `doc/architecture.md` (§8.3), `doc/troubleshooting.md`, `README.md`, `README_ja.md`.
+
+## [0.8.0]
+
+### Added
+
+- MCP client — agent-cli can now access external **Model Context Protocol (MCP) servers** and offer their tools to the agent.
+  - Declare servers in a new `[[mcp.servers]]` config section (`name`, `command`, `args`, `env`, `cwd`, `enabled`, `transport`) with an optional `[mcp] init_timeout_ms`. On `run` / `serve`, each enabled server is launched over **stdio**, the MCP handshake runs (`initialize` → `notifications/initialized` → `tools/list`), and every discovered tool is registered under a namespaced name **`mcp__<server>__<tool>`** so it never collides with a built-in or another server.
+  - MCP tools flow through the normal agent loop and approval gate; invoking one forwards to the server's `tools/call` and flattens the result (an MCP `isError` becomes a tool error, not a hard failure). A server that fails to launch, handshake, or list within `init_timeout_ms` is logged and **skipped** — startup never aborts on a bad server, and server subprocesses are terminated on shutdown.
+  - New `agent-cli mcp list` subcommand connects to the configured servers and lists their tools; `agent-cli doctor` gains an MCP section reporting each server's reachability and tool count.
+  - Only the stdio transport and MCP tools are supported (HTTP/SSE and resources/prompts are not); Linux-only. No new dependency (JSON-RPC over `tokio::process` + `serde_json`); the `Tool` trait's `name`/`description` now return `&str` to carry runtime-discovered names (built-ins unchanged).
+  - Docs updated: `doc/config.md` (`[mcp]` / `[[mcp.servers]]`), `doc/usage.md` (MCP servers), `doc/architecture.md` (§8.3), `doc/troubleshooting.md` (MCP Issues), `README.md`, `README_ja.md`.
+
 ## [0.7.0]
 
 ### Added
@@ -118,7 +152,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/aquaxis/agent-cli/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/aquaxis/agent-cli/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/aquaxis/agent-cli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/aquaxis/agent-cli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/aquaxis/agent-cli/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/aquaxis/agent-cli/compare/v0.4.0...v0.5.0

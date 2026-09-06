@@ -14,11 +14,12 @@ mod history;
 mod id;
 mod ipc;
 mod log;
+mod mcp;
 mod persona;
 mod tools;
 mod update;
 
-use crate::cli::{Cli, Command, ConfigAction};
+use crate::cli::{Cli, Command, ConfigAction, McpAction};
 use crate::error::Result;
 
 #[tokio::main]
@@ -110,6 +111,12 @@ async fn run() -> Result<()> {
             ConfigAction::Path => {
                 println!("{}", source.path.display());
                 Ok(())
+            }
+        },
+        Command::Mcp { action } => match action {
+            McpAction::List => {
+                let cfg = config::load(&source)?;
+                commands::mcp_list(&cfg).await
             }
         },
     }

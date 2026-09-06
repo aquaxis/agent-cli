@@ -31,6 +31,7 @@ agent-cli [--config <path>] <subcommand>
 | `agent-cli config show` | Print current configuration |
 | `agent-cli config edit` | Open config in `$EDITOR` |
 | `agent-cli config path` | Print resolved config path |
+| `agent-cli mcp list` | Connect to the configured MCP servers and list their tools. See [MCP servers](#mcp-servers) |
 
 ### `run` subcommand options
 
@@ -136,6 +137,70 @@ agent-cli update --force          # reinstall even if already up to date
   location and moves the binary into place; success is reported only after the
   new binary answers `--version`.
 
+## MCP servers
+
+agent-cli can act as a **Model Context Protocol (MCP) client**: it connects to
+external MCP servers declared in the config file, discovers the tools they
+expose, and makes those tools available to the agent alongside the built-ins.
+Servers are reached over **stdio** (a launched subprocess, the default) or
+**http** (Streamable HTTP to a URL). Only MCP **tools** are consumed
+(not resources/prompts); it is Linux-only.
+
+Declare servers under `[[mcp.servers]]` (see
+[`doc/config.md`](config.md) `[mcp]` / `[[mcp.servers]]`):
+
+```toml
+[mcp]
+init_timeout_ms = 15000            # per-server handshake/list timeout (optional)
+
+[[mcp.servers]]
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+# env     = { EXAMPLE = "1" }      # merged onto the inherited environment
+# cwd     = "/some/dir"
+# enabled = true                   # default: true
+```
+
+On `run` / `serve`, each enabled server is launched at startup, and every tool
+it advertises is registered under a namespaced name **`mcp__<server>__<tool>`**
+(e.g. `mcp__filesystem__read_file`), so it never collides with a built-in or
+another server. The model calls it exactly like any other tool, and the call
+passes through the normal approval gate (unless `--auto-approve-tools`).
+
+```text
+agent-cli mcp list                 # connect and list each server's tools
+```
+
+### Remote (HTTP) servers
+
+Set `transport = "http"` and a `url` to reach a server over **Streamable HTTP**
+instead of launching a subprocess:
+
+```toml
+[[mcp.servers]]
+name        = "remote"
+transport   = "http"
+url         = "https://example.com/mcp"
+# headers     = { X-Example = "1" }        # static request headers
+# api_key_env = "REMOTE_MCP_TOKEN"         # -> Authorization: Bearer <value>
+```
+
+agent-cli POSTs JSON-RPC to `url` and accepts either a single `application/json`
+reply or a `text/event-stream` (SSE) reply, echoing the server's `Mcp-Session-Id`
+on subsequent requests. Auth is via `headers` and/or `api_key_env` (Bearer);
+OAuth and the legacy two-endpoint HTTP+SSE transport are not supported. HTTP
+servers register and behave identically to stdio ones (`mcp__<server>__<tool>`,
+same approval gate, same fail-soft handling).
+
+A server that fails to launch/connect, handshake, or list within
+`init_timeout_ms` is logged and **skipped** — the remaining servers and the
+built-in tools are unaffected, and startup never aborts on a bad server. stdio
+subprocesses are terminated when the session ends; an HTTP session is ended with
+a best-effort `DELETE`. Use `agent-cli doctor` to see each server's reachability
+and tool count. See [Troubleshooting](troubleshooting.md#mcp-issues) for common
+problems.
+
 ## REPL Commands
 
 In the REPL, lines starting with `/` are commands; everything else is a normal prompt to the active agent.
@@ -152,7 +217,7 @@ In the REPL, lines starting with `/` are commands; everything else is a normal p
 | `/peer <id_or_name>` | Show a peer's persona summary |
 | `/history [n]` | Show last n (default 20) user inputs |
 | `/clear`, `/reset` | Clear conversation history (system prompt = persona is kept; User / Assistant / ToolResult are all removed) |
-| `/cancel` | Request cancellation of in-flight processing (request only; no guarantee of immediate stream stop) |
+| `/cancel` | Stop the in-flight turn (same signal as `Esc` during execution); useful when the turn was started by a peer prompt |
 | `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime. No argument or `status` shows the current value |
 | `/commands` | List custom slash commands with their first line and file path |
 | `/reload-commands` | Re-scan the custom commands directory without restarting |
@@ -171,8 +236,8 @@ When stdin is a terminal, the prompt runs in raw mode and supports in-place line
 | `Ctrl+A` / `Home` | Move to the start of the line |
 | `Ctrl+E` / `End` | Move to the end of the line |
 | `Backspace` / `Delete` | Delete the character before / at the cursor |
-| `Esc` | Leave history browsing; on a normal line, clear it |
-| `Ctrl+C` | Clear the line; on an empty line, exit |
+| `Esc` | While the agent is working, stop the turn and return to the prompt at once; at an idle prompt, leave history browsing or clear the line |
+| `Ctrl+C` | While the agent is working, same as `Esc`; at an idle prompt, clear the line, and on an empty line, exit |
 | `Ctrl+D` | Exit on an empty line; ignored otherwise |
 | `Tab` | Complete the slash command being typed (see below) |
 
@@ -181,6 +246,7 @@ Notes:
 - **Draft preservation**: the line you were typing is saved when you first press `↑`, and restored when you press `↓` past the newest history entry.
 - **Command candidates**: while the line starts with `/` and contains no space, the matching command names are listed on the line **above** the prompt, so the line you are typing stays put instead of being pushed around. Keep typing to narrow the list, or press `Enter` — prefix resolution is described under "Custom Slash Commands".
 - **Tab completion**: `Tab` completes the command name from that same candidate list. One match completes it and adds a space, ready for an argument (`/sen` → `/send `). Several matches extend the line as far as the candidates agree (`/rel` → `/reload-`), leaving the list on screen to choose from. When there is nothing to add — no match, an already-settled name, or an argument already started — `Tab` does nothing. Built-in and custom commands complete alike.
+- **Stopping a turn**: while the agent is streaming a response, running a tool, or waiting for tool approval, `Esc` (or `Ctrl+C`) prints `[cancelled]` and hands the prompt straight back — it does not wait for the model or the tool. The remaining output of that turn is discarded, a tool call cut short is recorded as `cancelled by user`, and the next prompt continues the same conversation. At the approval prompt, `Esc` also denies the pending tool. See "Cancelling a running turn" in [`doc/troubleshooting.md`](troubleshooting.md) for what cancelling does *not* stop.
 - **Display width**: full-width characters (CJK) are counted as two columns, so cursor positioning stays correct in mixed-width lines.
 - **TTY requirement**: raw mode is only enabled when stdin is a terminal. With piped or redirected input the REPL falls back to line-buffered reading, where the editing keys, the candidate list, and `Tab` completion are unavailable — everything else (tools, custom commands, peer messaging) works unchanged. See "Non-interactive / Scripted Use".
 
@@ -272,7 +338,8 @@ The REPL renders `Info` variants of `AgentEvent` with an `[info]` prefix. `Info`
 
 | Message | Trigger | What happens next |
 |---------|---------|-------------------|
-| `[info] cancel requested` | `/cancel` entered | Sends a cancellation request to in-flight processing (no guarantee of immediate stop) |
+| `[info] cancelled by user` | `/cancel` stopped a turn that was running in the background (e.g. one started by a peer prompt) | The turn stops at its next await point; any tool call without a result is recorded as `cancelled by user` so the conversation stays usable. After `Esc` the same turn ends silently — its output is discarded and only `[cancelled]` is shown |
+| `[info] cancel requested` | `/cancel` entered while the agent is idle | Nothing is in flight, so there is nothing to stop |
 | `[info] history persisted (N entries)` | History save trigger (e.g. `/history`) | Flush to input history file complete |
 | `[info] system prompt updated` | `/reload-persona` replaced the system prompt at the head of history | Subsequent responses use the new system prompt |
 | `[info] history cleared (N message(s) removed)` | `/clear` / `/reset` cleared conversation history | System prompt (persona) kept; User / Assistant / ToolResult all removed |

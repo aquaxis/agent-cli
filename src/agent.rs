@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures::stream::StreamExt;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::ai::{Message, Provider, ProviderEvent, ToolCall};
 use crate::config::{Config, ConfigSource};
@@ -21,6 +21,69 @@ pub struct ApprovalRequest {
     pub tool_name: String,
     pub args: Value,
     pub response: oneshot::Sender<bool>,
+}
+
+/// Cooperative cancellation shared by the REPL input loop and the agent task.
+///
+/// `flag` makes the state pollable at loop boundaries, `notify` wakes up an
+/// in-flight await so a cancel is noticed without waiting for the next provider
+/// chunk or for a tool to return. Shared as `Arc<CancelToken>`, in the same way
+/// as `Agent::auto_approve`.
+#[derive(Debug, Default)]
+pub struct CancelToken {
+    flag: AtomicBool,
+    notify: Notify,
+}
+
+impl CancelToken {
+    /// Raise the cancellation (idempotent) and wake every `cancelled()` waiter.
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Clear the flag. Called at the start of every turn so a cancellation
+    /// raised while the agent was idle never leaks into a later turn.
+    pub fn reset(&self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
+
+    /// Resolve as soon as the token is cancelled. The `notified()` future is
+    /// registered *before* the flag is re-checked, so a cancellation raised
+    /// between the two cannot be missed.
+    pub async fn cancelled(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+/// Content recorded for a tool call that never produced a result because the
+/// turn was cancelled.
+const CANCELLED_TOOL_OUTPUT: &str = "cancelled by user";
+
+/// One `Message::ToolResult` per tool call left unresolved by a cancellation.
+///
+/// An assistant message carrying `tool_calls` must be followed by a matching
+/// result for every call, otherwise the next request is rejected by
+/// OpenAI-shaped providers — so a cancelled turn fills the gaps itself.
+pub fn cancel_tool_results(unresolved: &[(String, String, Value)]) -> Vec<Message> {
+    unresolved
+        .iter()
+        .map(|(id, _name, _args)| Message::ToolResult {
+            tool_use_id: id.clone(),
+            content: CANCELLED_TOOL_OUTPUT.to_string(),
+            is_error: true,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +147,9 @@ pub struct Agent {
     pub log: Option<ConversationLog>,
     /// Shared via `Arc<AtomicBool>` for runtime toggle via `/auto` REPL command (FR-04-2).
     pub auto_approve: Arc<AtomicBool>,
+    /// Raised by the REPL when the user presses `Esc` / `Ctrl-C` during a turn
+    /// (or types `/cancel`); observed at every await point of `process_turn`.
+    pub cancel: Arc<CancelToken>,
     /// Channel to send approval requests to the input loop. `None` means approval is not possible, so deny (FR-04-1).
     pub approval_tx: Option<mpsc::Sender<ApprovalRequest>>,
     pub history: Vec<Message>,
@@ -216,6 +282,10 @@ impl Agent {
         event_tx: &mpsc::Sender<AgentEvent>,
         log: Option<&ConversationLog>,
     ) -> Result<()> {
+        // A cancellation raised while the agent was idle (e.g. `/cancel` at the
+        // prompt) must not cancel this fresh turn.
+        self.cancel.reset();
+
         // Hybrid history-window management (opt-in `[history]`). Runs before
         // the provider call so the compacted history is what gets sent.
         if self.config.history.enabled {
@@ -228,6 +298,9 @@ impl Agent {
         // lint feedback) finish their final fs_write inside the loop.
         let max_iterations = self.config.runtime.max_tool_iterations.max(1);
         for _ in 0..max_iterations {
+            if self.cancel.is_cancelled() {
+                return self.finish_cancelled(event_tx, log, &[]).await;
+            }
             let specs = self.tools.specs();
             let mut stream = match self.provider.complete_stream(&self.history, &specs).await {
                 Ok(s) => s,
@@ -248,8 +321,23 @@ impl Agent {
             let mut reasoning = String::new();
             let mut pending_tools: Vec<(String, String, Value)> = Vec::new();
             let mut had_error = false;
+            let mut cancelled = false;
 
-            while let Some(ev) = stream.next().await {
+            loop {
+                // `biased` so a raised cancellation wins over an already-ready
+                // chunk; on cancel the stream is dropped, ending the response
+                // body read.
+                let ev = tokio::select! {
+                    biased;
+                    _ = self.cancel.cancelled() => {
+                        cancelled = true;
+                        break;
+                    }
+                    ev = stream.next() => match ev {
+                        Some(ev) => ev,
+                        None => break,
+                    },
+                };
                 match ev {
                     ProviderEvent::Thinking { text } => {
                         if let Some(l) = log {
@@ -279,6 +367,9 @@ impl Agent {
                     ProviderEvent::Done => break,
                 }
             }
+            // Release the borrow on `self.provider` (and end the response body
+            // read when the drain was cut short by a cancellation).
+            drop(stream);
 
             // Record the assistant turn (with the tool calls it made) BEFORE
             // any ToolResult is appended. A tool-only turn has empty text but
@@ -320,6 +411,13 @@ impl Agent {
                 });
             }
 
+            // Cancelled mid-stream: the partial assistant message is kept (the
+            // next prompt continues from there), but every tool call it made
+            // still needs a result before the history can be sent again.
+            if cancelled {
+                return self.finish_cancelled(event_tx, log, &pending_tools).await;
+            }
+
             if had_error || pending_tools.is_empty() {
                 let _ = event_tx.send(AgentEvent::Done).await;
                 return Ok(());
@@ -333,7 +431,16 @@ impl Agent {
                 config_source: self.config_source.clone(),
                 event_tx: Some(event_tx.clone()),
             };
-            for (id, name, args) in pending_tools {
+            // Index-based so a cancellation can hand the calls that were never
+            // executed to `finish_cancelled`.
+            let mut next_tool = 0usize;
+            while next_tool < pending_tools.len() {
+                if self.cancel.is_cancelled() {
+                    let unresolved = pending_tools[next_tool..].to_vec();
+                    return self.finish_cancelled(event_tx, log, &unresolved).await;
+                }
+                let (id, name, args) = pending_tools[next_tool].clone();
+                next_tool += 1;
                 let _ = event_tx
                     .send(AgentEvent::ToolCall {
                         name: name.clone(),
@@ -380,12 +487,30 @@ impl Agent {
                     }
                 }
 
-                let result = match self.tools.get(&name) {
-                    Some(tool) => match tool.invoke(args.clone(), &ctx).await {
-                        Ok(out) => out,
-                        Err(e) => crate::tools::ToolOutput::err(format!("tool {name} error: {e}")),
+                // `None` means the invocation was abandoned because the user
+                // cancelled while it was running (the tool's own timeout bounds
+                // whatever it already started).
+                let invoked = match self.tools.get(&name) {
+                    Some(tool) => tokio::select! {
+                        biased;
+                        _ = self.cancel.cancelled() => None,
+                        r = tool.invoke(args.clone(), &ctx) => Some(match r {
+                            Ok(out) => out,
+                            Err(e) => {
+                                crate::tools::ToolOutput::err(format!("tool {name} error: {e}"))
+                            }
+                        }),
                     },
-                    None => crate::tools::ToolOutput::err(format!("tool not found: {name}")),
+                    None => Some(crate::tools::ToolOutput::err(format!(
+                        "tool not found: {name}"
+                    ))),
+                };
+                let result = match invoked {
+                    Some(r) => r,
+                    None => {
+                        let unresolved = pending_tools[next_tool - 1..].to_vec();
+                        return self.finish_cancelled(event_tx, log, &unresolved).await;
+                    }
                 };
                 if let Some(l) = log {
                     l.write(LogEvent::ToolResult {
@@ -414,6 +539,44 @@ impl Agent {
         let _ = event_tx
             .send(AgentEvent::Info {
                 message: "max tool-use iterations reached".into(),
+            })
+            .await;
+        let _ = event_tx.send(AgentEvent::Done).await;
+        Ok(())
+    }
+
+    /// Close out a cancelled turn: give every tool call that never produced a
+    /// result the `cancelled by user` placeholder (so the history stays a valid
+    /// request), then emit exactly one terminal `Done` preceded by an `Info`.
+    /// Never fails — the agent task stays alive for the next input.
+    async fn finish_cancelled(
+        &mut self,
+        event_tx: &mpsc::Sender<AgentEvent>,
+        log: Option<&ConversationLog>,
+        unresolved: &[(String, String, Value)],
+    ) -> Result<()> {
+        for (_id, name, _args) in unresolved {
+            if let Some(l) = log {
+                l.write(LogEvent::ToolResult {
+                    name,
+                    ok: false,
+                    output: CANCELLED_TOOL_OUTPUT,
+                })
+                .await
+                .ok();
+            }
+            let _ = event_tx
+                .send(AgentEvent::ToolResult {
+                    name: name.clone(),
+                    ok: false,
+                    output: CANCELLED_TOOL_OUTPUT.into(),
+                })
+                .await;
+        }
+        self.history.extend(cancel_tool_results(unresolved));
+        let _ = event_tx
+            .send(AgentEvent::Info {
+                message: CANCELLED_TOOL_OUTPUT.into(),
             })
             .await;
         let _ = event_tx.send(AgentEvent::Done).await;
@@ -590,6 +753,172 @@ mod tests {
         let _ = handle.await;
     }
 
+    // --- Cancellation (Esc during a turn) ---
+
+    #[test]
+    fn cancel_tool_results_fills_every_unresolved_call() {
+        let unresolved = vec![
+            ("call-1".to_string(), "bash".to_string(), serde_json::json!({})),
+            ("call-2".to_string(), "read".to_string(), serde_json::json!({})),
+        ];
+        let msgs = cancel_tool_results(&unresolved);
+        assert_eq!(msgs.len(), 2);
+        for (msg, (id, _, _)) in msgs.iter().zip(unresolved.iter()) {
+            match msg {
+                Message::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } => {
+                    assert_eq!(tool_use_id, id);
+                    assert_eq!(content, "cancelled by user");
+                    assert!(is_error);
+                }
+                other => panic!("expected a ToolResult, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_tool_results_on_empty_input_is_empty() {
+        assert!(cancel_tool_results(&[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_token_resolves_even_when_raised_before_the_await() {
+        let token = CancelToken::default();
+        assert!(!token.is_cancelled());
+        token.cancel();
+        assert!(token.is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(1), token.cancelled())
+            .await
+            .expect("cancelled() must resolve immediately when already cancelled");
+        token.reset();
+        assert!(!token.is_cancelled());
+    }
+
+    /// Cancelling while a tool is running abandons the invocation, gives the
+    /// call a `cancelled by user` result (so the history stays a valid request),
+    /// and ends the turn with exactly one `Done`.
+    #[tokio::test]
+    async fn cancel_during_tool_call_ends_turn_with_well_formed_history() {
+        let scripts = vec![vec![
+            ProviderEvent::ToolUse {
+                id: "call-1".into(),
+                name: "bash".into(),
+                args: serde_json::json!({ "command": "sleep 20" }),
+            },
+            ProviderEvent::Done,
+        ]];
+        let mut agent =
+            build_test_agent(scripts, Agent::build_initial_history(&Persona::builtin_default()));
+        agent.history.push(Message::User {
+            content: "run it".into(),
+        });
+        let token = agent.cancel.clone();
+
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+        // Cancel as soon as the tool call starts, then collect the rest.
+        let collector = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(ev) = ev_rx.recv().await {
+                let is_tool_call = matches!(ev, AgentEvent::ToolCall { .. });
+                let is_done = matches!(ev, AgentEvent::Done);
+                events.push(ev);
+                if is_tool_call {
+                    token.cancel();
+                }
+                if is_done {
+                    break;
+                }
+            }
+            events
+        });
+
+        let started = std::time::Instant::now();
+        agent.process_turn(&ev_tx, None).await.unwrap();
+        let elapsed = started.elapsed();
+        drop(ev_tx);
+        let events = collector.await.unwrap();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "the running tool should be abandoned, not awaited (took {elapsed:?})"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::Done))
+                .count(),
+            1,
+            "a cancelled turn emits exactly one Done"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AgentEvent::ToolResult { ok: false, output, .. } if output == "cancelled by user"
+            )),
+            "the abandoned call should report a cancelled tool result: {events:?}"
+        );
+
+        // Every tool call of the assistant message has a matching result.
+        let calls: Vec<String> = agent
+            .history
+            .iter()
+            .flat_map(|m| match m {
+                Message::Assistant { tool_calls, .. } => {
+                    tool_calls.iter().map(|c| c.id.clone()).collect()
+                }
+                _ => Vec::new(),
+            })
+            .collect();
+        let results: Vec<String> = agent
+            .history
+            .iter()
+            .filter_map(|m| match m {
+                Message::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, vec!["call-1".to_string()]);
+        assert_eq!(results, calls, "each tool call must have a result");
+    }
+
+    /// A cancellation raised while the agent is idle (e.g. `/cancel` typed at
+    /// the prompt) must not cancel the next turn.
+    #[tokio::test]
+    async fn cancel_raised_while_idle_does_not_cancel_the_next_turn() {
+        let scripts = vec![vec![
+            ProviderEvent::Text {
+                delta: "answer".into(),
+            },
+            ProviderEvent::Done,
+        ]];
+        let mut agent =
+            build_test_agent(scripts, Agent::build_initial_history(&Persona::builtin_default()));
+        agent.history.push(Message::User {
+            content: "hello".into(),
+        });
+        agent.cancel.cancel();
+
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+        agent.process_turn(&ev_tx, None).await.unwrap();
+        drop(ev_tx);
+
+        let mut text = String::new();
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::Text { delta } => text.push_str(&delta),
+                AgentEvent::Info { message } => {
+                    assert_ne!(message, "cancelled by user", "the turn must not be cancelled")
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(text, "answer");
+        assert!(!agent.cancel.is_cancelled(), "the turn start clears the flag");
+    }
+
     fn build_test_agent(scripts: Vec<Vec<ProviderEvent>>, history: Vec<Message>) -> Agent {
         let cfg: Config = toml::from_str(crate::config::tests_default_config()).unwrap();
         let tools = ToolRegistry::build(&cfg, None, None);
@@ -605,6 +934,7 @@ mod tests {
             registry_dir: PathBuf::from("/tmp/agent-cli-tests"),
             log: None,
             auto_approve: Arc::new(AtomicBool::new(true)),
+            cancel: Arc::new(CancelToken::default()),
             approval_tx: None,
             history,
         }

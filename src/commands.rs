@@ -421,10 +421,57 @@ pub async fn providers(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// `agent-cli mcp list` — connect to the configured MCP servers and print each
+/// server's status and the tools it exposes (namespaced `mcp__<server>__<tool>`).
+/// A server that fails to connect is reported but does not abort the command.
+pub async fn mcp_list(cfg: &Config) -> Result<()> {
+    if cfg.mcp.servers.is_empty() {
+        println!("No MCP servers configured. Add a [[mcp.servers]] entry to your config.");
+        return Ok(());
+    }
+    for probe in crate::mcp::probe_all(&cfg.mcp).await {
+        if !probe.enabled {
+            println!("- {} (disabled)", probe.name);
+            continue;
+        }
+        match probe.outcome {
+            Ok(tools) => {
+                println!("- {} ({} tool(s))", probe.name, tools.len());
+                for t in tools {
+                    println!("    {t}");
+                }
+            }
+            Err(e) => println!("- {} ERROR: {e}", probe.name),
+        }
+    }
+    Ok(())
+}
+
 pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
     let mut all_ok = true;
     println!("[doctor] config path     : {}", source.path.display());
     println!("[doctor] config explicit : {}", source.from_explicit);
+
+    // MCP servers check (fail-soft: a bad server is reported here but never
+    // aborts startup — see `mcp::connect_all`).
+    if !cfg.mcp.servers.is_empty() {
+        println!("[doctor] mcp servers     :");
+        for probe in crate::mcp::probe_all(&cfg.mcp).await {
+            if !probe.enabled {
+                println!("[doctor]   {} ... DISABLED", probe.name);
+                continue;
+            }
+            match probe.outcome {
+                Ok(tools) => {
+                    println!("[doctor]   {} ... OK ({} tool(s))", probe.name, tools.len())
+                }
+                Err(e) => {
+                    println!("[doctor]   {} ... FAIL ({e})", probe.name);
+                    all_ok = false;
+                }
+            }
+        }
+    }
 
     // Provider check (before normalization so opencode-go appears as-is)
     let kind = cfg.provider.kind.as_str();

@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use crossterm::ExecutableCommand;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
 
-use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest};
+use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest, CancelToken};
 use crate::ai;
 use crate::cli::RunArgs;
 use crate::config::{Config, ConfigSource, ShowThinkingMode};
@@ -88,6 +88,13 @@ pub(crate) struct ReplState {
     history: RwLock<Vec<String>>,
     /// Shared via `Arc<AtomicBool>` for `/auto on|off|status` runtime toggle (FR-04-2 / design doc 4.3A).
     auto_approve: Arc<AtomicBool>,
+    /// Raised by `Esc` / `Ctrl-C` during a turn and by `/cancel`; the agent task
+    /// observes it at every await point and unwinds the turn.
+    cancel: Arc<CancelToken>,
+    /// Number of cancellations whose turn has not reached its terminal event
+    /// yet. The display task drops the events (and the idle notification) of
+    /// those turns so the cancelled tail cannot print over the fresh prompt.
+    suppress: Arc<AtomicUsize>,
     /// Resolved directory for custom slash commands (`*.md` files).
     commands_dir: PathBuf,
     /// Discovered custom commands, refreshable via `/reload-commands`.
@@ -221,13 +228,21 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // Tools
     let allowed = resolution.persona.frontmatter.allowed_tools.clone();
     let denied = resolution.persona.frontmatter.denied_tools.clone();
-    let tools = ToolRegistry::build(&config, allowed.as_deref(), denied.as_deref());
+    let mut tools = ToolRegistry::build(&config, allowed.as_deref(), denied.as_deref());
+    // Connect declared MCP servers and register their tools (fail-soft: a bad
+    // server is logged and skipped, never aborting startup).
+    let mcp_tools = crate::mcp::connect_all(&config.mcp).await;
+    tools.attach(mcp_tools, allowed.as_deref(), denied.as_deref());
     let tool_names = tools.names();
 
     let history = Agent::build_initial_history(&resolution.persona);
     let auto_approve = Arc::new(AtomicBool::new(
         config.runtime.auto_approve_tools || args.auto_approve_tools,
     ));
+    // Cancellation plumbing: the token stops the agent, the counter tells the
+    // display task how many cancelled turns are still draining.
+    let cancel = Arc::new(CancelToken::default());
+    let suppress = Arc::new(AtomicUsize::new(0));
 
     // Approval channel (FR-04-1 / design doc 4.3A). Route for agent task to request y/N from input loop.
     let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(8);
@@ -245,6 +260,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         registry_dir: registry_dir.clone(),
         log: Some(log),
         auto_approve: auto_approve.clone(),
+        cancel: cancel.clone(),
         approval_tx: Some(approval_tx),
         history,
     };
@@ -264,6 +280,8 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         history_path,
         history: RwLock::new(initial_history),
         auto_approve: auto_approve.clone(),
+        cancel: cancel.clone(),
+        suppress: suppress.clone(),
         commands_dir,
         commands: RwLock::new(initial_commands),
         config_source: source.clone(),
@@ -366,12 +384,24 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // Treating `Error` as idle is a defensive measure to prevent the input loop from
     // getting stuck in Pending forever if Provider construction fails without a `Done`.
     let show_thinking = config.ui.show_thinking_mode();
+    let display_suppress = suppress.clone();
     let display_task = tokio::spawn(async move {
         let mut display_state = DisplayState::new(stdin_is_tty());
         while let Some(ev) = event_rx.recv().await {
             let is_idle = matches!(ev, AgentEvent::Done | AgentEvent::Error { .. });
-            display_event(ev, show_thinking, &mut display_state);
-            if is_idle {
+            // While a cancelled turn is still draining, its remaining events are
+            // dropped and its terminal event yields no idle notification (it
+            // must not release a *later* turn from Pending).
+            let (drop_event, notify_idle, outstanding) =
+                suppression_decision(is_idle, display_suppress.load(Ordering::SeqCst));
+            display_suppress.store(outstanding, Ordering::SeqCst);
+            if !drop_event {
+                display_event(ev, show_thinking, &mut display_state);
+            } else if is_idle {
+                // The cancelled turn ended: start the next one from a clean slate.
+                display_state.reset();
+            }
+            if notify_idle {
                 let _ = agent_idle_tx.send(()).await;
             }
         }
@@ -479,7 +509,9 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
 
     let allowed = resolution.persona.frontmatter.allowed_tools.clone();
     let denied = resolution.persona.frontmatter.denied_tools.clone();
-    let tools = ToolRegistry::build(&config, allowed.as_deref(), denied.as_deref());
+    let mut tools = ToolRegistry::build(&config, allowed.as_deref(), denied.as_deref());
+    let mcp_tools = crate::mcp::connect_all(&config.mcp).await;
+    tools.attach(mcp_tools, allowed.as_deref(), denied.as_deref());
 
     let history = Agent::build_initial_history(&resolution.persona);
     // A headless agent has no console to answer tool-approval prompts, so it
@@ -498,6 +530,8 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         registry_dir: registry_dir.clone(),
         log: Some(log),
         auto_approve,
+        // Headless: no console, so nothing ever raises this token.
+        cancel: Arc::new(CancelToken::default()),
         approval_tx: None,
         history,
     };
@@ -841,6 +875,33 @@ fn is_cancel_key(key_event: &KeyEvent) -> bool {
             && matches!(key_event.code, KeyCode::Char('c')))
 }
 
+/// Display-side decision for one agent event while `outstanding` cancellations
+/// are still draining. Returns `(drop_event, notify_idle, new_outstanding)`.
+///
+/// With nothing outstanding this is the historical behaviour: show the event,
+/// and notify idle on a terminal one. With a cancellation outstanding, every
+/// event is dropped up to and including that turn's terminal event, which
+/// consumes exactly one outstanding cancellation and sends no idle. Since the
+/// event channel is FIFO and every turn emits exactly one terminal event, this
+/// suppresses precisely the cancelled turn's remainder — even when a new prompt
+/// was already submitted.
+fn suppression_decision(is_terminal: bool, outstanding: usize) -> (bool, bool, usize) {
+    if outstanding == 0 {
+        (false, is_terminal, 0)
+    } else if is_terminal {
+        (true, false, outstanding - 1)
+    } else {
+        (true, false, outstanding)
+    }
+}
+
+/// Book-keeping for a forced return to the prompt: raise the cancellation and
+/// record that one more turn is now draining. Returns the new outstanding count.
+fn begin_cancel(cancel: &CancelToken, suppress: &AtomicUsize) -> usize {
+    cancel.cancel();
+    suppress.fetch_add(1, Ordering::SeqCst) + 1
+}
+
 /// Handle a single key event in interactive (raw-mode) editing.
 /// Returns `Some(action)` indicating what to do next.
 enum KeyAction {
@@ -1130,13 +1191,41 @@ async fn run_input_loop_raw(
                         // buffer while the agent is processing.
                         if prompt_state.is_pending() {
                             if is_cancel_key(&key_event) {
-                                let _ = input_tx.send(AgentInput::Cancel).await;
-                                raw_eprintln(true, "[cancelling...]");
+                                // Forced return: raise the cancellation and take the
+                                // prompt back immediately, without waiting for the
+                                // agent to unwind. The token is the whole signal —
+                                // queueing an `AgentInput::Cancel` here would only be
+                                // read once the turn had already ended, and would then
+                                // print over the freshly drawn prompt.
+                                begin_cancel(&state.cancel, &state.suppress);
+                                raw_eprintln(true, "[cancelled]");
+                                prompt_state = PromptState::Ready;
+                                renderer.reset();
+                                render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
                             }
                             // All other keys during Pending are ignored.
                             continue;
                         }
                         let is_awaiting_approval = prompt_state.is_awaiting_approval();
+
+                        // Esc at the approval prompt denies the pending tool and
+                        // cancels the turn (Ctrl-C keeps its exit meaning there).
+                        if is_awaiting_approval
+                            && key_event.code == KeyCode::Esc
+                            && key_event.kind != crossterm::event::KeyEventKind::Release
+                        {
+                            let prev = std::mem::replace(&mut prompt_state, PromptState::Ready);
+                            if let PromptState::AwaitingApproval(resp_tx) = prev {
+                                let _ = resp_tx.send(false);
+                            }
+                            begin_cancel(&state.cancel, &state.suppress);
+                            renderer.clear_block(&mut stdout);
+                            raw_eprintln(true, "[cancelled]");
+                            input_state = InputState::new();
+                            renderer.reset();
+                            render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                            continue;
+                        }
 
                         // Tab completes the slash command being typed. Handled
                         // here rather than in `handle_key` because it needs the
@@ -1864,6 +1953,9 @@ async fn handle_repl_command(
         "reload-persona" => reload_persona(state, input_tx, raw_mode).await,
         "peer" => peer_summary(arg, &state.registry_dir, raw_mode),
         "cancel" => {
+            // Same signal as `Esc` during a turn: stops an in-flight turn (e.g.
+            // one started by a peer prompt) rather than merely asking for it.
+            state.cancel.cancel();
             let _ = input_tx.send(AgentInput::Cancel).await;
         }
         "commands" => {
@@ -2326,6 +2418,8 @@ mod tests {
             history_path: dir.join("history.txt"),
             history: RwLock::new(Vec::new()),
             auto_approve: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::new(CancelToken::default()),
+            suppress: Arc::new(AtomicUsize::new(0)),
             commands_dir: dir.to_path_buf(),
             commands: RwLock::new(Vec::new()),
             config_source: ConfigSource {
@@ -2893,6 +2987,43 @@ mod tests {
         assert!(!is_cancel_key(&key(KeyCode::Enter, false)));
         assert!(!is_cancel_key(&key(KeyCode::Backspace, false)));
         assert!(!is_cancel_key(&key(KeyCode::Char('d'), true)));
+    }
+
+    // --- Forced return to the prompt (Esc during a turn) ---
+
+    #[test]
+    fn suppression_decision_passes_events_through_when_nothing_is_cancelled() {
+        assert_eq!(suppression_decision(false, 0), (false, false, 0));
+        // A terminal event releases the input loop from Pending as before.
+        assert_eq!(suppression_decision(true, 0), (false, true, 0));
+    }
+
+    #[test]
+    fn suppression_decision_drops_the_cancelled_turns_tail() {
+        // Non-terminal events of the cancelled turn are dropped, and the count stays.
+        assert_eq!(suppression_decision(false, 1), (true, false, 1));
+        // Its terminal event is dropped too, consumes the cancellation, and — crucially —
+        // sends no idle, so it cannot release a later turn from Pending.
+        assert_eq!(suppression_decision(true, 1), (true, false, 0));
+        // After that the next turn displays normally again.
+        assert_eq!(suppression_decision(false, 0), (false, false, 0));
+    }
+
+    #[test]
+    fn suppression_decision_counts_repeated_cancels() {
+        assert_eq!(suppression_decision(true, 2), (true, false, 1));
+        assert_eq!(suppression_decision(true, 1), (true, false, 0));
+        assert_eq!(suppression_decision(true, 0), (false, true, 0));
+    }
+
+    #[test]
+    fn begin_cancel_raises_the_token_and_counts_the_outstanding_turn() {
+        let cancel = CancelToken::default();
+        let suppress = AtomicUsize::new(0);
+        assert_eq!(begin_cancel(&cancel, &suppress), 1);
+        assert!(cancel.is_cancelled());
+        assert_eq!(begin_cancel(&cancel, &suppress), 2);
+        assert_eq!(suppress.load(Ordering::SeqCst), 2);
     }
 
     #[test]

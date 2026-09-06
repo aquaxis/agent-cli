@@ -37,7 +37,8 @@ src/
 ├── editor.rs            ... input buffer and history cursor (InputState) / display-width math
 ├── custom_commands.rs   ... `.md` custom slash command discovery / `@file` + `$ARGUMENTS` expansion
 ├── agent.rs             ... single agent conversation loop / ApprovalRequest / request_approval
-├── commands.rs          ... list/send/ask/providers/doctor/selftest/config
+├── commands.rs          ... list/send/ask/providers/doctor/selftest/config/mcp_list
+├── update.rs            ... `update` self-update (GitHub lookup + cargo install)
 ├── config.rs            ... config file loading / resolution order
 ├── id.rs                ... AgentId
 ├── history.rs           ... opt-in history-window mgmt (estimate_tokens/old_span/render_transcript)
@@ -66,11 +67,16 @@ src/
 │   ├── websearch.rs     ... web search (config-driven)
 │   ├── webfetch.rs      ... URL fetch + HTML-to-text
 │   └── send_to.rs       ... peer prompt delivery
-└── ipc/
-    ├── mod.rs           ... IpcMessage (Prompt / PromptReply / Ack / Error / Ping / Pong / Shutdown)
-    ├── server.rs        ... UnixListener (0600) / Drop performs accept abort + socket deletion
-    ├── client.rs        ... UnixStream
-    └── registry.rs      ... <agent-id>.{sock,json} scan / Drop performs automatic cleanup
+├── ipc/
+│   ├── mod.rs           ... IpcMessage (Prompt / PromptReply / Ack / Error / Ping / Pong / Shutdown)
+│   ├── server.rs        ... UnixListener (0600) / Drop performs accept abort + socket deletion
+│   ├── client.rs        ... UnixStream
+│   └── registry.rs      ... <agent-id>.{sock,json} scan / Drop performs automatic cleanup
+└── mcp/
+    ├── mod.rs           ... MCP client: McpTool, connect_all / attach, probe_all
+    ├── client.rs        ... McpClient + McpTransport seam; StdioTransport (subprocess JSON-RPC)
+    ├── http.rs          ... HttpTransport: Streamable HTTP (POST + JSON/SSE reply, session id)
+    └── proto.rs         ... pure JSON-RPC + tools/list & tools/call & SSE/header shaping (unit-tested)
 ```
 
 Key types:
@@ -102,6 +108,7 @@ stdin -> run_input_loop -> mpsc -> Agent loop -> Provider -> ProviderEvent strea
 - Tool execution iterates up to `[runtime] max_tool_iterations` (default 24, minimum 1, maximum `u32::MAX`). See `self.config.runtime.max_tool_iterations.max(1)` in `agent.rs::process_turn`. This is a guard mechanism to prevent infinite loops. When `auto_approve_tools=false` (default), y/N confirmation is obtained via the approval channel described in 3.3.
 - On reaching the limit: If the AI continues returning `tool_use` after exhausting the configured number of iterations, the loop exits and issues `AgentEvent::Info { message: "max tool-use iterations reached" }` followed by `AgentEvent::Done` in this order. Notification goes through the Info channel rather than the Error channel (since it means "not converged" rather than "abnormal"). The REPL treats it the same as a normal `Done` and redraws the next input prompt. For meaning, mitigation, and recommended ranges, see `doc/troubleshooting.md` / `doc/config.md`.
 - `Done` is always issued not only on normal response completion but also when `provider.complete_stream` fails, ensuring the input loop never gets stuck in Pending state.
+- **Cancellation (`Esc` during a turn)**: `Esc` / `Ctrl-C` while `Pending` (and `Esc` at the approval prompt, which also denies the pending tool) calls `begin_cancel`, which raises a shared `Arc<CancelToken>` (`AtomicBool` + `Notify`, in `agent.rs`) and increments a shared `Arc<AtomicUsize>` suppression counter, then prints `[cancelled]` and flips straight back to `Ready` — the prompt never waits for the agent. `process_turn` observes the token at three points: the top of each tool iteration, a `biased` `tokio::select!` against `stream.next()` (so the response body read is dropped mid-stream), and a `select!` against `tool.invoke()` (an already-running tool is abandoned, bounded by its own timeout, not killed). It then calls `finish_cancelled`, which appends `cancel_tool_results` — one `cancelled by user` `ToolResult` per tool call left without one, so the assistant message's `tool_calls` stay balanced and the next request is still valid — and emits `Info` + exactly one `Done`. `display_task` runs each event through the pure `suppression_decision(is_terminal, outstanding)`: while a cancellation is outstanding every event is dropped up to and including that turn's terminal event, which consumes the cancellation and sends **no** idle notification. Since the event channel is FIFO and every turn emits exactly one terminal event, this suppresses precisely the cancelled turn's remainder — even if the user has already submitted a new prompt — and prevents the cancelled `Done` from releasing a later turn from `Pending`. `/cancel` raises the same token (useful for a turn started by a peer prompt); the token is reset at the start of every turn, so a cancellation raised while idle never leaks forward.
 - At startup, `display_task` resolves `ShowThinkingMode { Hidden, Collapsed, Expanded }` from `config.ui.show_thinking_mode()` and branches `AgentEvent::Thinking` rendering across 3 modes (FR-03-1-2 / Design doc 4.3C). `Hidden` skips rendering, `Collapsed` truncates to "first 80 chars + line 1" via `collapse_thinking_text()`, and `Expanded` shows full text. Setting changes take effect on restart; there is no runtime toggle.
 
 ### 3.2 Inter-Peer Messaging
@@ -374,6 +381,49 @@ dir and moves the binary into place, so the self-replace is atomic; success is
 claimed only after the new binary answers `--version`. The command needs `cargo`
 on `PATH` and is Linux-only, like the installer. `--check` performs only the
 lookup/compare and writes nothing.
+
+## 8.3 MCP access (`mcp`)
+
+`src/mcp/` implements a **Model Context Protocol client**. It plugs into the
+existing tool architecture at a single seam — the `ToolRegistry` — so an MCP tool
+is indistinguishable from a built-in to the agent loop (dispatch already keys off
+the registry map key, not the trait name).
+
+- **Pure core** (`src/mcp/proto.rs`): tool-name mangling (`mcp__<server>__<tool>`
+  + sanitization), JSON-RPC 2.0 request/notification construction, reply parsing
+  (`result` vs `error`), and shaping of `tools/list` / `tools/call` results —
+  all unit-tested without a process.
+- **Thin edges** (`src/mcp/client.rs`, `src/mcp/http.rs`): `McpClient` is
+  generalised over an `McpTransport` seam; the handshake (`initialize` →
+  `notifications/initialized` → `tools/list`) and every call are shared and
+  bounded by `init_timeout_ms`. Two backends implement the seam:
+  - `StdioTransport` (`client.rs`) — spawns the server and speaks
+    newline-delimited JSON-RPC over stdin/stdout; a background task routes
+    replies by request `id`; dropping it kills the child and stops the reader.
+  - `HttpTransport` (`http.rs`) — MCP **Streamable HTTP**: POSTs JSON-RPC to the
+    server `url` and reads either a single `application/json` reply or a
+    `text/event-stream` (SSE) stream (assembled with the shared `SseAccumulator`
+    from `src/ai/stream.rs`), selecting the message matching the request `id`. It
+    captures the `Mcp-Session-Id` and negotiated protocol version from the
+    `initialize` response and echoes them on later requests, sends static /
+    Bearer (`api_key_env`) auth headers, and ends the session with a best-effort
+    `DELETE` on drop.
+- **Registration** (`src/mcp/mod.rs`): `connect_all` connects every enabled
+  server (fail-soft — a bad server is logged and skipped), wraps each discovered
+  tool as an `McpTool` (`Arc<dyn Tool>` holding an `Arc<McpClient>`), and returns
+  them; `ToolRegistry::attach` inserts them under their namespaced key, honoring
+  the persona allow/deny filter. `run` / `serve` call this right after the
+  synchronous `ToolRegistry::build`. Invoking an `McpTool` forwards to the
+  server's `tools/call`; an MCP `isError` (or a JSON-RPC error) is surfaced as a
+  tool error, not a hard failure. `probe_all` backs `agent-cli mcp list` and the
+  `doctor` MCP check.
+
+The registry is owned by the `Agent` for the session, so the `McpClient` handles
+(and any subprocesses) live until the session ends, then drop and are cleaned up.
+No new dependency is added (JSON-RPC over `tokio::process` / `reqwest` +
+`SseAccumulator`); the stdio and Streamable-HTTP transports and MCP tools are
+supported (not resources/prompts, OAuth, or the legacy HTTP+SSE transport);
+Linux-only.
 
 ## 9. Target OS
 

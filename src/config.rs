@@ -109,6 +109,27 @@ show_thinking = "collapsed"
 enabled            = false
 max_context_tokens = 24000
 keep_recent_turns  = 6
+
+# Model Context Protocol (MCP) servers. Each enabled server is launched over
+# stdio at startup; its tools are registered as mcp__<name>__<tool>. Only the
+# stdio transport (and MCP tools) are supported. Example:
+# [mcp]
+# init_timeout_ms = 15000            # per-server handshake/list timeout
+#
+# [[mcp.servers]]                    # stdio server (a launched subprocess)
+# name    = "filesystem"
+# command = "npx"
+# args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+# # env     = { EXAMPLE = "1" }      # merged onto the inherited environment
+# # cwd     = "/some/dir"
+# # enabled = true                   # default: true
+#
+# [[mcp.servers]]                    # http server (Streamable HTTP)
+# name        = "remote"
+# transport   = "http"
+# url         = "https://example.com/mcp"
+# # headers     = { X-Example = "1" }         # static request headers
+# # api_key_env = "REMOTE_MCP_TOKEN"          # -> Authorization: Bearer <value>
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +143,8 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default)]
     pub history: HistoryConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -406,6 +429,65 @@ pub struct WebSearchConfig {
     /// Search provider identifier (e.g. "tavily", "brave"). Default: "tavily".
     #[serde(default)]
     pub provider: Option<String>,
+}
+
+/// Model Context Protocol (MCP) client configuration. agent-cli connects to the
+/// declared servers at startup (stdio transport), discovers their tools, and
+/// registers each as `mcp__<server>__<tool>`. Omitting the section (no servers)
+/// leaves behaviour unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpConfig {
+    /// Declared MCP servers (`[[mcp.servers]]`).
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+    /// Per-server handshake + `tools/list` timeout in milliseconds. Applied at
+    /// connect time; defaults to `default_mcp_init_timeout_ms()` when unset.
+    #[serde(default)]
+    pub init_timeout_ms: Option<u64>,
+}
+
+/// A single MCP server. Reached over `stdio` (a launched subprocess, the
+/// default) or `http` (Streamable HTTP to `url`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    /// Logical name; used in the tool namespace `mcp__<name>__<tool>`.
+    pub name: String,
+    /// Executable to launch (resolved on PATH or an absolute path). stdio only.
+    #[serde(default)]
+    pub command: String,
+    /// Arguments passed to `command`. stdio only.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment variables merged onto the inherited environment. stdio only.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Working directory for the child (subject to `~`/env expansion). stdio only.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Whether this server is connected. Default: true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Transport kind: "stdio" (default) or "http" (Streamable HTTP).
+    #[serde(default)]
+    pub transport: Option<String>,
+    /// HTTP endpoint URL (required when `transport = "http"`). http only.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Static request headers sent on every HTTP call. http only.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    /// Env var whose value is sent as `Authorization: Bearer <value>`. http only.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+}
+
+/// Default handshake/list timeout for an MCP server (milliseconds).
+pub fn default_mcp_init_timeout_ms() -> u64 {
+    15_000
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -732,6 +814,78 @@ mod tests {
     #[test]
     fn runtime_commands_dir_default() {
         assert_eq!(RuntimeConfig::default().commands_dir, ".agent-cli/commands");
+    }
+
+    #[test]
+    fn default_config_has_no_mcp_servers() {
+        // The shipped default only comments out [mcp], so the section is empty.
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert!(cfg.mcp.servers.is_empty());
+        assert!(cfg.mcp.init_timeout_ms.is_none());
+    }
+
+    #[test]
+    fn parses_mcp_servers_with_defaults() {
+        let toml_src = r#"
+[provider]
+kind = "claude"
+
+[mcp]
+init_timeout_ms = 9000
+
+[[mcp.servers]]
+name = "filesystem"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+env = { EXAMPLE = "1" }
+cwd = "/tmp"
+
+[[mcp.servers]]
+name = "disabled-one"
+command = "foo"
+enabled = false
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        assert_eq!(cfg.mcp.init_timeout_ms, Some(9000));
+        assert_eq!(cfg.mcp.servers.len(), 2);
+
+        let fs = &cfg.mcp.servers[0];
+        assert_eq!(fs.name, "filesystem");
+        assert_eq!(fs.command, "npx");
+        assert_eq!(fs.args.len(), 3);
+        assert_eq!(fs.env.get("EXAMPLE").map(String::as_str), Some("1"));
+        assert_eq!(fs.cwd.as_deref(), Some("/tmp"));
+        assert!(fs.enabled, "enabled defaults to true");
+        assert!(fs.transport.is_none());
+
+        let disabled = &cfg.mcp.servers[1];
+        assert!(!disabled.enabled);
+        assert!(disabled.args.is_empty());
+    }
+
+    #[test]
+    fn parses_http_mcp_server() {
+        let toml_src = r#"
+[provider]
+kind = "claude"
+
+[[mcp.servers]]
+name        = "remote"
+transport   = "http"
+url         = "https://example.com/mcp"
+headers     = { X-Example = "1" }
+api_key_env = "REMOTE_MCP_TOKEN"
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        assert_eq!(cfg.mcp.servers.len(), 1);
+        let s = &cfg.mcp.servers[0];
+        assert_eq!(s.transport.as_deref(), Some("http"));
+        assert_eq!(s.url.as_deref(), Some("https://example.com/mcp"));
+        assert_eq!(s.headers.get("X-Example").map(String::as_str), Some("1"));
+        assert_eq!(s.api_key_env.as_deref(), Some("REMOTE_MCP_TOKEN"));
+        // http servers need no command; it defaults to empty.
+        assert!(s.command.is_empty());
+        assert!(s.enabled);
     }
 
     #[test]

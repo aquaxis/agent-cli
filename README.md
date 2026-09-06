@@ -16,11 +16,13 @@
 - Built-in tools: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`. Approval mode can be flipped at runtime with `/auto on`.
 - Custom slash commands — drop a Markdown file into `.agent-cli/commands/` and it becomes `/<name>`, with `$ARGUMENTS` / `$1`…`$N` / `@file` expansion and prefix auto-execution.
 - Line editing at the prompt — `↑` / `↓` history browsing, `Ctrl+A` / `Ctrl+E`, `Esc` to clear, live command candidates shown above the prompt, and `Tab` completion for `/` commands.
+- Stop a running turn with `Esc` — pressing it while the agent is streaming, running a tool, or asking for approval hands the prompt straight back, without waiting for the model or the tool, and the conversation stays usable.
 - Scriptable — pipe a question straight into `agent-cli run`, or query a running agent with `agent-cli ask <peer> <text>` and get just the answer on stdout.
 - Streaming responses are synchronized with the REPL prompt so a fresh `> ` is always redrawn after the response completes.
 - Reliable shutdown — any of `/quit`, `/exit`, `Ctrl+D`, `Ctrl+C`, or `SIGTERM` exits within ~1 s and cleans up the IPC socket and registry metadata automatically.
 - Self-diagnostics with `agent-cli doctor` and a 5-stage smoke test with `agent-cli selftest` (Provider OK / bash tool / IPC / subprocess registration / subprocess AI response).
 - Self-update with `agent-cli update` — checks the latest GitHub release and rebuilds from source into your install prefix; `--check` reports availability without changing anything.
+- MCP client — declare external Model Context Protocol servers in `[[mcp.servers]]`; their tools are discovered at startup over **stdio** (a subprocess) or **http** (Streamable HTTP to a URL) and offered to the agent as `mcp__<server>__<tool>`. Inspect them with `agent-cli mcp list`.
 - Configurable tool-use loop cap via `[runtime] max_tool_iterations` (default 24, max `u32::MAX`) — see "[info] max tool-use iterations reached" below.
 - Ollama `message.thinking` field is decoded as `[thinking]` for thinking-capable models such as `glm-5.1:cloud`.
 - Opt-in context-efficiency features (all default OFF): Claude prompt caching, opencode local persistent session, and hybrid history-window management (summarize-then-drop). See [`doc/config.md`](doc/config.md) §11.
@@ -320,6 +322,7 @@ See [`doc/config.md`](doc/config.md) for the full reference and [`doc/troublesho
 | `agent-cli config show` | Print current config |
 | `agent-cli config edit` | Open config in `$EDITOR` |
 | `agent-cli config path` | Print resolved config path |
+| `agent-cli mcp list` | Connect to the configured MCP servers and list their tools |
 
 REPL commands inside `agent-cli run`:
 
@@ -335,7 +338,7 @@ REPL commands inside `agent-cli run`:
 | `/peer <id_or_name>` | Show a peer's persona summary |
 | `/history [n]` | Show last n (default 20) user inputs |
 | `/clear`, `/reset` | Clear conversation history (persona / system prompt are kept) |
-| `/cancel` | Request cancel of the in-flight AI response or tool call |
+| `/cancel` | Stop the in-flight AI response or tool call (same signal as `Esc` during a turn) |
 | `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime |
 | `/commands` | List custom slash commands (name, first line, file path) |
 | `/reload-commands` | Re-scan the custom commands directory |
@@ -398,6 +401,35 @@ agent-cli update --ref main  # build from a branch/tag (e.g. before a release is
 
 See [`doc/usage.md`](doc/usage.md) "Updating".
 
+### MCP servers
+
+agent-cli can act as a **Model Context Protocol (MCP) client**: declare external
+servers under `[[mcp.servers]]`, and on `run` / `serve` their tools are
+discovered and offered to the agent as `mcp__<server>__<tool>` (alongside the
+built-ins, through the same approval gate). Servers are reached over **stdio** (a
+subprocess) or **http** (Streamable HTTP to a URL); only MCP tools are consumed;
+Linux-only.
+
+```toml
+[[mcp.servers]]                 # stdio
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+
+[[mcp.servers]]                 # http (Streamable HTTP)
+name      = "remote"
+transport = "http"
+url       = "https://example.com/mcp"
+```
+
+```bash
+agent-cli mcp list   # connect and list each server's tools
+```
+
+A server that fails to launch or handshake is logged and skipped, never aborting
+startup. See [`doc/config.md`](doc/config.md) "[mcp]" and
+[`doc/usage.md`](doc/usage.md) "MCP servers".
+
 ### Skipping tool approval
 
 Tool invocations (bash, read, write, send_to, monitor, edit, glob, grep, websearch, webfetch) request a y/N approval by default. There are three ways to skip approval:
@@ -454,8 +486,8 @@ With a terminal attached, the prompt supports in-place editing and history brows
 |-----|--------|
 | `↑` / `↓` | Browse history (the in-progress draft is restored when you come back past the newest entry) |
 | `Ctrl+A` / `Home`, `Ctrl+E` / `End` | Jump to start / end of the line |
-| `Esc` | Leave history browsing, or clear the line |
-| `Ctrl+C` | Clear the line; exit when the line is empty |
+| `Esc` | While the agent is working, stop the turn and return to the prompt immediately; at an idle prompt, leave history browsing or clear the line |
+| `Ctrl+C` | While the agent is working, same as `Esc`; at an idle prompt, clear the line, and exit when the line is empty |
 | `Ctrl+D` | Exit on an empty line |
 
 While the line starts with `/` and has no space, the best-matching command is suggested inline. Raw mode needs a TTY; with piped input the REPL falls back to plain line reading — tools, custom commands, and peer messaging all keep working.

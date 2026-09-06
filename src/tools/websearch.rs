@@ -27,11 +27,11 @@ struct WebSearchArgs {
 
 #[async_trait]
 impl Tool for WebSearchTool {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "websearch"
     }
 
-    fn description(&self) -> &'static str {
+    fn description(&self) -> &str {
         "Run a web search and return result entries (title, url, snippet). Requires [tools.websearch] configuration (api key + endpoint)."
     }
 

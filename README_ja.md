@@ -16,11 +16,13 @@
 - 組み込みツール: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`。承認モードは実行中に `/auto on` で切り替えられます。
 - カスタムスラッシュコマンド — `.agent-cli/commands/` に Markdown ファイルを置くだけで `/<name>` として使えます。`$ARGUMENTS` / `$1`…`$N` / `@file` の展開と、前方一致による自動実行に対応します。
 - プロンプトの行編集 — `↑` / `↓` での履歴参照、`Ctrl+A` / `Ctrl+E`、`Esc` でのクリア、`/` コマンド入力中の候補表示（プロンプトの 1 行上）、`Tab` によるコマンド補完。
+- `Esc` による実行中ターンの停止 — 応答のストリーミング中、ツール実行中、承認待ちのいずれでも `Esc` を押せば、モデルやツールの完了を待たずに即座にプロンプトへ戻ります。会話はそのまま継続できます。
 - スクリプトから利用可能 — `agent-cli run` に質問をパイプで流し込む、あるいは稼働中のエージェントに `agent-cli ask <peer> <text>` で問い合わせて応答だけを標準出力で受け取れます。
 - ストリーミング応答は REPL のプロンプトと同期しており、応答完了後は常に新しい `> ` が再描画されます。
 - 確実なシャットダウン — `/quit`、`/exit`、`Ctrl+D`、`Ctrl+C`、`SIGTERM` のいずれでも約 1 秒以内に終了し、IPC ソケットとレジストリのメタデータを自動的に後始末します。
 - `agent-cli doctor` による自己診断と、`agent-cli selftest` による 5 段階のスモークテスト（Provider OK / bash ツール / IPC / 子プロセス登録 / 子プロセスの AI 応答）。
 - `agent-cli update` による自己アップデート — 最新の GitHub リリースを確認し、インストール先へソースからビルドし直します。`--check` は変更を加えずに更新の有無だけを報告します。
+- MCP クライアント — 外部の Model Context Protocol サーバーを `[[mcp.servers]]` に宣言すると、起動時に **stdio**（サブプロセス）または **http**（URL への Streamable HTTP）でツールが検出され、`mcp__<server>__<tool>` としてエージェントに提供されます。`agent-cli mcp list` で確認できます。
 - `[runtime] max_tool_iterations` でツール使用ループ上限を設定可能（デフォルト 24、最大 `u32::MAX`）。下記「[info] max tool-use iterations reached」を参照。
 - Ollama の `message.thinking` フィールドは、`glm-5.1:cloud` のような思考対応モデル向けに `[thinking]` としてデコードされます。
 - オプトインのコンテキスト効率化機能（すべてデフォルト OFF）: Claude プロンプトキャッシュ、opencode ローカル永続セッション、ハイブリッド履歴ウィンドウ管理（要約してから破棄）。[`doc/config.md`](doc/config.md) §11 を参照。
@@ -319,6 +321,7 @@ keep_recent_turns  = 6
 | `agent-cli config show` | 現在の設定を表示 |
 | `agent-cli config edit` | `$EDITOR` で設定を開く |
 | `agent-cli config path` | 解決済みの設定パスを表示 |
+| `agent-cli mcp list` | 設定済みの MCP サーバーへ接続し、ツール一覧を表示 |
 
 `agent-cli run` 内の REPL コマンド:
 
@@ -334,7 +337,7 @@ keep_recent_turns  = 6
 | `/peer <id_or_name>` | ピアのペルソナ概要を表示 |
 | `/history [n]` | 直近 n 件（デフォルト 20）のユーザー入力を表示 |
 | `/clear`, `/reset` | 会話履歴をクリア（ペルソナ / システムプロンプトは保持） |
-| `/cancel` | 実行中の AI 応答またはツール呼び出しのキャンセルを要求 |
+| `/cancel` | 実行中の AI 応答またはツール呼び出しを停止（実行中の `Esc` と同じ信号） |
 | `/auto [on\|off\|status]` | 実行中にツール承認スキップを切り替え |
 | `/commands` | カスタムスラッシュコマンドを一覧表示（名前 / 先頭行 / ファイルパス） |
 | `/reload-commands` | カスタムコマンドのディレクトリを再スキャン |
@@ -398,6 +401,35 @@ agent-cli update --ref main  # ブランチ/タグからビルド（リリース
 
 詳細は [`doc/usage.md`](doc/usage.md) の "Updating" を参照してください。
 
+### MCP サーバー
+
+agent-cli は **Model Context Protocol (MCP) クライアント**として動作できます:
+外部サーバーを `[[mcp.servers]]` に宣言すると、`run` / `serve` 時にそのツールが
+検出され、（組み込みツールと並んで、同じ承認ゲートを通して）
+`mcp__<server>__<tool>` としてエージェントに提供されます。サーバーへは **stdio**
+（サブプロセス）または **http**（URL への Streamable HTTP）で接続します。消費する
+のは MCP ツールのみで、Linux 専用です。
+
+```toml
+[[mcp.servers]]                 # stdio
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+
+[[mcp.servers]]                 # http (Streamable HTTP)
+name      = "remote"
+transport = "http"
+url       = "https://example.com/mcp"
+```
+
+```bash
+agent-cli mcp list   # 各サーバーへ接続してツールを一覧表示
+```
+
+起動やハンドシェイクに失敗したサーバーはログに記録されてスキップされ、起動を
+中断させることはありません。詳細は [`doc/config.md`](doc/config.md) の "[mcp]" と
+[`doc/usage.md`](doc/usage.md) の "MCP servers" を参照してください。
+
 ### ツール承認のスキップ
 
 ツール呼び出し（bash, read, write, send_to, monitor, edit, glob, grep, websearch, webfetch）はデフォルトで y/N の承認を求めます。承認をスキップする方法は 3 つあります:
@@ -454,8 +486,8 @@ agent-cli update --ref main  # ブランチ/タグからビルド（リリース
 |-----|--------|
 | `↑` / `↓` | 履歴を参照（最新より先に戻ると入力途中の内容が復元されます） |
 | `Ctrl+A` / `Home`、`Ctrl+E` / `End` | 行頭 / 行末へ移動 |
-| `Esc` | 履歴参照を抜ける、または行をクリア |
-| `Ctrl+C` | 行をクリア。空行なら終了 |
+| `Esc` | エージェントの実行中はターンを停止して即座にプロンプトへ戻る。待機中のプロンプトでは履歴参照を抜ける、または行をクリア |
+| `Ctrl+C` | エージェントの実行中は `Esc` と同じ。待機中のプロンプトでは行をクリアし、空行なら終了 |
 | `Ctrl+D` | 空行で終了 |
 
 行が `/` で始まり空白を含まない間は、最も一致するコマンド名がインラインで表示されます。raw モードは TTY が必要で、パイプ入力では行単位の読み込みにフォールバックします（ツール、カスタムコマンド、ピア通信はそのまま動作します）。

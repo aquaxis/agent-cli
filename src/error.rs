@@ -23,6 +23,9 @@ pub enum AppError {
     #[error("ipc error: {0}")]
     Ipc(String),
 
+    #[error("mcp error: {0}")]
+    Mcp(String),
+
     #[error("registry error: {0}")]
     Registry(String),
 
@@ -79,6 +82,10 @@ impl AppError {
 
     pub fn ipc(msg: impl Into<String>) -> Self {
         AppError::Ipc(msg.into())
+    }
+
+    pub fn mcp(msg: impl Into<String>) -> Self {
+        AppError::Mcp(msg.into())
     }
 
     pub fn registry(msg: impl Into<String>) -> Self {

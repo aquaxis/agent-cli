@@ -64,6 +64,8 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 
 [ui]                        # Display mode
 [history]                   # Opt-in history-window management
+[mcp]                       # MCP client: global options
+[[mcp.servers]]             # MCP client: one external server per entry
 ```
 
 ## 3. Full Item Reference
@@ -194,7 +196,7 @@ This is the upper limit for the loop where the AI repeats `tool_use -> tool resu
 | Default (design-then-debug, etc.) | `24` (default) | Fits a typical workflow of design artifact generation -> verification -> lint fix -> write |
 | Multi-step orchestrator | `32-48` | When calling multiple tools sequentially |
 | Long autonomous execution (experimental) | `64-256` | When decomposing large tasks step by step |
-| Beyond that | Not recommended | You should suspect the AI is stuck in a loop. Operate with the assumption that you can intervene via `/cancel` or `Ctrl+C` |
+| Beyond that | Not recommended | You should suspect the AI is stuck in a loop. Operate with the assumption that you can intervene: `Esc` (or `Ctrl+C`, or `/cancel`) stops the running turn and returns you to the prompt |
 
 Configuration example:
 
@@ -265,6 +267,72 @@ full conversation is replayed verbatim every turn (unchanged behavior).
 | `keep_recent_turns` | int | `6` | Most-recent messages always kept verbatim (system/persona prefix is always kept too) |
 
 See §11 for the compaction algorithm.
+
+### `[mcp]` / `[[mcp.servers]]`
+
+Model Context Protocol (MCP) **client** configuration. On `run` / `serve`,
+agent-cli connects each enabled server — over **stdio** (a launched subprocess,
+the default) or **http** (Streamable HTTP to a URL) — discovers its tools via the
+MCP handshake, and registers each one under the namespaced name
+`mcp__<server>__<tool>`. Omitting the section (no servers) leaves behaviour
+unchanged. Only MCP **tools** (not resources/prompts) are consumed; Linux-only.
+
+`[mcp]` (optional, global):
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `init_timeout_ms` | int | `15000` | Per-server handshake + `tools/list` timeout, in milliseconds. A server exceeding it is skipped |
+
+`[[mcp.servers]]` (one table per server):
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `name` | string | — (required) | Logical name; used in the tool namespace `mcp__<name>__<tool>` |
+| `transport` | string | `"stdio"` | Transport kind: `"stdio"` or `"http"` |
+| `enabled` | bool | `true` | Whether the server is connected |
+| `command` | string | — (required for stdio) | Executable to launch (resolved on `PATH` or an absolute path). **stdio only** |
+| `args` | string[] | `[]` | Arguments passed to `command`. **stdio only** |
+| `env` | table | `{}` | Extra environment variables merged onto the inherited environment. **stdio only** |
+| `cwd` | string | unset | Working directory for the child (`~` / env expansion applied). **stdio only** |
+| `url` | string | — (required for http) | HTTP endpoint (Streamable HTTP). **http only** |
+| `headers` | table | `{}` | Static request headers sent on every HTTP call. **http only** |
+| `api_key_env` | string | unset | Env var whose value is sent as `Authorization: Bearer <value>`. **http only** |
+
+The `http` transport POSTs JSON-RPC to `url` and accepts either a single
+`application/json` reply or a `text/event-stream` (SSE) reply; it echoes the
+`Mcp-Session-Id` returned by `initialize` on subsequent requests. Only the
+single-endpoint Streamable HTTP transport is supported (no legacy two-endpoint
+HTTP+SSE, no OAuth — use `api_key_env`/`headers` for auth).
+
+MCP tools are **not** gated by `[tools] enabled` (that list governs only the
+built-ins); a declared, enabled server's tools are available by default, subject
+to the persona `allowed_tools` / `denied_tools` filter (which may name an
+individual `mcp__…` tool). MCP tool calls pass through the normal approval gate.
+A server that fails to launch, handshake, or list is logged and skipped, so a bad
+server never aborts startup.
+
+```toml
+[mcp]
+init_timeout_ms = 15000
+
+[[mcp.servers]]                 # stdio
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+# env     = { EXAMPLE = "1" }
+# cwd     = "/home/user"
+# enabled = true
+
+[[mcp.servers]]                 # http (Streamable HTTP)
+name        = "remote"
+transport   = "http"
+url         = "https://example.com/mcp"
+# headers     = { X-Example = "1" }
+# api_key_env = "REMOTE_MCP_TOKEN"       # -> Authorization: Bearer <value>
+```
+
+Inspect configured servers with `agent-cli mcp list` (and `agent-cli doctor`).
+See [`doc/usage.md`](usage.md#mcp-servers).
 
 ## 4. Complete Examples
 

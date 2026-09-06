@@ -251,6 +251,23 @@ User-side workarounds (in recommended order):
 4. **Reset the conversation**: Run `/clear` to wipe history and retry with a fresh instruction.
 5. **Raise `[runtime] max_tool_iterations`**: Edit the config file to increase the cap (default 24, min 1, max `u32::MAX = 4,294,967,295`). For multi-step orchestrators, try 32/48; for long autonomous runs, 64-256. Changes take effect on `agent-cli` restart. See [`doc/config.md`](config.md) section `[runtime]` for details.
 
+### Cancelling a running turn
+
+Press `Esc` (or `Ctrl+C`) while the agent is streaming a response, running a tool, or waiting for tool approval: `[cancelled]` is printed and the prompt comes back immediately. `/cancel` sends the same signal, which is the way to stop a turn that a peer prompt started while your prompt is idle.
+
+What cancelling does — and does not — do:
+
+| Item | Behaviour |
+|------|-----------|
+| The prompt | Returns at once; it never waits for the model or the tool. The next prompt is accepted straight away |
+| Remaining output | The cancelled turn's remaining output is discarded, so it cannot print over the new prompt |
+| Conversation history | Preserved. The partial answer stays, and any tool call left without a result is recorded as `cancelled by user`, so the next prompt is a valid request (no provider `HTTP 400`) |
+| A process the tool already spawned | **Not killed.** A `bash` command that was already running keeps running until it finishes or hits the tool's own `timeout_ms` (`[tools.bash] timeout_ms`). Its output is discarded |
+| Approval prompt | `Esc` there denies the pending tool and cancels the turn. `Ctrl+C` keeps its usual meaning (clear the line; exit on an empty line) |
+| An idle prompt | Unchanged: `Esc` leaves history browsing or clears the line, and `Ctrl+C` on an empty line exits |
+
+If a long shell command must be stoppable, give it a shorter `timeout_ms` in the tool call, or lower `[tools.bash] timeout_ms`.
+
 ## Shell Tool Issues
 
 ### `timed out after <N> ms: ...`
@@ -346,6 +363,62 @@ For detailed troubleshooting, see [`doc/personas.md`](personas.md) section 11 "T
 ### Updating from a build tree
 
 - The install prefix is derived from the running binary's path (`<prefix>/bin/agent-cli`). If you run `agent-cli` from `target/debug`, the resolved prefix shown in the confirmation may be unexpected — abort and run the installed binary, or pass an explicit prefix by reinstalling with `cargo install --root <prefix>`.
+
+## MCP Issues
+
+`agent-cli mcp list` and `agent-cli doctor` show each configured server's status;
+start there. MCP is a **client** feature: agent-cli connects to servers declared
+in `[[mcp.servers]]` over **stdio**. See [`doc/config.md`](config.md) `[mcp]`.
+
+### An MCP server is skipped at startup / shows ERROR
+
+- A server that fails to launch, handshake, or list within `init_timeout_ms` is
+  logged (`mcp server '<name>' skipped: …`) and skipped — the rest of agent-cli
+  runs normally. Run `agent-cli mcp list` to see the exact error per server.
+
+### `failed to launch '<command>'`
+
+- The `command` is not on `PATH` (or the absolute path is wrong). Verify it runs
+  standalone first (e.g. `npx -y @modelcontextprotocol/server-filesystem …`).
+  Set `env` / `cwd` in the server entry if the server needs them.
+
+### `handshake timed out`
+
+- The server did not complete `initialize` + `tools/list` in time. Raise
+  `[mcp] init_timeout_ms`, or check the server's own logs — a server that prints
+  non-JSON banners to **stdout** breaks the JSON-RPC stream (agent-cli expects
+  newline-delimited JSON-RPC on stdout; diagnostics belong on stderr).
+
+### A server tool does not appear to the model
+
+- Tools register as `mcp__<server>__<tool>`. Confirm the name with
+  `agent-cli mcp list`. If a persona sets `allowed_tools`, the MCP name must be
+  in it; if it sets `denied_tools`, make sure the MCP name is not excluded. A
+  server with `enabled = false` is not connected.
+
+### HTTP server: connection refused / TLS / timeout
+
+- For `transport = "http"`, verify the `url` is reachable (`curl -i <url>`) and
+  the TLS certificate is valid. An unreachable endpoint is reported by
+  `agent-cli mcp list` and skipped; raise `[mcp] init_timeout_ms` for a slow
+  server.
+
+### HTTP server: `401` / `403`
+
+- The endpoint needs auth. Set `api_key_env` (its value is sent as
+  `Authorization: Bearer <value>`) and/or static `headers` in the server entry.
+  `agent-cli mcp list` shows `api_key_env '<VAR>' is not set` when the variable
+  is missing.
+
+### HTTP server: `transport=http requires a url`
+
+- An `http` server has no `url`. Add `url = "https://…/mcp"`.
+
+### Only stdio and HTTP (Streamable) servers work
+
+- The supported transports are **stdio** and **Streamable HTTP**; the legacy
+  two-endpoint HTTP+SSE transport, OAuth, and MCP resources/prompts are not
+  connected this release.
 
 ## Context-efficiency Features (opt-in)
 
