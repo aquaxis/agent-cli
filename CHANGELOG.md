@@ -4,6 +4,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- `Esc` during execution returns to the prompt — pressing `Esc` (or `Ctrl+C`) while the agent is streaming a response, running a tool, or waiting for tool approval stops the turn and hands the prompt straight back.
+  - The prompt never waits for the agent: the REPL prints `[cancelled]`, leaves the `Pending` state and redraws immediately, and accepts the next input at once. At the approval prompt, `Esc` also denies the pending tool (`Ctrl+C` keeps its usual clear-line / exit meaning there); at an idle prompt both keys behave exactly as before.
+  - A shared cancellation token (`AtomicBool` + `Notify`) is observed by `process_turn` at every await point — the tool-iteration boundary, the provider stream (a `biased` `select!`, so the response body read is dropped mid-stream) and the tool invocation (an already-running tool is abandoned). The turn then ends with exactly one `Done`.
+  - The conversation stays usable: every tool call left without a result is recorded as `cancelled by user`, so the assistant message's `tool_calls` stay balanced and the next prompt is still a valid request. The partial answer is kept in history.
+  - The cancelled turn's remaining output is discarded instead of printing over the new prompt, and its completion no longer releases a later turn from `Pending`.
+  - `/cancel` now raises the same signal — it stops an in-flight turn (e.g. one started by a peer prompt) rather than only requesting it.
+  - Not affected: a process a tool already spawned is not killed; it ends on its own `[tools.bash] timeout_ms`. No new dependency; Linux-only as before.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/usage.md`, `doc/config.md`, `doc/architecture.md` (§3.1), `doc/troubleshooting.md`.
+
 ## [0.9.0]
 
 ### Added

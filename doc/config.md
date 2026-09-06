@@ -196,7 +196,7 @@ This is the upper limit for the loop where the AI repeats `tool_use -> tool resu
 | Default (design-then-debug, etc.) | `24` (default) | Fits a typical workflow of design artifact generation -> verification -> lint fix -> write |
 | Multi-step orchestrator | `32-48` | When calling multiple tools sequentially |
 | Long autonomous execution (experimental) | `64-256` | When decomposing large tasks step by step |
-| Beyond that | Not recommended | You should suspect the AI is stuck in a loop. Operate with the assumption that you can intervene via `/cancel` or `Ctrl+C` |
+| Beyond that | Not recommended | You should suspect the AI is stuck in a loop. Operate with the assumption that you can intervene: `Esc` (or `Ctrl+C`, or `/cancel`) stops the running turn and returns you to the prompt |
 
 Configuration example:
 

@@ -251,6 +251,23 @@ User-side workarounds (in recommended order):
 4. **Reset the conversation**: Run `/clear` to wipe history and retry with a fresh instruction.
 5. **Raise `[runtime] max_tool_iterations`**: Edit the config file to increase the cap (default 24, min 1, max `u32::MAX = 4,294,967,295`). For multi-step orchestrators, try 32/48; for long autonomous runs, 64-256. Changes take effect on `agent-cli` restart. See [`doc/config.md`](config.md) section `[runtime]` for details.
 
+### Cancelling a running turn
+
+Press `Esc` (or `Ctrl+C`) while the agent is streaming a response, running a tool, or waiting for tool approval: `[cancelled]` is printed and the prompt comes back immediately. `/cancel` sends the same signal, which is the way to stop a turn that a peer prompt started while your prompt is idle.
+
+What cancelling does — and does not — do:
+
+| Item | Behaviour |
+|------|-----------|
+| The prompt | Returns at once; it never waits for the model or the tool. The next prompt is accepted straight away |
+| Remaining output | The cancelled turn's remaining output is discarded, so it cannot print over the new prompt |
+| Conversation history | Preserved. The partial answer stays, and any tool call left without a result is recorded as `cancelled by user`, so the next prompt is a valid request (no provider `HTTP 400`) |
+| A process the tool already spawned | **Not killed.** A `bash` command that was already running keeps running until it finishes or hits the tool's own `timeout_ms` (`[tools.bash] timeout_ms`). Its output is discarded |
+| Approval prompt | `Esc` there denies the pending tool and cancels the turn. `Ctrl+C` keeps its usual meaning (clear the line; exit on an empty line) |
+| An idle prompt | Unchanged: `Esc` leaves history browsing or clears the line, and `Ctrl+C` on an empty line exits |
+
+If a long shell command must be stoppable, give it a shorter `timeout_ms` in the tool call, or lower `[tools.bash] timeout_ms`.
+
 ## Shell Tool Issues
 
 ### `timed out after <N> ms: ...`

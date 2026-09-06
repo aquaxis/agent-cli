@@ -16,6 +16,7 @@
 - Built-in tools: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`. Approval mode can be flipped at runtime with `/auto on`.
 - Custom slash commands — drop a Markdown file into `.agent-cli/commands/` and it becomes `/<name>`, with `$ARGUMENTS` / `$1`…`$N` / `@file` expansion and prefix auto-execution.
 - Line editing at the prompt — `↑` / `↓` history browsing, `Ctrl+A` / `Ctrl+E`, `Esc` to clear, live command candidates shown above the prompt, and `Tab` completion for `/` commands.
+- Stop a running turn with `Esc` — pressing it while the agent is streaming, running a tool, or asking for approval hands the prompt straight back, without waiting for the model or the tool, and the conversation stays usable.
 - Scriptable — pipe a question straight into `agent-cli run`, or query a running agent with `agent-cli ask <peer> <text>` and get just the answer on stdout.
 - Streaming responses are synchronized with the REPL prompt so a fresh `> ` is always redrawn after the response completes.
 - Reliable shutdown — any of `/quit`, `/exit`, `Ctrl+D`, `Ctrl+C`, or `SIGTERM` exits within ~1 s and cleans up the IPC socket and registry metadata automatically.
@@ -337,7 +338,7 @@ REPL commands inside `agent-cli run`:
 | `/peer <id_or_name>` | Show a peer's persona summary |
 | `/history [n]` | Show last n (default 20) user inputs |
 | `/clear`, `/reset` | Clear conversation history (persona / system prompt are kept) |
-| `/cancel` | Request cancel of the in-flight AI response or tool call |
+| `/cancel` | Stop the in-flight AI response or tool call (same signal as `Esc` during a turn) |
 | `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime |
 | `/commands` | List custom slash commands (name, first line, file path) |
 | `/reload-commands` | Re-scan the custom commands directory |
@@ -485,8 +486,8 @@ With a terminal attached, the prompt supports in-place editing and history brows
 |-----|--------|
 | `↑` / `↓` | Browse history (the in-progress draft is restored when you come back past the newest entry) |
 | `Ctrl+A` / `Home`, `Ctrl+E` / `End` | Jump to start / end of the line |
-| `Esc` | Leave history browsing, or clear the line |
-| `Ctrl+C` | Clear the line; exit when the line is empty |
+| `Esc` | While the agent is working, stop the turn and return to the prompt immediately; at an idle prompt, leave history browsing or clear the line |
+| `Ctrl+C` | While the agent is working, same as `Esc`; at an idle prompt, clear the line, and exit when the line is empty |
 | `Ctrl+D` | Exit on an empty line |
 
 While the line starts with `/` and has no space, the best-matching command is suggested inline. Raw mode needs a TTY; with piped input the REPL falls back to plain line reading — tools, custom commands, and peer messaging all keep working.

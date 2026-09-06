@@ -217,7 +217,7 @@ In the REPL, lines starting with `/` are commands; everything else is a normal p
 | `/peer <id_or_name>` | Show a peer's persona summary |
 | `/history [n]` | Show last n (default 20) user inputs |
 | `/clear`, `/reset` | Clear conversation history (system prompt = persona is kept; User / Assistant / ToolResult are all removed) |
-| `/cancel` | Request cancellation of in-flight processing (request only; no guarantee of immediate stream stop) |
+| `/cancel` | Stop the in-flight turn (same signal as `Esc` during execution); useful when the turn was started by a peer prompt |
 | `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime. No argument or `status` shows the current value |
 | `/commands` | List custom slash commands with their first line and file path |
 | `/reload-commands` | Re-scan the custom commands directory without restarting |
@@ -236,8 +236,8 @@ When stdin is a terminal, the prompt runs in raw mode and supports in-place line
 | `Ctrl+A` / `Home` | Move to the start of the line |
 | `Ctrl+E` / `End` | Move to the end of the line |
 | `Backspace` / `Delete` | Delete the character before / at the cursor |
-| `Esc` | Leave history browsing; on a normal line, clear it |
-| `Ctrl+C` | Clear the line; on an empty line, exit |
+| `Esc` | While the agent is working, stop the turn and return to the prompt at once; at an idle prompt, leave history browsing or clear the line |
+| `Ctrl+C` | While the agent is working, same as `Esc`; at an idle prompt, clear the line, and on an empty line, exit |
 | `Ctrl+D` | Exit on an empty line; ignored otherwise |
 | `Tab` | Complete the slash command being typed (see below) |
 
@@ -246,6 +246,7 @@ Notes:
 - **Draft preservation**: the line you were typing is saved when you first press `↑`, and restored when you press `↓` past the newest history entry.
 - **Command candidates**: while the line starts with `/` and contains no space, the matching command names are listed on the line **above** the prompt, so the line you are typing stays put instead of being pushed around. Keep typing to narrow the list, or press `Enter` — prefix resolution is described under "Custom Slash Commands".
 - **Tab completion**: `Tab` completes the command name from that same candidate list. One match completes it and adds a space, ready for an argument (`/sen` → `/send `). Several matches extend the line as far as the candidates agree (`/rel` → `/reload-`), leaving the list on screen to choose from. When there is nothing to add — no match, an already-settled name, or an argument already started — `Tab` does nothing. Built-in and custom commands complete alike.
+- **Stopping a turn**: while the agent is streaming a response, running a tool, or waiting for tool approval, `Esc` (or `Ctrl+C`) prints `[cancelled]` and hands the prompt straight back — it does not wait for the model or the tool. The remaining output of that turn is discarded, a tool call cut short is recorded as `cancelled by user`, and the next prompt continues the same conversation. At the approval prompt, `Esc` also denies the pending tool. See "Cancelling a running turn" in [`doc/troubleshooting.md`](troubleshooting.md) for what cancelling does *not* stop.
 - **Display width**: full-width characters (CJK) are counted as two columns, so cursor positioning stays correct in mixed-width lines.
 - **TTY requirement**: raw mode is only enabled when stdin is a terminal. With piped or redirected input the REPL falls back to line-buffered reading, where the editing keys, the candidate list, and `Tab` completion are unavailable — everything else (tools, custom commands, peer messaging) works unchanged. See "Non-interactive / Scripted Use".
 
@@ -337,7 +338,8 @@ The REPL renders `Info` variants of `AgentEvent` with an `[info]` prefix. `Info`
 
 | Message | Trigger | What happens next |
 |---------|---------|-------------------|
-| `[info] cancel requested` | `/cancel` entered | Sends a cancellation request to in-flight processing (no guarantee of immediate stop) |
+| `[info] cancelled by user` | `/cancel` stopped a turn that was running in the background (e.g. one started by a peer prompt) | The turn stops at its next await point; any tool call without a result is recorded as `cancelled by user` so the conversation stays usable. After `Esc` the same turn ends silently — its output is discarded and only `[cancelled]` is shown |
+| `[info] cancel requested` | `/cancel` entered while the agent is idle | Nothing is in flight, so there is nothing to stop |
 | `[info] history persisted (N entries)` | History save trigger (e.g. `/history`) | Flush to input history file complete |
 | `[info] system prompt updated` | `/reload-persona` replaced the system prompt at the head of history | Subsequent responses use the new system prompt |
 | `[info] history cleared (N message(s) removed)` | `/clear` / `/reset` cleared conversation history | System prompt (persona) kept; User / Assistant / ToolResult all removed |
