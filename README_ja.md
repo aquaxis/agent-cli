@@ -18,11 +18,12 @@
 - プロンプトの行編集 — `↑` / `↓` での履歴参照、`Ctrl+A` / `Ctrl+E`、`Esc` でのクリア、`/` コマンド入力中の候補表示（プロンプトの 1 行上）、`Tab` によるコマンド補完。
 - `Esc` による実行中ターンの停止 — 応答のストリーミング中、ツール実行中、承認待ちのいずれでも `Esc` を押せば、モデルやツールの完了を待たずに即座にプロンプトへ戻ります。会話はそのまま継続できます。
 - 実行中の進捗表示 — 実行内容を 1 行で表示し（収まらない分は `…` で省略）、その下の行にスピナーと経過時間を表示します。ターンが終わると `✔ <経過時間>` に変わります。ツール結果は画面上 5 行に省略し（`… +N more lines`、モデルとログには全文が渡ります）、さらにその下へ thinking（推論）の内容を最新 10 行までライブ表示し、超過分は `… +N more` で省略します。ブロックをマウスでクリックすると画面に収まる範囲の全文表示に切り替わり、もう一度クリックで 10 行表示に戻ります。
+- 配色付きの表示 — プロンプトとツール名はシアン、引数とツール出力はグレー、回答マーカーと起動バナーはマゼンタ、`✔` は緑、`✗` とエラーは赤、承認プロンプトは黄で表示します。回答本文は最も長く読む部分なので着色しません。色は端末に接続されたストリームにのみ出力し、`NO_COLOR` を尊重します。`[ui] color` で常時有効化・無効化もできます。
 - スクリプトから利用可能 — `agent-cli run` に質問をパイプで流し込む、あるいは稼働中のエージェントに `agent-cli ask <peer> <text>` で問い合わせて応答だけを標準出力で受け取れます。
 - ストリーミング応答は REPL のプロンプトと同期しており、応答完了後は常に新しい `> ` が再描画されます。
 - 確実なシャットダウン — `/quit`、`/exit`、`Ctrl+D`、`Ctrl+C`、`SIGTERM` のいずれでも約 1 秒以内に終了し、IPC ソケットとレジストリのメタデータを自動的に後始末します。
 - `agent-cli doctor` による自己診断と、`agent-cli selftest` による 5 段階のスモークテスト（Provider OK / bash ツール / IPC / 子プロセス登録 / 子プロセスの AI 応答）。
-- `agent-cli update` による自己アップデート — 最新の GitHub リリースを確認し、インストール先へソースからビルドし直します。`--check` は変更を加えずに更新の有無だけを報告します。
+- `agent-cli update` による自己アップデート — インストール先へソースからビルドし直します。既定は `main`、`--ref` で任意のタグ/ブランチを指定できます。`--check` は変更を加えずに最新リリースとの比較だけを報告します。
 - MCP クライアント — 外部の Model Context Protocol サーバーを `[[mcp.servers]]` に宣言すると、起動時に **stdio**（サブプロセス）または **http**（URL への Streamable HTTP）でツールが検出され、`mcp__<server>__<tool>` としてエージェントに提供されます。`agent-cli mcp list` で確認できます。
 - `[runtime] max_tool_iterations` でツール使用ループ上限を設定可能（デフォルト 24、最大 `u32::MAX`）。下記「[info] max tool-use iterations reached」を参照。
 - Ollama の `message.thinking` フィールドは、`glm-5.1:cloud` のような思考対応モデル向けに `[thinking]` としてデコードされます。
@@ -317,7 +318,7 @@ keep_recent_turns  = 6
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | ピアにプロンプトを送り、応答を待って表示（デフォルト 120 秒） |
 | `agent-cli providers` | バックエンドの状態を表示 |
 | `agent-cli doctor` | 設定 / API キー / 接続性 / レジストリ / `bash` を健全性チェック |
-| `agent-cli update [--check] [--force] [--yes] [--ref <ref>]` | 最新リリースへ更新（`cargo` でソースからビルド） |
+| `agent-cli update [--check] [--force] [--yes] [--ref <ref>]` | `main`（または `--ref`）から再ビルドして置き換え（`cargo` でソースビルド） |
 | `agent-cli selftest [--provider <kind>]` | 5 段階のスモークテスト |
 | `agent-cli config show` | 現在の設定を表示 |
 | `agent-cli config edit` | `$EDITOR` で設定を開く |
@@ -387,18 +388,21 @@ agent-cli groups                              # team  2  lead, helper
 
 ### アップデート
 
-`agent-cli update` は、インストール済みの agent-cli を最新リリースへ更新します。
+`agent-cli update` は、インストール済みの agent-cli をリポジトリから再ビルドします。
 agent-cli はビルド済みバイナリを配布しておらず（インストールはソースビルド）、
-アップデートも同様です: 最新の GitHub リリースを調べ、`cargo install --git … --tag
-<version>` を実行中バイナリのインストール先へ実行し、新しい `--version` を検証します。
+アップデートも同様です: `cargo install --git … --branch main` を実行中バイナリの
+インストール先へ実行し、新しい `--version` を検証します。
 Rust ツールチェーン（`cargo`）が必要で、Linux 専用です。
 
 ```bash
-agent-cli update --check     # 現在と最新を報告。変更しない
-agent-cli update             # 新しければ確認のうえ再ビルドして置き換え
-agent-cli update --yes       # 確認プロンプトをスキップ
-agent-cli update --ref main  # ブランチ/タグからビルド（リリース未タグ時など）
+agent-cli update --check       # 現在と最新リリースを報告。変更しない
+agent-cli update               # 確認のうえ main から再ビルドして置き換え
+agent-cli update --yes         # 確認プロンプトをスキップ
+agent-cli update --ref v0.11.0 # 特定のタグ（または別ブランチ）からビルド
 ```
+
+`--ref` を指定しない場合は **`main`** からビルドします。オプションなしの
+`agent-cli update` は `agent-cli update --ref main` と同等です。
 
 詳細は [`doc/usage.md`](doc/usage.md) の "Updating" を参照してください。
 

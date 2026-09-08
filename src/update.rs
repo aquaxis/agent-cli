@@ -1,10 +1,13 @@
 //! Self-update: `agent-cli update`.
 //!
-//! Discovers the latest released version on GitHub and — since agent-cli ships
-//! no prebuilt binaries and is installed by a source build (`install.sh` →
-//! `cargo install`) — upgrades by rebuilding from the released tag with
-//! `cargo install --git … --tag …` into the running binary's install prefix,
-//! then verifies the replacement. Linux-only; requires the Rust toolchain.
+//! Since agent-cli ships no prebuilt binaries and is installed by a source
+//! build (`install.sh` → `cargo install`), an update is a rebuild: `cargo
+//! install --git … --branch|--tag <ref>` into the running binary's install
+//! prefix, followed by a verification of the replacement. Without `--ref` the
+//! ref is [`DEFAULT_REF`] (`main`), so `agent-cli update` follows the
+//! development branch; `--check` reports the latest **release** against the
+//! running version without changing anything. Linux-only; requires the Rust
+//! toolchain.
 //!
 //! The decision logic (semver compare, repo-slug parse, tag extraction,
 //! install-prefix derivation) is factored into pure functions so it is
@@ -15,12 +18,25 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{AppError, Result};
 
+/// Ref built from when `--ref` is not given, so a bare `agent-cli update` is
+/// exactly `agent-cli update --ref main`: the update follows the development
+/// branch rather than the latest published release.
+pub const DEFAULT_REF: &str = "main";
+
 pub struct UpdateOpts {
     pub check: bool,
     pub force: bool,
     pub yes: bool,
-    /// `--ref`: a tag (`vX.Y.Z`) or a branch name. `None` → the latest release.
+    /// `--ref`: a tag (`vX.Y.Z`) or a branch name. `None` → [`DEFAULT_REF`].
     pub git_ref: Option<String>,
+}
+
+/// The ref to build from. Pure, so the default is covered by a unit test.
+fn target_ref(git_ref: Option<&str>) -> String {
+    match git_ref.map(str::trim) {
+        Some(r) if !r.is_empty() => r.to_string(),
+        _ => DEFAULT_REF.to_string(),
+    }
 }
 
 /// Entry point for the `update` subcommand.
@@ -34,9 +50,8 @@ pub async fn run(opts: UpdateOpts) -> Result<()> {
         .user_agent(format!("agent-cli/{current}"))
         .build()?;
 
-    // Latest-tag lookup. Required for `--check` and the default (no `--ref`)
-    // path; only informational when an explicit `--ref` is given, so a
-    // `--ref main` update still works on a repo with no published releases.
+    // Latest-tag lookup. Required for `--check`; everywhere else it is only the
+    // banner, so an update still works on a repo with no published releases.
     let latest = fetch_latest_tag(&client, &owner, &repo).await;
     match &latest {
         Ok(tag) => println!("agent-cli {current}  (latest: {tag})"),
@@ -52,22 +67,10 @@ pub async fn run(opts: UpdateOpts) -> Result<()> {
         return Ok(());
     }
 
-    // Choose the target ref: an explicit --ref, else the latest release tag.
-    let target = match opts.git_ref.clone() {
-        Some(r) => r,
-        None => {
-            let tag = latest.map_err(|e| {
-                AppError::Other(format!(
-                    "{e}\nhint: pass --ref <branch|tag> to update from a specific ref (e.g. --ref main)"
-                ))
-            })?;
-            if !is_newer(&tag, current) && !opts.force {
-                println!("already up to date ({current})");
-                return Ok(());
-            }
-            tag
-        }
-    };
+    // Choose the target ref: an explicit --ref, else `main`. A branch carries no
+    // version to compare against, so there is no "already up to date" shortcut
+    // here — the build always runs. `--check` above still reports the release.
+    let target = target_ref(opts.git_ref.as_deref());
 
     let exe =
         std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
@@ -320,6 +323,26 @@ fn is_branch_ref(r: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bare `agent-cli update` builds from `main`, i.e. it is exactly
+    /// `agent-cli update --ref main`; an explicit ref still wins.
+    #[test]
+    fn target_ref_defaults_to_main() {
+        assert_eq!(target_ref(None), "main");
+        assert_eq!(target_ref(Some("v0.11.0")), "v0.11.0");
+        assert_eq!(target_ref(Some("feat/x")), "feat/x");
+        // An empty or whitespace-only `--ref` is not a ref; fall back.
+        assert_eq!(target_ref(Some("")), "main");
+        assert_eq!(target_ref(Some("  ")), "main");
+        assert_eq!(target_ref(Some(" main ")), "main");
+    }
+
+    /// The default ref is a branch, so `cargo install` is invoked with
+    /// `--branch` rather than `--tag`.
+    #[test]
+    fn the_default_ref_is_treated_as_a_branch() {
+        assert!(is_branch_ref(&target_ref(None)));
+    }
 
     #[test]
     fn repo_slug_parses_github_https() {

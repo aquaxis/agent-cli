@@ -79,19 +79,20 @@ pub enum Command {
     /// Check configuration, API keys, backend connectivity, registry, and shell tools
     Doctor,
 
-    /// Update agent-cli to the latest released version (a source build via
-    /// `cargo`, like the installer). Use `--check` to only report availability.
+    /// Rebuild and replace agent-cli from `main` (a source build via `cargo`,
+    /// like the installer). Use `--ref` to build another branch or a tag, or
+    /// `--check` to only report whether a newer release exists.
     Update {
-        /// Only check whether a newer version is available; make no changes
+        /// Only report the running version against the latest release; make no changes
         #[arg(long)]
         check: bool,
-        /// Install even if already up to date (and allow a same/older `--ref`)
+        /// Skip the confirmation prompt and reinstall unconditionally
         #[arg(long)]
         force: bool,
         /// Do not prompt for confirmation before replacing the binary
         #[arg(long)]
         yes: bool,
-        /// Update to a specific tag (vX.Y.Z) or branch instead of the latest release
+        /// Tag (vX.Y.Z) or branch to build from [default: main]
         #[arg(long = "ref")]
         git_ref: Option<String>,
     },
