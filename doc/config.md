@@ -255,6 +255,7 @@ provider    = "tavily"
 |------|----|------|------|
 | `show_thinking` | string | `"collapsed"` | Thinking display mode: `"collapsed"` (truncated to the first 80 characters + first line) / `"expanded"` (full text) / `"hidden"` (not displayed). See "UI Display Mode" below for details |
 | `show_progress` | bool | `true` | Draw the progress indicator (activity line + spinner and elapsed time) while a turn runs. Only ever drawn when stdin and stderr are both terminals; see "UI Display Mode" below |
+| `color` | string | `"auto"` | Colour the output: `"auto"` (colour a stream only when it is an interactive terminal and `NO_COLOR` is unset), `"always"`, `"never"`. See "UI Display Mode" below |
 
 ### `[history]`
 
@@ -386,6 +387,7 @@ max_output_kb = 512
 [ui]
 show_thinking = "collapsed"
 show_progress = true
+color         = "auto"
 ```
 
 ### 4.3 Full-featured Configuration
@@ -552,6 +554,16 @@ Notes:
 Shortening affects the screen only: the model receives every tool result in full, and the conversation log keeps the complete text.
 
 The indicator additionally requires stdin **and** stderr to be interactive terminals: with piped or redirected output, and in `agent-cli serve`, it is never drawn regardless of this setting.
+
+`ui.color` controls the colour scheme described in [`doc/usage.md`](usage.md) ("Colours on Screen"). Unknown values fall back to the default `"auto"`.
+
+| Value | Behavior |
+|----|------|
+| `"auto"` (default) | A stream is coloured when it is an interactive terminal, `NO_COLOR` is unset or empty, and `TERM` is set to something other than `dumb` |
+| `"always"` | Colour is written even when the output is redirected to a file or a pipe. `NO_COLOR` does not override it — the setting is your own explicit instruction |
+| `"never"` | No colour is ever written |
+
+stdout and stderr are decided independently, so `agent-cli run > answer.txt` started from a terminal writes a plain file while the status display on screen keeps its colour. `agent-cli serve` never colours anything. Only the ANSI 16 colours are used, as foreground colours: the terminal's own palette decides the shades, and there is no background colour to clash with your theme.
 
 Configuration changes take effect after restarting `agent-cli`. Dynamic switching at runtime is not supported.
 

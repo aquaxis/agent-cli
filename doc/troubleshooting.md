@@ -284,6 +284,19 @@ While a turn runs, an interactive REPL shows the line being executed and, beneat
 | A tool result ends in `… +N more lines` | Expected while the indicator is on: the on-screen copy is cut to five rows so it cannot push the spinner off the screen. The model still receives the whole result, and the full text is in the conversation log (`[runtime] log_dir`). `[ui] show_progress = false` prints it in full |
 | Reasoning disappears when the turn ends | Expected: the block belongs to the running turn. The full reasoning is written to the conversation log; set `[ui] show_progress = false` to get the old inline `[thinking]` output in the scrollback instead |
 
+### The colours are missing, wrong, or end up in a file
+
+The REPL colour-codes its output (see [`doc/usage.md`](usage.md), "Colours on Screen"). Colour is resolved once at startup, separately for stdout and stderr.
+
+| Symptom | Cause / remedy |
+|------|------|
+| No colour at all | `"auto"` (the default) colours a stream only when it *is* a terminal. Piped or redirected output, `agent-cli serve`, `NO_COLOR` set to a non-empty value, and `TERM` unset or `dumb` all leave it plain. Set `[ui] color = "always"` to force it |
+| The answer is plain but the tool lines are coloured | Working as intended: `agent-cli run > answer.txt` from a terminal leaves stdout plain and keeps stderr coloured, so the captured answer is clean |
+| Escape sequences (`ESC[1;36m`) show up in a file or a pipe | Something forced colour on: `[ui] color = "always"`. Use `"auto"` (or `"never"`) for redirected output |
+| The colours are unreadable, or `dim` text is invisible | Only the ANSI 16 foreground colours are used, so the shades come from your terminal's own palette — adjust it, or set `[ui] color = "never"` |
+| Colour appears in the log file or in `agent-cli` subcommand output | The conversation log and the non-REPL subcommands are never coloured by this setting. Escape sequences there come from the tracing logger, which follows `NO_COLOR` and `RUST_LOG` instead |
+| The prompt or the spinner is drawn in the wrong place | Colour adds no printable columns and every line is measured before it is styled, so this is not a colour problem — see "The spinner / elapsed time is missing, or looks wrong" above |
+
 ## Shell Tool Issues
 
 ### `timed out after <N> ms: ...`
@@ -363,14 +376,15 @@ For detailed troubleshooting, see [`doc/personas.md`](personas.md) section 11 "T
 
 ### `no published releases or vX.Y.Z tags`
 
-- The default `update` targets the latest GitHub release/tag. If the project has none yet, update from a branch or an explicit ref instead:
-  ```bash
-  agent-cli update --ref main
-  ```
+- Only `agent-cli update --check` needs a published release: it compares the running version against the latest one. The update itself builds from `main` by default and does not need any release to exist.
+
+### It rebuilds even though nothing seems to have changed
+
+- Expected. Without `--ref` the target is the `main` **branch**, which carries no version to compare against, so there is no "already up to date" shortcut — the build always runs. Use `agent-cli update --check` to ask whether a newer release exists, or `--ref <tag>` to pin a release.
 
 ### Update check fails offline / rate-limited
 
-- The version lookup calls the GitHub API. With no network (or after hitting the unauthenticated rate limit) it errors without changing anything. Retry later, or install directly with `--ref <tag|branch>`.
+- `--check` calls the GitHub API. With no network (or after hitting the unauthenticated rate limit) it errors without changing anything. Retry later. A plain `agent-cli update` still works: the lookup only fills in the `(latest: …)` banner there, and prints `(latest: unknown)` when it fails.
 
 ### `refusing to update without a TTY`
 

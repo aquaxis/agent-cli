@@ -16,6 +16,7 @@ mod ipc;
 mod log;
 mod mcp;
 mod persona;
+mod theme;
 mod tools;
 mod update;
 

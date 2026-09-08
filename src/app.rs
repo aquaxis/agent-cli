@@ -24,6 +24,7 @@ use crate::ipc::server::IpcServer;
 use crate::ipc::IpcMessage;
 use crate::log::ConversationLog;
 use crate::persona::{self, Persona, PersonaResolution};
+use crate::theme::{Role, Theme};
 use crate::tools::ToolRegistry;
 /// In raw mode, the terminal does not convert LF to CR+LF. These helpers ensure
 /// line endings include CR so the cursor returns to column 0 after each newline.
@@ -109,6 +110,8 @@ pub(crate) struct ReplState {
     /// This session's effective group; `/spawn` passes it to a detached child so
     /// the child inherits the launcher's group.
     group: Option<crate::id::GroupId>,
+    /// Colour scheme, resolved once at startup and shared by every writer.
+    theme: Theme,
 }
 
 const HISTORY_LIMIT: usize = 200;
@@ -254,9 +257,13 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         use std::io::IsTerminal;
         stdin_is_tty() && std::io::stderr().is_terminal() && config.ui.show_progress
     };
+    // Colour scheme. Resolved once, separately per stream, so a redirected
+    // answer stays plain even while the status display keeps its colour.
+    let theme = Theme::from_env(config.ui.color_mode());
     let indicator = Arc::new(std::sync::Mutex::new(if progress_enabled {
         let mut ind = StatusIndicator::new(Box::new(std::io::stderr()), true, stdin_is_tty());
         ind.thinking_view = config.ui.show_thinking_mode() != ShowThinkingMode::Hidden;
+        ind.theme = theme;
         ind
     } else {
         StatusIndicator::disabled()
@@ -305,6 +312,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         commands: RwLock::new(initial_commands),
         config_source: source.clone(),
         group: group.clone(),
+        theme,
     });
 
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
@@ -325,6 +333,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         agent.provider.model(),
         &agent.persona,
         caps,
+        &theme,
     );
 
     // Agent task
@@ -414,6 +423,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         // than streamed into the scrollback.
         display_state.capture_thinking =
             progress_enabled && show_thinking != ShowThinkingMode::Hidden;
+        display_state.theme = theme;
         // Where the cursor stands after the last displayed event; the indicator
         // may only paint from column 0 of a fresh row.
         let mut at_line_start = true;
@@ -620,12 +630,21 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // Serve mode never colours: `Theme::plain()` makes this the same bytes as
+    // before, and keeps every headless consumer's parsing intact.
+    let theme = Theme::plain();
     println!(
-        "agent-cli serving headless: id={} name={} provider={} model={}",
-        id.as_str(),
-        name.as_deref().unwrap_or("-"),
-        config.provider.kind,
-        agent.provider.model(),
+        "{}",
+        theme.out(
+            Role::Banner,
+            &format!(
+                "agent-cli serving headless: id={} name={} provider={} model={}",
+                id.as_str(),
+                name.as_deref().unwrap_or("-"),
+                config.provider.kind,
+                agent.provider.model(),
+            )
+        )
     );
     let _ = std::io::stdout().flush();
 
@@ -863,12 +882,19 @@ impl PromptRenderer {
     /// render, then re-emit `prompt` + the submitted `line` as a static, fully
     /// visible line followed by a newline — like a normal shell echoing input on
     /// Enter. Leaves the cursor at column 0 of a fresh line.
-    fn finish_line(&mut self, stdout: &mut std::io::Stdout, prompt: &str, line: &str) {
+    fn finish_line(
+        &mut self,
+        stdout: &mut std::io::Stdout,
+        theme: &Theme,
+        prompt_role: Role,
+        prompt: &str,
+        line: &str,
+    ) {
         use crossterm::style::Print;
         // Remove the interactive render (cursor may be mid-line) before echoing.
         self.clear_block(stdout);
-        let _ = stdout.execute(Print(prompt));
-        let _ = stdout.execute(Print(line));
+        let _ = stdout.execute(Print(theme.out(prompt_role, prompt)));
+        let _ = stdout.execute(Print(theme.out(Role::InputText, line)));
         // Advance to a fresh line; CR+LF is required in raw mode.
         let _ = stdout.execute(Print("\r\n"));
         self.cursor_row = 0;
@@ -885,6 +911,8 @@ impl PromptRenderer {
     fn render(
         &mut self,
         stdout: &mut std::io::Stdout,
+        theme: &Theme,
+        prompt_role: Role,
         prompt: &str,
         state: &InputState,
         suggestion: Option<&str>,
@@ -903,17 +931,19 @@ impl PromptRenderer {
         let sug_rows = suggestion_rows(suggestion, width);
         if sug_rows > 0 {
             let sug = truncate_suggestion(suggestion.unwrap_or(""), width - 1);
-            let _ = stdout.execute(Print(&sug));
+            let _ = stdout.execute(Print(theme.out(Role::Hint, &sug)));
             // CR+LF is required in raw mode; this lands at column 0 of the
             // prompt row, one row below the hint.
             let _ = stdout.execute(Print("\r\n"));
         }
 
         // 3. Print prompt + line; the terminal auto-wraps long content.
-        let _ = stdout.execute(Print(prompt));
-        let _ = stdout.execute(Print(&state.line));
+        let _ = stdout.execute(Print(theme.out(prompt_role, prompt)));
+        let _ = stdout.execute(Print(theme.out(Role::InputText, &state.line)));
 
-        // 4. Compute the target cursor position within the prompt rows.
+        // 4. Compute the target cursor position within the prompt rows. The
+        //    measurements are taken from the *plain* text: a style adds no
+        //    printable column, but its escape sequence would be counted.
         let prompt_cols = crate::editor::str_display_width(prompt);
         let total_cols = prompt_cols + state.display_width();
         let cursor_cols = state.display_cursor();
@@ -1258,12 +1288,18 @@ async fn run_input_loop_raw(
                         // bottom of the screen.
                         lock_indicator(&state.indicator).suspend();
                         renderer.clear_block(&mut stdout);
-                        raw_println(true, &format!("[tool approval] {} {}", req.tool_name, req.args));
+                        raw_println(
+                            true,
+                            &state.theme.out(
+                                Role::Confirm,
+                                &format!("[tool approval] {} {}", req.tool_name, req.args),
+                            ),
+                        );
                         renderer.reset();
                         // Reset input state for the approval prompt
                         input_state = InputState::new();
                         prompt_state = PromptState::AwaitingApproval(req.response);
-                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state, None);
+                        renderer.render(&mut stdout, &state.theme, Role::Confirm, APPROVAL_PROMPT, &input_state, None);
                     }
                     None => {
                         approval_rx = None;
@@ -1328,7 +1364,7 @@ async fn run_input_loop_raw(
                                 // Take the bottom rows back from the indicator
                                 // before printing over them.
                                 lock_indicator(&state.indicator).suspend();
-                                raw_eprintln(true, "[cancelled]");
+                                raw_eprintln(true, &state.theme.err(Role::Cancelled, "[cancelled]"));
                                 prompt_state = PromptState::Ready;
                                 renderer.reset();
                                 render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
@@ -1351,7 +1387,7 @@ async fn run_input_loop_raw(
                             begin_cancel(&state.cancel, &state.suppress);
                             lock_indicator(&state.indicator).suspend();
                             renderer.clear_block(&mut stdout);
-                            raw_eprintln(true, "[cancelled]");
+                            raw_eprintln(true, &state.theme.err(Role::Cancelled, "[cancelled]"));
                             input_state = InputState::new();
                             renderer.reset();
                             render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
@@ -1399,7 +1435,7 @@ async fn run_input_loop_raw(
                                         // Drain stale idle notifications
                                         while agent_idle_rx.try_recv().is_ok() {}
                                         // Echo the approval response, then move to next line
-                                        renderer.finish_line(&mut stdout, APPROVAL_PROMPT, &line);
+                                        renderer.finish_line(&mut stdout, &state.theme, Role::Confirm, APPROVAL_PROMPT, &line);
                                         // The turn continues: hand the bottom
                                         // rows back to the indicator.
                                         lock_indicator(&state.indicator).resume();
@@ -1407,7 +1443,7 @@ async fn run_input_loop_raw(
                                     }
 
                                     // Echo the submitted line, then move to next line
-                                    renderer.finish_line(&mut stdout, PROMPT, &line);
+                                    renderer.finish_line(&mut stdout, &state.theme, Role::PromptSymbol, PROMPT, &line);
 
                                     if let Some(rest) = trimmed.strip_prefix('/') {
                                         match handle_repl_command(rest, &input_tx, &state, true).await {
@@ -1461,7 +1497,7 @@ async fn run_input_loop_raw(
                                 KeyAction::ClearLine => {
                                     // Redraw prompt with cleared state
                                     if prompt_state.is_awaiting_approval() {
-                                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state, None);
+                                        renderer.render(&mut stdout, &state.theme, Role::Confirm, APPROVAL_PROMPT, &input_state, None);
                                     } else {
                                         render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
                                     }
@@ -1472,7 +1508,7 @@ async fn run_input_loop_raw(
                                 }
                                 KeyAction::Continue => {
                                     if prompt_state.is_awaiting_approval() {
-                                        renderer.render(&mut stdout, APPROVAL_PROMPT, &input_state, None);
+                                        renderer.render(&mut stdout, &state.theme, Role::Confirm, APPROVAL_PROMPT, &input_state, None);
                                     } else {
                                         render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
                                     }
@@ -1554,8 +1590,14 @@ async fn run_input_loop_line<R>(
                     Some(req) => {
                         if interactive {
                             raw_println(false, "");
-                            println!("[tool approval] {} {}", req.tool_name, req.args);
-                            print!("approve? [y/N]: ");
+                            println!(
+                                "{}",
+                                state.theme.out(
+                                    Role::Confirm,
+                                    &format!("[tool approval] {} {}", req.tool_name, req.args),
+                                )
+                            );
+                            print!("{}", state.theme.out(Role::Confirm, "approve? [y/N]: "));
                             let _ = std::io::stdout().flush();
                         }
                         prompt_state = PromptState::AwaitingApproval(req.response);
@@ -1683,21 +1725,28 @@ fn print_header(
     model: &str,
     persona: &crate::persona::Persona,
     caps: crate::ai::Capabilities,
+    theme: &Theme,
 ) {
     let display_name = name.unwrap_or("(unnamed)");
-    println!("agent-cli ready");
-    println!("  id        : {id}");
-    println!("  name      : {display_name}");
-    println!("  provider  : {provider} ({model})");
-    println!(
+    // The banner carries the brand colour; its detail rows are dimmed, so the
+    // eye lands on the name and moves on.
+    let detail = |line: String| println!("{}", theme.out(Role::BannerDetail, &line));
+    println!("{}", theme.out(Role::Banner, "agent-cli ready"));
+    detail(format!("  id        : {id}"));
+    detail(format!("  name      : {display_name}"));
+    detail(format!("  provider  : {provider} ({model})"));
+    detail(format!(
         "  features  : streaming={} tool_use={} thinking={}",
         caps.streaming, caps.tool_use, caps.thinking
-    );
-    println!("  role      : {}", persona.frontmatter.role);
+    ));
+    detail(format!("  role      : {}", persona.frontmatter.role));
     if !persona.frontmatter.skills.is_empty() {
-        println!("  skills    : {}", persona.frontmatter.skills.join(", "));
+        detail(format!(
+            "  skills    : {}",
+            persona.frontmatter.skills.join(", ")
+        ));
     }
-    println!("type /help for commands. /quit, /exit, or ^D to terminate.");
+    detail("type /help for commands. /quit, /exit, or ^D to terminate.".to_string());
 }
 
 /// `/auto [on|off|status]` handler (FR-04-2 / design doc 4.3A).
@@ -1706,11 +1755,13 @@ fn handle_auto_command(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
     match arg.as_str() {
         "on" | "true" | "1" => {
             state.auto_approve.store(true, Ordering::SeqCst);
-            raw_println(raw_mode, "[auto] tool approval: on (skipping y/N prompts)");
+            let msg = "[auto] tool approval: on (skipping y/N prompts)";
+            raw_println(raw_mode, &state.theme.out(Role::Info, msg));
         }
         "off" | "false" | "0" => {
             state.auto_approve.store(false, Ordering::SeqCst);
-            raw_println(raw_mode, "[auto] tool approval: off (will ask y/N for each tool call)");
+            let msg = "[auto] tool approval: off (will ask y/N for each tool call)";
+            raw_println(raw_mode, &state.theme.out(Role::Info, msg));
         }
         "" | "status" => {
             let cur = if state.auto_approve.load(Ordering::SeqCst) {
@@ -1718,10 +1769,12 @@ fn handle_auto_command(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
             } else {
                 "off"
             };
-            raw_println(raw_mode, &format!("[auto] tool approval: {cur}"));
+            let msg = format!("[auto] tool approval: {cur}");
+            raw_println(raw_mode, &state.theme.out(Role::Info, &msg));
         }
         other => {
-            raw_eprintln(raw_mode, &format!("usage: /auto [on|off|status]  (got: {other})"));
+            let msg = format!("usage: /auto [on|off|status]  (got: {other})");
+            raw_eprintln(raw_mode, &state.theme.err(Role::Info, &msg));
         }
     }
 }
@@ -1750,6 +1803,10 @@ struct DisplayState {
     /// When true, `thinking` text is not printed inline: the progress
     /// indicator shows it live under the spinner instead.
     capture_thinking: bool,
+    /// Colour scheme. Styling is applied at the print sites below, always
+    /// *after* the line has been measured and cut, so the column maths in
+    /// `crate::editor` never sees an escape sequence.
+    theme: Theme,
 }
 
 impl DisplayState {
@@ -1761,6 +1818,7 @@ impl DisplayState {
             raw_mode,
             compact_output: false,
             capture_thinking: false,
+            theme: Theme::plain(),
         }
     }
 
@@ -1771,9 +1829,22 @@ impl DisplayState {
     }
 
     /// Print a section header (e.g. `[answer]`), prefixing a newline only if a
-    /// previous section already printed this turn (FR-15).
-    fn section_header(&mut self, label: &str) {
-        raw_eprintln(self.raw_mode, &section_header_text(label, self.section_printed));
+    /// previous section already printed this turn (FR-15), styled with `role`.
+    fn section_header(&mut self, label: &str, role: Role) {
+        let styled = self.theme.err(role, label).into_owned();
+        self.section_header_styled(&styled);
+    }
+
+    /// Same, for a header the caller has already styled — the `[tool-call]`
+    /// line, whose name and arguments carry different roles.
+    ///
+    /// The separating newline is added around the styled text, never inside it,
+    /// so a blank row never carries a colour into a region the display erases.
+    fn section_header_styled(&mut self, styled: &str) {
+        raw_eprintln(
+            self.raw_mode,
+            &section_header_text(styled, self.section_printed),
+        );
         self.section_printed = true;
     }
 }
@@ -1848,6 +1919,42 @@ fn compact_tool_result(
     let mut out = rows[..max_rows].join("\n");
     out.push_str(&format!("\n… +{hidden} more lines"));
     out
+}
+
+/// Style a finished `[tool-call] <name> <args>` line: the marker and the tool
+/// name carry the activity colour, the arguments are dimmed to grey.
+///
+/// The split is on the second space, which is exact because the line is built
+/// as `"[tool-call] {name} {args}"` and a tool name never contains a space. A
+/// line already truncated to the terminal width may end before that point, in
+/// which case the whole of it is the name.
+fn style_tool_call_line(theme: &Theme, line: &str) -> String {
+    match line
+        .match_indices(' ')
+        .nth(1)
+        .map(|(i, _)| line.split_at(i + 1))
+    {
+        // The space between the two parts stays outside both sequences.
+        Some((head, args)) => format!(
+            "{} {}",
+            theme.err(Role::ToolName, head.trim_end()),
+            theme.err(Role::ToolArgs, args),
+        ),
+        None => theme.err(Role::ToolName, line).into_owned(),
+    }
+}
+
+/// Style a possibly multi-row message row by row, so every row opens and closes
+/// its own sequence. A colour must never span a line break: the row below may be
+/// erased and redrawn (the progress indicator), or scrolled away.
+fn style_rows(theme: &Theme, role: Role, text: &str) -> String {
+    if !theme.stderr {
+        return text.to_string();
+    }
+    text.split('\n')
+        .map(|row| theme.err(role, row).into_owned())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Whether the cursor sits at column 0 of a fresh row once `ev` has been
@@ -1953,6 +2060,10 @@ struct StatusIndicator {
     /// `hidden`). With no `thinking` view there is nothing to click, so mouse
     /// reporting is left alone and text selection keeps working during a turn.
     thinking_view: bool,
+    /// Colour scheme. Each row is styled after it has been cut to the terminal
+    /// width, and separately from its neighbours, so the row bookkeeping and
+    /// the erase are unaffected.
+    theme: Theme,
 }
 
 impl StatusIndicator {
@@ -1970,6 +2081,7 @@ impl StatusIndicator {
             expanded: false,
             height_override: None,
             thinking_view: true,
+            theme: Theme::plain(),
         }
     }
 
@@ -2142,11 +2254,29 @@ impl StatusIndicator {
         let mut rows = Vec::with_capacity(1 + THINKING_ROWS);
         rows.push(status);
         rows.extend(self.thinking_rows());
+        let painted_rows = rows.len() as u16;
+        // Style last, once every row has been cut to the terminal width, and
+        // row by row so no sequence spans a line break: the block is erased and
+        // redrawn ten times a second, and a colour left open would survive it.
+        // The reasoning rows are the indented ones; the status row and the
+        // elision marker above them belong to the progress colour.
+        let styled: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let role = if i > 0 && row.starts_with("  ") {
+                    Role::Thinking
+                } else {
+                    Role::Progress
+                };
+                self.theme.err(role, row).into_owned()
+            })
+            .collect();
         let nl = self.newline();
-        let _ = write!(self.out, "{}", rows.join(nl));
+        let _ = write!(self.out, "{}", styled.join(nl));
         let _ = self.out.flush();
         self.painted = true;
-        self.painted_rows = rows.len() as u16;
+        self.painted_rows = painted_rows;
     }
 
     /// Erase the block, leaving the cursor exactly at its origin (column 0 of
@@ -2188,6 +2318,11 @@ impl StatusIndicator {
             &format!("{} {}", mark.glyph(), format_elapsed(run.started.elapsed())),
             cols,
         );
+        let role = match mark {
+            Mark::Ok => Role::Success,
+            Mark::Err => Role::Failure,
+        };
+        let line = self.theme.err(role, &line);
         let nl = self.newline();
         let _ = write!(self.out, "{line}{nl}");
         let _ = self.out.flush();
@@ -2231,9 +2366,11 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
         AgentEvent::TurnStart => {}
         AgentEvent::Text { delta } => {
             if !state.answer_printed {
-                state.section_header("[answer]");
+                state.section_header("[answer]", Role::AnswerMarker);
                 state.answer_printed = true;
             }
+            // The answer body is the longest thing on screen and is left
+            // uncoloured on purpose.
             raw_print_str(rm, &delta);
         }
         // Captured by the progress indicator, which shows it live under the
@@ -2243,24 +2380,26 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
             ShowThinkingMode::Hidden => {}
             ShowThinkingMode::Collapsed => {
                 if !state.thinking_printed {
-                    state.section_header("[thinking]");
+                    state.section_header("[thinking]", Role::Thinking);
                     state.thinking_printed = true;
                 } else {
                     raw_eprint(rm, " ");
                 }
                 let collapsed = collapse_thinking_text(&text);
-                raw_eprint(rm, &collapsed);
+                raw_eprint(rm, &state.theme.err(Role::Thinking, &collapsed));
             }
             ShowThinkingMode::Expanded => {
                 if !state.thinking_printed {
-                    state.section_header("[thinking]");
+                    state.section_header("[thinking]", Role::Thinking);
                     state.thinking_printed = true;
                 }
-                raw_eprint(rm, &text);
+                raw_eprint(rm, &state.theme.err(Role::Thinking, &text));
             }
         },
         AgentEvent::ToolCall { name, args } => {
             let line = one_line_tool_call(&name, &args);
+            // Cut first, style second: the truncation counts columns, so it
+            // must never see an escape sequence.
             let line = if state.compact_output {
                 crate::editor::truncate_display(
                     &line,
@@ -2269,7 +2408,8 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
             } else {
                 format!("[tool-call] {name} {args}")
             };
-            state.section_header(&line);
+            let styled = style_tool_call_line(&state.theme, &line);
+            state.section_header_styled(&styled);
         }
         AgentEvent::ToolResult { name, ok, output } => {
             let mark = if ok { "ok" } else { "ERR" };
@@ -2284,7 +2424,7 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
             } else {
                 format!("[tool-result {mark}] {name}: {output}")
             };
-            raw_eprintln(rm, &line);
+            raw_eprintln(rm, &style_rows(&state.theme, Role::ToolOutput, &line));
         }
         AgentEvent::Done => {
             state.reset();
@@ -2292,10 +2432,13 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
         }
         AgentEvent::Error { message } => {
             state.reset();
-            raw_eprintln(rm, &format!("\n[error] {message}"));
+            let line = format!("[error] {message}");
+            // The separating newline stays outside the sequence.
+            raw_eprintln(rm, &format!("\n{}", style_rows(&state.theme, Role::Failure, &line)));
         }
         AgentEvent::Info { message } => {
-            raw_eprintln(rm, &format!("[info] {message}"));
+            let line = format!("[info] {message}");
+            raw_eprintln(rm, &style_rows(&state.theme, Role::Info, &line));
         }
     }
 }
@@ -2469,7 +2612,14 @@ async fn render_prompt(
     input_state: &InputState,
 ) {
     let sug = current_suggestion(state, &input_state.line).await;
-    renderer.render(stdout, prompt, input_state, sug.as_deref());
+    renderer.render(
+        stdout,
+        &state.theme,
+        Role::PromptSymbol,
+        prompt,
+        input_state,
+        sug.as_deref(),
+    );
 }
 
 async fn handle_repl_command(
@@ -2534,7 +2684,10 @@ async fn handle_repl_command(
             let total = hist.len();
             let start = total.saturating_sub(n);
             for (i, line) in hist.iter().enumerate().skip(start) {
-                raw_println(raw_mode, &format!("{:>4}  {}", i + 1, line));
+                // Past input is replayed dimmed, so it stays distinct from the
+                // line the user is writing now.
+                let entry = format!("{:>4}  {}", i + 1, line);
+                raw_println(raw_mode, &state.theme.out(Role::HistoryEntry, &entry));
             }
             if total == 0 {
                 raw_println(raw_mode, "(empty)");
@@ -2861,6 +3014,7 @@ mod tests {
     //! plus unit tests for InputState history navigation (FR-03).
     use super::*;
     use crate::persona::Persona;
+    use crate::theme::{has_sgr, strip_sgr};
     use std::time::Duration;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
@@ -3033,6 +3187,7 @@ mod tests {
                 from_explicit: false,
             },
             group: None,
+            theme: Theme::plain(),
         })
     }
 
@@ -3555,7 +3710,7 @@ mod tests {
     fn display_state_section_flag_resets_each_turn() {
         let mut s = DisplayState::new(false);
         assert!(!s.section_printed);
-        s.section_header("[answer]");
+        s.section_header("[answer]", Role::AnswerMarker);
         assert!(s.section_printed);
         s.reset();
         assert!(!s.section_printed);
@@ -3815,6 +3970,130 @@ mod tests {
         let out = sink.taken();
         assert!(out.contains('✗'), "failure mark expected: {out:?}");
         assert!(!out.contains('✔'));
+    }
+
+    // --- Colour scheme (theme applied to the display) ---
+
+    /// A theme that colours both streams, for asserting the styled output.
+    fn colour_theme() -> Theme {
+        Theme {
+            stdout: true,
+            stderr: true,
+        }
+    }
+
+    #[test]
+    fn tool_call_line_is_styled_as_name_plus_arguments() {
+        let theme = colour_theme();
+        let line = r#"[tool-call] bash {"command":"echo hi"}"#;
+        let styled = style_tool_call_line(&theme, line);
+        // The name carries the activity colour, the arguments the dim grey, and
+        // the two are separate sequences with the space outside both.
+        assert_eq!(
+            styled,
+            format!(
+                "{} {}",
+                crate::theme::paint(Role::ToolName, "[tool-call] bash"),
+                crate::theme::paint(Role::ToolArgs, r#"{"command":"echo hi"}"#),
+            )
+        );
+        // Nothing but the styling changed.
+        assert_eq!(strip_sgr(&styled), line);
+    }
+
+    #[test]
+    fn a_tool_call_line_cut_before_its_arguments_is_styled_whole() {
+        let theme = colour_theme();
+        // A narrow terminal can cut the line before the second space.
+        let cut = crate::editor::truncate_display("[tool-call] ba", 14);
+        let styled = style_tool_call_line(&theme, &cut);
+        assert_eq!(styled, crate::theme::paint(Role::ToolName, &cut));
+        assert_eq!(strip_sgr(&styled), cut);
+    }
+
+    #[test]
+    fn a_plain_theme_leaves_the_tool_call_line_untouched() {
+        let line = r#"[tool-call] bash {"command":"echo hi"}"#;
+        assert_eq!(style_tool_call_line(&Theme::plain(), line), line);
+    }
+
+    #[test]
+    fn multi_row_messages_are_styled_row_by_row() {
+        let theme = colour_theme();
+        // An elided tool result spans several rows; a colour must not span the
+        // line breaks, since the rows below may be erased and redrawn.
+        let text = "[tool-result ok] bash: one\ntwo\n… +3 more lines";
+        let styled = style_rows(&theme, Role::ToolOutput, text);
+        assert_eq!(styled.lines().count(), 3);
+        for row in styled.lines() {
+            assert!(
+                row.starts_with("\u{1b}[") && row.ends_with("\u{1b}[0m"),
+                "every row must open and close its own sequence: {row:?}"
+            );
+        }
+        assert_eq!(strip_sgr(&styled), text);
+        // Disabled: not a byte changes.
+        assert_eq!(style_rows(&Theme::plain(), Role::ToolOutput, text), text);
+    }
+
+    #[test]
+    fn indicator_styles_its_rows_without_changing_their_number_or_width() {
+        let plain_sink = CaptureSink::default();
+        let mut plain = indicator_with_thinking(&plain_sink, 30);
+        plain.paint(true);
+        let plain_out = plain_sink.taken();
+
+        let sink = CaptureSink::default();
+        let mut ind = indicator_with_thinking(&sink, 30);
+        ind.theme = colour_theme();
+        ind.paint(true);
+        let out = sink.taken();
+
+        assert_ne!(out, plain_out, "the coloured block must carry sequences");
+        // The escape sequences of the *block* are the only difference: the rows
+        // themselves, and therefore the erase maths, are unchanged.
+        assert_eq!(strip_sgr(&out), strip_sgr(&plain_out));
+        assert_eq!(ind.painted_rows(), plain.painted_rows());
+        for row in strip_sgr(&out).split('\n') {
+            assert!(crate::editor::str_display_width(row) <= 39);
+        }
+    }
+
+    #[test]
+    fn indicator_marks_a_finished_turn_in_the_outcome_colour() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.theme = colour_theme();
+        ind.start();
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.finish(Mark::Ok);
+        let ok = sink.taken();
+        assert!(ok.contains("\u{1b}[1;32m"), "green bold expected: {ok:?}");
+        assert!(ok.trim_end().ends_with("\u{1b}[0m"), "must close: {ok:?}");
+        assert!(strip_sgr(&ok).contains('✔'));
+
+        let mut ind = test_indicator(&sink);
+        ind.theme = colour_theme();
+        ind.start();
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.finish(Mark::Err);
+        let err = sink.taken();
+        assert!(err.contains("\u{1b}[1;31m"), "red bold expected: {err:?}");
+        assert!(strip_sgr(&err).contains('✗'));
+    }
+
+    #[test]
+    fn a_plain_indicator_writes_no_colour_of_its_own() {
+        let sink = CaptureSink::default();
+        let mut ind = indicator_with_thinking(&sink, 30);
+        ind.paint(true);
+        ind.finish(Mark::Ok);
+        let out = sink.taken();
+        // Only cursor movement and erasing: with colour off the block is drawn
+        // exactly as it was before the scheme existed.
+        assert!(!has_sgr(&out), "a plain indicator must not colour: {out:?}");
     }
 
     #[test]

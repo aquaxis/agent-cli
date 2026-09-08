@@ -18,11 +18,12 @@
 - Line editing at the prompt — `↑` / `↓` history browsing, `Ctrl+A` / `Ctrl+E`, `Esc` to clear, live command candidates shown above the prompt, and `Tab` completion for `/` commands.
 - Stop a running turn with `Esc` — pressing it while the agent is streaming, running a tool, or asking for approval hands the prompt straight back, without waiting for the model or the tool, and the conversation stays usable.
 - Live turn progress — what is being executed is shown on a single line (cut with `…` when it does not fit), with a spinner and the elapsed time on the line beneath it, which turns into `✔ <elapsed>` when the turn finishes. Tool results are cut to five rows on screen (`… +N more lines`), and the model's reasoning streams live under the spinner, the last 10 rows at a time; click the block to expand it to everything the screen can hold, and click again to collapse.
+- Colour-coded output — the prompt and tool names in cyan, arguments and tool output in grey, the answer marker and the startup banner in magenta, `✔` in green, `✗` and errors in red, the approval prompt in yellow. The answer body itself is left uncoloured. Colour is written only to streams that are terminals, honours `NO_COLOR`, and can be forced or disabled with `[ui] color`.
 - Scriptable — pipe a question straight into `agent-cli run`, or query a running agent with `agent-cli ask <peer> <text>` and get just the answer on stdout.
 - Streaming responses are synchronized with the REPL prompt so a fresh `> ` is always redrawn after the response completes.
 - Reliable shutdown — any of `/quit`, `/exit`, `Ctrl+D`, `Ctrl+C`, or `SIGTERM` exits within ~1 s and cleans up the IPC socket and registry metadata automatically.
 - Self-diagnostics with `agent-cli doctor` and a 5-stage smoke test with `agent-cli selftest` (Provider OK / bash tool / IPC / subprocess registration / subprocess AI response).
-- Self-update with `agent-cli update` — checks the latest GitHub release and rebuilds from source into your install prefix; `--check` reports availability without changing anything.
+- Self-update with `agent-cli update` — rebuilds from source into your install prefix, from `main` by default or from any tag/branch with `--ref`; `--check` reports the latest release without changing anything.
 - MCP client — declare external Model Context Protocol servers in `[[mcp.servers]]`; their tools are discovered at startup over **stdio** (a subprocess) or **http** (Streamable HTTP to a URL) and offered to the agent as `mcp__<server>__<tool>`. Inspect them with `agent-cli mcp list`.
 - Configurable tool-use loop cap via `[runtime] max_tool_iterations` (default 24, max `u32::MAX`) — see "[info] max tool-use iterations reached" below.
 - Ollama `message.thinking` field is decoded as `[thinking]` for thinking-capable models such as `glm-5.1:cloud`.
@@ -318,7 +319,7 @@ See [`doc/config.md`](doc/config.md) for the full reference and [`doc/troublesho
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for the answer, print it (default 120 s) |
 | `agent-cli providers` | Show backend status |
 | `agent-cli doctor` | Sanity-check config / API keys / connectivity / registry / `bash` |
-| `agent-cli update [--check] [--force] [--yes] [--ref <ref>]` | Update to the latest release (source build via `cargo`) |
+| `agent-cli update [--check] [--force] [--yes] [--ref <ref>]` | Rebuild and replace the binary from `main` (source build via `cargo`), or from `--ref` |
 | `agent-cli selftest [--provider <kind>]` | Smoke test in 5 stages |
 | `agent-cli config show` | Print current config |
 | `agent-cli config edit` | Open config in `$EDITOR` |
@@ -387,18 +388,21 @@ bucket). A group is fixed at launch. See [`doc/usage.md`](doc/usage.md) "Groups"
 
 ### Updating
 
-`agent-cli update` upgrades an installed agent-cli to the latest release. Since
+`agent-cli update` rebuilds an installed agent-cli from the repository. Since
 agent-cli ships no prebuilt binaries (install is a source build), the update is
-too: it looks up the latest GitHub release, then runs `cargo install --git … --tag
-<version>` into the running binary's prefix and verifies the new `--version`. It
-needs the Rust toolchain (`cargo`) and is Linux-only.
+too: it runs `cargo install --git … --branch main` into the running binary's
+prefix and verifies the new `--version`. It needs the Rust toolchain (`cargo`)
+and is Linux-only.
 
 ```bash
-agent-cli update --check     # report current vs latest; change nothing
-agent-cli update             # confirm, then rebuild + replace if newer
-agent-cli update --yes       # skip the confirmation prompt
-agent-cli update --ref main  # build from a branch/tag (e.g. before a release is tagged)
+agent-cli update --check       # report current vs latest release; change nothing
+agent-cli update               # confirm, then rebuild from main
+agent-cli update --yes         # skip the confirmation prompt
+agent-cli update --ref v0.11.0 # build from a specific tag (or another branch)
 ```
+
+Without `--ref` the update builds from **`main`** — a bare `agent-cli update` is
+exactly `agent-cli update --ref main`.
 
 See [`doc/usage.md`](doc/usage.md) "Updating".
 

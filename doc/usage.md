@@ -26,7 +26,7 @@ agent-cli [--config <path>] <subcommand>
 | `agent-cli ask <peer> <text> [--timeout <secs>]` | Send a prompt to a peer, wait for its AI response, print it, and exit (default timeout 120 seconds) |
 | `agent-cli providers` | Show available backend status |
 | `agent-cli doctor` | Sanity-check config / API keys / connectivity / registry / bash |
-| `agent-cli update [--check] [--force] [--yes] [--ref <ref>]` | Update agent-cli to the latest released version (a source build via `cargo`). See [Updating](#updating) |
+| `agent-cli update [--check] [--force] [--yes] [--ref <ref>]` | Rebuild agent-cli from `main` (or `--ref`) via `cargo`. See [Updating](#updating) |
 | `agent-cli selftest [--provider <name>]` | Run smoke test |
 | `agent-cli config show` | Print current configuration |
 | `agent-cli config edit` | Open config in `$EDITOR` |
@@ -109,30 +109,33 @@ groups.
 
 ## Updating
 
-`agent-cli update` upgrades an installed agent-cli to the latest released
-version. Because agent-cli ships no prebuilt binaries and is installed by a
-source build (see [Install](../README.md#install)), the update is also a source
-build: it runs `cargo install --git <repo> --tag <version> agent-cli` into the
-running binary's install prefix, then verifies the new `--version`. It therefore
-needs the **Rust toolchain (`cargo`)** on `PATH` and is **Linux-only**.
+`agent-cli update` rebuilds an installed agent-cli from the repository. Because
+agent-cli ships no prebuilt binaries and is installed by a source build (see
+[Install](../README.md#install)), the update is also a source build: it runs
+`cargo install --git <repo> --branch main agent-cli` into the running binary's
+install prefix, then verifies the new `--version`. It therefore needs the
+**Rust toolchain (`cargo`)** on `PATH` and is **Linux-only**.
 
 ```text
-agent-cli update --check          # report current vs latest; make no changes
-agent-cli update                  # if newer, confirm, then build + replace
+agent-cli update --check          # report current vs latest release; make no changes
+agent-cli update                  # confirm, then build from main + replace
 agent-cli update --yes            # skip the confirmation prompt
-agent-cli update --ref main       # build from a branch (or a specific tag) instead
-agent-cli update --force          # reinstall even if already up to date
+agent-cli update --ref v0.11.0    # build from a specific tag (or another branch)
+agent-cli update --force          # skip the prompt and reinstall unconditionally
 ```
 
-- `--check` prints the current and latest versions and whether an update is
-  available, then exits without touching the binary — safe for scripts/CI.
-- Without `--check`, if a newer release exists it asks for confirmation (showing
-  the from→to versions and the target prefix) before rebuilding. `--yes` (or
-  `--force`) skips the prompt; on a non-interactive stdin the command refuses
-  unless `--yes` is given.
-- The latest version is looked up from the project's GitHub releases (falling
-  back to tags). If the project has no published release yet, use
-  `--ref main` (or an explicit tag) to update from a specific ref.
+- **Without `--ref` the target is `main`**: a bare `agent-cli update` is exactly
+  `agent-cli update --ref main`, so the installed binary follows the development
+  branch. Pass `--ref <tag>` to pin a release.
+- Because a branch carries no version to compare against, the update always
+  rebuilds — there is no "already up to date" shortcut. Use `--check` first if
+  you only want to know whether a newer release exists.
+- `--check` prints the current version and the latest **release** and whether an
+  update is available, then exits without touching the binary — safe for
+  scripts/CI. It is the one path that requires the GitHub API to answer.
+- Without `--check`, the command asks for confirmation (showing the from→to refs
+  and the target prefix) before rebuilding. `--yes` (or `--force`) skips the
+  prompt; on a non-interactive stdin the command refuses unless `--yes` is given.
 - The install is delegated to `cargo install`, which builds to a temporary
   location and moves the binary into place; success is reported only after the
   new binary answers `--version`.
@@ -274,6 +277,33 @@ On an interactive terminal, the REPL shows what it is doing while a turn runs:
 - While an answer is streaming the spinner is not drawn: the text itself flows down the screen, which shows the turn is alive.
 
 It is drawn only when both stdin and stderr are terminals, so piped or redirected output is unaffected, and it can be turned off with `[ui] show_progress = false` (see [`doc/config.md`](config.md)). With it off, tool calls are printed in full again exactly as before.
+
+### Colours on Screen
+
+On an interactive terminal the output is colour-coded, so the parts you wrote, the parts that say what is happening, and the parts you may skim past are told apart at a glance:
+
+| What | Colour |
+|---|---|
+| Prompt symbol `> ` | cyan, bold |
+| The line you are typing, and its echo on submit | bold |
+| `[answer]` marker | magenta, bold |
+| **The answer body** | **not coloured** — it is the longest thing on screen |
+| `[tool-call] <tool>` | cyan, bold |
+| Tool arguments | grey |
+| `[tool-result …]` | grey, dim |
+| `[thinking]` and the live reasoning rows | grey, dim |
+| Spinner, elapsed time, `… +N more` markers | grey, dim |
+| `✔ <elapsed>` | green, bold |
+| `✗ <elapsed>`, `[error]` | red, bold |
+| `[info]`, `[auto]` | blue |
+| `[tool approval]`, `approve? [y/N]:` | yellow, bold |
+| `[cancelled]` | grey, dim |
+| `/history` entries, the command hint above the prompt | dim |
+| `agent-cli ready` banner (details dimmed) | magenta, bold |
+
+Only the ANSI 16 colours are used and only as foreground colours, so your terminal's own palette decides the exact shades and the scheme works on light and dark backgrounds alike.
+
+Colour is decided per stream: stdout (the answer, the banner) and stderr (everything else) are judged separately, so `agent-cli run > answer.txt` from a terminal writes a clean file while the status display on screen stays coloured. Redirected output, `agent-cli serve`, `NO_COLOR` and `TERM=dumb` all produce exactly the same plain bytes as before the scheme existed. See `[ui] color` in [`doc/config.md`](config.md) to force it on or off.
 
 ### Custom Slash Commands
 

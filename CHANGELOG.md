@@ -4,6 +4,27 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.12.0]
+
+### Changed
+
+- `agent-cli update` now builds from **`main`** when `--ref` is not given — a bare `agent-cli update` is exactly `agent-cli update --ref main`. Previously it targeted the latest published GitHub release.
+  - Because a branch carries no version to compare against, the update always rebuilds; the "already up to date" shortcut no longer applies to the default path. `agent-cli update --check` still reports the running version against the latest **release** and changes nothing.
+  - A published release is no longer needed for an update to work, and a failed GitHub lookup no longer blocks it — the banner just reads `(latest: unknown)`.
+  - Pin a release with `--ref v0.11.0`; any other branch or tag still works as before.
+
+### Added
+
+- Terminal colour scheme — the REPL is now colour-coded with the ANSI 16 colours, so input, activity and status are told apart at a glance.
+  - Cyan bold for the prompt symbol and `[tool-call] <tool>`; grey for tool arguments; grey dim for `[tool-result]`, reasoning, the spinner, the elapsed time and the `… +N more` markers; magenta bold for the `[answer]` marker and the startup banner; green bold for `✔ <elapsed>`; red bold for `✗ <elapsed>` and `[error]`; blue for `[info]` / `[auto]`; yellow bold for `[tool approval]` and `approve? [y/N]:`; dim for `[cancelled]`, the `/history` listing and the command hint above the prompt.
+  - **The answer body is deliberately left uncoloured** — it is the longest thing on screen.
+  - New `[ui] color` (default `"auto"`): `"auto"` colours a stream only when it is an interactive terminal, `NO_COLOR` is unset or empty and `TERM` is not `dumb`; `"always"` forces colour even when redirected; `"never"` disables it. Unknown values fall back to `"auto"`.
+  - stdout and stderr are decided independently, so `agent-cli run > answer.txt` from a terminal writes a clean file while the on-screen status display stays coloured. `agent-cli serve` is never coloured.
+  - Only ANSI 16 foreground colours are used — no background, no `reverse`, no 256-colour — so the terminal's own palette decides the shades and the scheme works on light and dark backgrounds.
+  - With colour off, the output is byte-identical to v0.11.0 on every path. Layout is untouched: styling is applied only after each line has been measured, cut and wrapped, and each row carries its own self-closing sequence, so truncation, the prompt's cursor column and the progress indicator's erase are unaffected.
+  - Internally: a new `theme.rs` module maps a `Role` (what a piece of text is) to a colour and attributes. No new dependency; Linux-only as before.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/usage.md`, `doc/config.md`, `doc/architecture.md`, `doc/troubleshooting.md`.
+
 ## [0.11.0]
 
 ### Added
@@ -167,7 +188,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/aquaxis/agent-cli/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/aquaxis/agent-cli/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/aquaxis/agent-cli/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/aquaxis/agent-cli/compare/v0.8.0...v0.9.0

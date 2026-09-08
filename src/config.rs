@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
+use crate::theme::ColorMode;
 
 const DEFAULT_CONFIG: &str = r#"# agent-cli configuration
 
@@ -104,6 +105,8 @@ max_output_kb = 256
 show_thinking = "collapsed"
 # Activity line + spinner/elapsed while a turn runs (interactive terminals only).
 show_progress = true
+# Colour the output: "auto" (terminals only, honours NO_COLOR) / "always" / "never".
+color         = "auto"
 
 [history]
 # Opt-in hybrid window management. When disabled (default), the full
@@ -501,6 +504,10 @@ pub struct UiConfig {
     /// terminal, where the indicator is never drawn.
     #[serde(default = "default_show_progress")]
     pub show_progress: bool,
+    /// Colour the terminal output: `"auto"` (colour a stream when it is an
+    /// interactive terminal and `NO_COLOR` is unset), `"always"`, `"never"`.
+    #[serde(default = "default_color")]
+    pub color: String,
 }
 
 impl Default for UiConfig {
@@ -508,6 +515,7 @@ impl Default for UiConfig {
         Self {
             show_thinking: default_show_thinking(),
             show_progress: default_show_progress(),
+            color: default_color(),
         }
     }
 }
@@ -518,6 +526,10 @@ fn default_show_thinking() -> String {
 
 fn default_show_progress() -> bool {
     true
+}
+
+fn default_color() -> String {
+    "auto".to_string()
 }
 
 /// `[history]` — hybrid history-window management. Opt-in (`enabled = false`
@@ -576,6 +588,12 @@ impl UiConfig {
             "collapsed" => ShowThinkingMode::Collapsed,
             _ => ShowThinkingMode::Collapsed,
         }
+    }
+
+    /// Normalize the `color` string into a [`ColorMode`]. Unknown values fall
+    /// back to the default `Auto`, like `show_thinking` above.
+    pub fn color_mode(&self) -> ColorMode {
+        ColorMode::parse(&self.color)
     }
 }
 
@@ -989,6 +1007,42 @@ show_progress = false
         )
         .unwrap();
         assert!(!off.ui.show_progress);
+    }
+
+    /// `[ui] color` defaults to `"auto"`, so a config file written before the
+    /// colour scheme existed keeps working; unknown values fall back to it.
+    #[test]
+    fn color_defaults_to_auto_and_parses_known_values() {
+        assert_eq!(UiConfig::default().color_mode(), ColorMode::Auto);
+        let cfg: Config = toml::from_str(tests_default_config()).unwrap();
+        assert_eq!(
+            cfg.ui.color_mode(),
+            ColorMode::Auto,
+            "absent key must default to auto"
+        );
+        for (raw, expected) in [
+            ("always", ColorMode::Always),
+            ("never", ColorMode::Never),
+            ("auto", ColorMode::Auto),
+            ("chartreuse", ColorMode::Auto),
+        ] {
+            let ui = UiConfig {
+                color: raw.into(),
+                ..UiConfig::default()
+            };
+            assert_eq!(ui.color_mode(), expected, "value {raw:?}");
+        }
+        let never: Config = toml::from_str(
+            r#"
+[provider]
+kind = "ollama"
+
+[ui]
+color = "never"
+"#,
+        )
+        .unwrap();
+        assert_eq!(never.ui.color_mode(), ColorMode::Never);
     }
 
     /// Default value of `max_tool_iterations` is 24 (raised from 8 on 2026-05-03).
