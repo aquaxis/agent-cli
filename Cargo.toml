@@ -1,6 +1,6 @@
 [package]
 name = "agent-cli"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 license = "MIT"
 description = "Standalone multi-agent CLI with Claude Code-equivalent functionality"

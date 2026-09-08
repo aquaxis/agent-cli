@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.12.0]
+
 ### Changed
 
 - `agent-cli update` now builds from **`main`** when `--ref` is not given — a bare `agent-cli update` is exactly `agent-cli update --ref main`. Previously it targeted the latest published GitHub release.
@@ -186,7 +188,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/aquaxis/agent-cli/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/aquaxis/agent-cli/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/aquaxis/agent-cli/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/aquaxis/agent-cli/compare/v0.8.0...v0.9.0
