@@ -17,6 +17,7 @@
 - Custom slash commands — drop a Markdown file into `.agent-cli/commands/` and it becomes `/<name>`, with `$ARGUMENTS` / `$1`…`$N` / `@file` expansion and prefix auto-execution.
 - Line editing at the prompt — `↑` / `↓` history browsing, `Ctrl+A` / `Ctrl+E`, `Esc` to clear, live command candidates shown above the prompt, and `Tab` completion for `/` commands.
 - Stop a running turn with `Esc` — pressing it while the agent is streaming, running a tool, or asking for approval hands the prompt straight back, without waiting for the model or the tool, and the conversation stays usable.
+- Live turn progress — what is being executed is shown on a single line (cut with `…` when it does not fit), with a spinner and the elapsed time on the line beneath it, which turns into `✔ <elapsed>` when the turn finishes. Tool results are cut to five rows on screen (`… +N more lines`), and the model's reasoning streams live under the spinner, the last 10 rows at a time; click the block to expand it to everything the screen can hold, and click again to collapse.
 - Scriptable — pipe a question straight into `agent-cli run`, or query a running agent with `agent-cli ask <peer> <text>` and get just the answer on stdout.
 - Streaming responses are synchronized with the REPL prompt so a fresh `> ` is always redrawn after the response completes.
 - Reliable shutdown — any of `/quit`, `/exit`, `Ctrl+D`, `Ctrl+C`, or `SIGTERM` exits within ~1 s and cleans up the IPC socket and registry metadata automatically.

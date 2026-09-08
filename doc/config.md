@@ -254,6 +254,7 @@ provider    = "tavily"
 | Key | Type | Default | Description |
 |------|----|------|------|
 | `show_thinking` | string | `"collapsed"` | Thinking display mode: `"collapsed"` (truncated to the first 80 characters + first line) / `"expanded"` (full text) / `"hidden"` (not displayed). See "UI Display Mode" below for details |
+| `show_progress` | bool | `true` | Draw the progress indicator (activity line + spinner and elapsed time) while a turn runs. Only ever drawn when stdin and stderr are both terminals; see "UI Display Mode" below |
 
 ### `[history]`
 
@@ -384,6 +385,7 @@ max_output_kb = 512
 
 [ui]
 show_thinking = "collapsed"
+show_progress = true
 ```
 
 ### 4.3 Full-featured Configuration
@@ -537,6 +539,19 @@ Notes:
 | `"collapsed"` (default) | Truncates each thinking delta to "first 80 characters + `...`"; if there is a newline, only the first line is shown. Displayed as a single line in the format `[thinking] <truncated>...` |
 | `"expanded"` | Displays the full received thinking text in real time (`[thinking] <text>`) |
 | `"hidden"` | Does not display thinking lines at all (discards `AgentEvent::Thinking` on the REPL side) |
+
+`ui.show_progress` controls the progress indicator drawn while a turn runs: the line being executed (a tool call, cut to one terminal row with `…`) and, beneath it, a spinner with the elapsed time, replaced by `✔ <elapsed>` (or `✗ <elapsed>` after an error) when the turn ends.
+
+| Value | Behavior |
+|----|------|
+| `true` (default) | The indicator is drawn, the `[tool-call]` line is shortened to a single row and a `[tool-result]` to five rows (`… +N more lines`) so the spinner stays close to them, and reasoning is shown live under the spinner instead of being streamed into the scrollback |
+| `false` | Nothing is drawn; `[tool-call]` lines keep their full arguments and `[tool-result]` its full output |
+
+`show_thinking` decides what the live reasoning block contains: with `"hidden"` there is none (and no mouse reporting is enabled), otherwise the last 10 rows are shown and a mouse click expands the block to as much as the screen can hold. Because the block replaces the inline `[thinking]` output, reasoning is no longer kept in the scrollback while the indicator is on — it is still written to the conversation log.
+
+Shortening affects the screen only: the model receives every tool result in full, and the conversation log keeps the complete text.
+
+The indicator additionally requires stdin **and** stderr to be interactive terminals: with piped or redirected output, and in `agent-cli serve`, it is never drawn regardless of this setting.
 
 Configuration changes take effect after restarting `agent-cli`. Dynamic switching at runtime is not supported.
 
