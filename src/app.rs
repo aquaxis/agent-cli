@@ -95,6 +95,10 @@ pub(crate) struct ReplState {
     /// yet. The display task drops the events (and the idle notification) of
     /// those turns so the cancelled tail cannot print over the fresh prompt.
     suppress: Arc<AtomicUsize>,
+    /// Progress indicator for the running turn, shared with the display task.
+    /// The input loop suspends it before writing at the bottom of the screen,
+    /// so the two writers never interleave escape sequences.
+    indicator: Arc<std::sync::Mutex<StatusIndicator>>,
     /// Resolved directory for custom slash commands (`*.md` files).
     commands_dir: PathBuf,
     /// Discovered custom commands, refreshable via `/reload-commands`.
@@ -243,6 +247,20 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // display task how many cancelled turns are still draining.
     let cancel = Arc::new(CancelToken::default());
     let suppress = Arc::new(AtomicUsize::new(0));
+    // Progress indicator for the running turn. Shared with the input loop so it
+    // can clear the block before writing at the bottom of the screen itself.
+    // Only ever drawn on an interactive terminal.
+    let progress_enabled = {
+        use std::io::IsTerminal;
+        stdin_is_tty() && std::io::stderr().is_terminal() && config.ui.show_progress
+    };
+    let indicator = Arc::new(std::sync::Mutex::new(if progress_enabled {
+        let mut ind = StatusIndicator::new(Box::new(std::io::stderr()), true, stdin_is_tty());
+        ind.thinking_view = config.ui.show_thinking_mode() != ShowThinkingMode::Hidden;
+        ind
+    } else {
+        StatusIndicator::disabled()
+    }));
 
     // Approval channel (FR-04-1 / design doc 4.3A). Route for agent task to request y/N from input loop.
     let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(8);
@@ -282,6 +300,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         auto_approve: auto_approve.clone(),
         cancel: cancel.clone(),
         suppress: suppress.clone(),
+        indicator: indicator.clone(),
         commands_dir,
         commands: RwLock::new(initial_commands),
         config_source: source.clone(),
@@ -385,9 +404,34 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // getting stuck in Pending forever if Provider construction fails without a `Done`.
     let show_thinking = config.ui.show_thinking_mode();
     let display_suppress = suppress.clone();
+    let display_indicator = indicator.clone();
     let display_task = tokio::spawn(async move {
         let mut display_state = DisplayState::new(stdin_is_tty());
-        while let Some(ev) = event_rx.recv().await {
+        // With the indicator drawing right beneath it, a tool call is described
+        // on a single row instead of dumping its raw arguments.
+        display_state.compact_output = progress_enabled;
+        // With the indicator on, reasoning is shown live in its block rather
+        // than streamed into the scrollback.
+        display_state.capture_thinking =
+            progress_enabled && show_thinking != ShowThinkingMode::Hidden;
+        // Where the cursor stands after the last displayed event; the indicator
+        // may only paint from column 0 of a fresh row.
+        let mut at_line_start = true;
+        let mut ticker = tokio::time::interval(TICK_INTERVAL);
+        // A tick missed while the task was busy must not produce a burst of
+        // catch-up repaints.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            let ev = tokio::select! {
+                ev = event_rx.recv() => match ev {
+                    Some(ev) => ev,
+                    None => break,
+                },
+                _ = ticker.tick() => {
+                    lock_indicator(&display_indicator).tick();
+                    continue;
+                }
+            };
             let is_idle = matches!(ev, AgentEvent::Done | AgentEvent::Error { .. });
             // While a cancelled turn is still draining, its remaining events are
             // dropped and its terminal event yields no idle notification (it
@@ -395,11 +439,47 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
             let (drop_event, notify_idle, outstanding) =
                 suppression_decision(is_idle, display_suppress.load(Ordering::SeqCst));
             display_suppress.store(outstanding, Ordering::SeqCst);
-            if !drop_event {
-                display_event(ev, show_thinking, &mut display_state);
-            } else if is_idle {
-                // The cancelled turn ended: start the next one from a clean slate.
-                display_state.reset();
+            {
+                // The guard covers only synchronous terminal writes; it is
+                // dropped before the idle notification is awaited.
+                let mut ind = lock_indicator(&display_indicator);
+                // Nothing may be printed on top of the indicator's rows.
+                ind.clear();
+                if !drop_event {
+                    if matches!(ev, AgentEvent::TurnStart) {
+                        ind.start();
+                    }
+                    if display_state.capture_thinking {
+                        if let AgentEvent::Thinking { text } = &ev {
+                            ind.push_thinking(text);
+                        }
+                    }
+                    let mark = match &ev {
+                        AgentEvent::Error { .. } => Mark::Err,
+                        _ => Mark::Ok,
+                    };
+                    at_line_start = event_ends_at_line_start(
+                        &ev,
+                        show_thinking,
+                        display_state.capture_thinking,
+                        at_line_start,
+                    );
+                    display_event(ev, show_thinking, &mut display_state);
+                    if is_idle {
+                        ind.finish(mark);
+                    } else {
+                        ind.paint(at_line_start);
+                    }
+                } else {
+                    // The cancelled turn's output is discarded, so it gets no
+                    // completion line either.
+                    ind.abandon_run();
+                    if is_idle {
+                        // The cancelled turn ended: start the next one from a clean slate.
+                        display_state.reset();
+                        at_line_start = true;
+                    }
+                }
             }
             if notify_idle {
                 let _ = agent_idle_tx.send(()).await;
@@ -692,6 +772,9 @@ impl RawModeGuard {
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
+        // The progress indicator turns mouse reporting on for the duration of a
+        // turn; make sure it can never outlive the raw-mode session.
+        let _ = std::io::stderr().execute(crossterm::event::DisableMouseCapture);
         let _ = terminal::disable_raw_mode();
     }
 }
@@ -864,6 +947,18 @@ fn suggestion_rows(suggestion: Option<&str>, width: usize) -> u16 {
         Some(s) if !s.is_empty() && width >= 8 => 1,
         _ => 0,
     }
+}
+
+/// Whether a click at absolute row `row` lands on the progress indicator's
+/// block. While a turn runs the indicator is the last writer, so the cursor
+/// stands on the block's final row and the block covers `painted_rows` rows
+/// ending there. Pure so it can be unit-tested without a terminal.
+fn click_hits_indicator(painted_rows: u16, cursor_row: u16, row: u16) -> bool {
+    if painted_rows == 0 {
+        return false;
+    }
+    let top = cursor_row.saturating_sub(painted_rows - 1);
+    row >= top && row <= cursor_row
 }
 
 /// Classify whether a key event should trigger a cancel during the Pending state
@@ -1158,7 +1253,10 @@ async fn run_input_loop_raw(
                 match req {
                     Some(req) => {
                         // Clear the current (possibly wrapped) prompt block, then print
-                        // the approval request on a fresh line.
+                        // the approval request on a fresh line. The indicator is
+                        // suspended for as long as the approval prompt owns the
+                        // bottom of the screen.
+                        lock_indicator(&state.indicator).suspend();
                         renderer.clear_block(&mut stdout);
                         raw_println(true, &format!("[tool approval] {} {}", req.tool_name, req.args));
                         renderer.reset();
@@ -1185,7 +1283,36 @@ async fn run_input_loop_raw(
                 // `break` here would only stop draining events, not exit the REPL.
                 let mut exit_loop = false;
                 while event::poll(Duration::from_millis(0)).unwrap_or(false) {
-                    if let Ok(CtEvent::Key(key_event)) = event::read() {
+                    let ct_event = event::read();
+                    // Mouse reporting is only on while a turn is running, so a
+                    // click there is aimed at the progress indicator: clicking
+                    // its block switches the live `thinking` view between the
+                    // last few rows and everything the terminal can hold.
+                    if let Ok(CtEvent::Mouse(mouse_event)) = &ct_event {
+                        if prompt_state.is_pending()
+                            && matches!(
+                                mouse_event.kind,
+                                crossterm::event::MouseEventKind::Down(
+                                    crossterm::event::MouseButton::Left
+                                )
+                            )
+                        {
+                            let painted = lock_indicator(&state.indicator).painted_rows();
+                            // Without a cursor report the row cannot be placed;
+                            // a click during a turn is then taken at face value.
+                            let hit = match crossterm::cursor::position() {
+                                Ok((_, cursor_row)) => {
+                                    click_hits_indicator(painted, cursor_row, mouse_event.row)
+                                }
+                                Err(_) => painted > 0,
+                            };
+                            if hit {
+                                lock_indicator(&state.indicator).toggle_expanded();
+                            }
+                        }
+                        continue;
+                    }
+                    if let Ok(CtEvent::Key(key_event)) = ct_event {
                         // During Pending, only ESC and Ctrl-C are honoured (cancel).
                         // Other key events are ignored to avoid corrupting the edit
                         // buffer while the agent is processing.
@@ -1198,6 +1325,9 @@ async fn run_input_loop_raw(
                                 // read once the turn had already ended, and would then
                                 // print over the freshly drawn prompt.
                                 begin_cancel(&state.cancel, &state.suppress);
+                                // Take the bottom rows back from the indicator
+                                // before printing over them.
+                                lock_indicator(&state.indicator).suspend();
                                 raw_eprintln(true, "[cancelled]");
                                 prompt_state = PromptState::Ready;
                                 renderer.reset();
@@ -1219,6 +1349,7 @@ async fn run_input_loop_raw(
                                 let _ = resp_tx.send(false);
                             }
                             begin_cancel(&state.cancel, &state.suppress);
+                            lock_indicator(&state.indicator).suspend();
                             renderer.clear_block(&mut stdout);
                             raw_eprintln(true, "[cancelled]");
                             input_state = InputState::new();
@@ -1269,6 +1400,9 @@ async fn run_input_loop_raw(
                                         while agent_idle_rx.try_recv().is_ok() {}
                                         // Echo the approval response, then move to next line
                                         renderer.finish_line(&mut stdout, APPROVAL_PROMPT, &line);
+                                        // The turn continues: hand the bottom
+                                        // rows back to the indicator.
+                                        lock_indicator(&state.indicator).resume();
                                         continue;
                                     }
 
@@ -1363,6 +1497,7 @@ async fn run_input_loop_raw(
         let _ = resp_tx.send(false);
     }
     // Ensure the prompt block (possibly wrapped) is cleaned up before exit
+    lock_indicator(&state.indicator).suspend();
     renderer.clear_block(&mut stdout);
     let _ = shutdown_tx.send(true);
     // _raw_guard dropped here: terminal mode restored
@@ -1607,6 +1742,14 @@ struct DisplayState {
     section_printed: bool,
     /// When true, output is in crossterm raw mode and newlines must use CR+LF.
     raw_mode: bool,
+    /// When true the progress indicator is drawing beneath the output, so the
+    /// lines around it are kept short: a tool call is cut to a single terminal
+    /// row and a tool result to [`TOOL_RESULT_ROWS`] rows, since the raw dumps
+    /// would otherwise push the indicator many rows down.
+    compact_output: bool,
+    /// When true, `thinking` text is not printed inline: the progress
+    /// indicator shows it live under the spinner instead.
+    capture_thinking: bool,
 }
 
 impl DisplayState {
@@ -1616,6 +1759,8 @@ impl DisplayState {
             answer_printed: false,
             section_printed: false,
             raw_mode,
+            compact_output: false,
+            capture_thinking: false,
         }
     }
 
@@ -1644,9 +1789,446 @@ fn section_header_text(label: &str, section_printed: bool) -> String {
     }
 }
 
+/// Spinner frames, advanced one per tick while a turn runs.
+const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Repaint interval of the progress indicator.
+const TICK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Rows of live `thinking` text shown under the spinner before the view is
+/// elided. Clicking the block shows as much as the terminal can hold instead.
+const THINKING_ROWS: usize = 10;
+
+/// Rows a tool result is cut to while the progress indicator is drawing, so a
+/// large output cannot push the indicator off the screen. The full text is
+/// always in the conversation log.
+const TOOL_RESULT_ROWS: usize = 5;
+
+/// Spinner frame `n`, cycling through [`SPINNER_FRAMES`].
+fn spinner_frame(n: usize) -> char {
+    SPINNER_FRAMES[n % SPINNER_FRAMES.len()]
+}
+
+/// Elapsed time of a turn: one decimal below a minute (`0.4s`, `12.4s`),
+/// minutes and whole seconds above it (`1m00s`, `2m03s`). Truncated rather
+/// than rounded, so the display never briefly shows `60.0s`.
+fn format_elapsed(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        let tenths = d.as_millis() / 100;
+        format!("{}.{}s", tenths / 10, tenths % 10)
+    } else {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
+}
+
+/// One-line rendering of a tool call for the indicator's activity row. Mirrors
+/// the wording of the permanent `[tool-call]` line so the two read the same.
+fn one_line_tool_call(name: &str, args: &serde_json::Value) -> String {
+    crate::editor::flatten_one_line(&format!("[tool-call] {name} {args}"))
+}
+
+/// A tool result cut to `max_rows` terminal rows, with a marker counting what
+/// was left out — the counterpart of the one-line tool call, so a `bash` dump
+/// cannot push the progress indicator far down the screen. The text is wrapped
+/// (not cut) at `cols`, so the visible part is complete as far as it goes.
+fn compact_tool_result(
+    mark: &str,
+    name: &str,
+    output: &str,
+    cols: usize,
+    max_rows: usize,
+) -> String {
+    let full = format!("[tool-result {mark}] {name}: {output}");
+    let rows = crate::editor::wrap_display(&full, cols);
+    if rows.len() <= max_rows {
+        return full;
+    }
+    let hidden = rows.len() - max_rows;
+    let mut out = rows[..max_rows].join("\n");
+    out.push_str(&format!("\n… +{hidden} more lines"));
+    out
+}
+
+/// Whether the cursor sits at column 0 of a fresh row once `ev` has been
+/// displayed. `Text` leaves the cursor mid-row unless its delta ends with a
+/// newline, and `Thinking` always does (except when hidden, which prints
+/// nothing at all); every other event is printed as whole lines. `prev` is the
+/// state before the event, returned unchanged when the event prints nothing.
+fn event_ends_at_line_start(
+    ev: &AgentEvent,
+    mode: ShowThinkingMode,
+    capture_thinking: bool,
+    prev: bool,
+) -> bool {
+    match ev {
+        // Prints nothing: the indicator alone reacts to it.
+        AgentEvent::TurnStart => prev,
+        // Captured by the indicator, so nothing reaches the cursor.
+        AgentEvent::Thinking { .. } if capture_thinking => prev,
+        AgentEvent::Text { delta } => {
+            if delta.is_empty() {
+                prev
+            } else {
+                delta.ends_with('\n')
+            }
+        }
+        AgentEvent::Thinking { .. } => match mode {
+            ShowThinkingMode::Hidden => prev,
+            _ => false,
+        },
+        AgentEvent::ToolCall { .. }
+        | AgentEvent::ToolResult { .. }
+        | AgentEvent::Info { .. }
+        | AgentEvent::Done
+        | AgentEvent::Error { .. } => true,
+    }
+}
+
+/// Terminal mark closing a finished turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    Ok,
+    Err,
+}
+
+impl Mark {
+    fn glyph(self) -> char {
+        match self {
+            Mark::Ok => '✔',
+            Mark::Err => '✗',
+        }
+    }
+}
+
+/// The turn currently being tracked by the indicator.
+struct Run {
+    started: std::time::Instant,
+    frame: usize,
+}
+
+/// Live progress indicator for the running turn.
+///
+/// While a turn runs it owns the bottom row of the output, showing
+/// `<spinner> <elapsed>` directly beneath the line describing what is being
+/// executed — the echoed question at first, then each `[tool-call]` line, which
+/// the display shortens to a single row while the indicator is on. The row is
+/// cut to one terminal row so it can never wrap, which keeps the erase
+/// (`MoveToColumn(0)` + `Clear(FromCursorDown)`) exact.
+///
+/// The block is painted only from column 0 of a fresh row: after streamed text
+/// has left the cursor mid-row there is no way to erase the block without
+/// destroying that row, so the indicator simply stays unpainted until a whole
+/// line has been emitted (the flowing text is itself the sign of activity).
+///
+/// Writes go through an injectable sink so the rendering can be asserted in
+/// tests without a TTY. A disabled indicator (not a terminal, `[ui]
+/// show_progress = false`, serve mode) never writes a single byte.
+struct StatusIndicator {
+    out: Box<dyn std::io::Write + Send>,
+    enabled: bool,
+    /// Raw mode is on, so line breaks must be CR+LF.
+    raw_mode: bool,
+    /// Fixed terminal width, used by tests instead of querying the terminal.
+    width_override: Option<usize>,
+    run: Option<Run>,
+    /// The input loop owns the bottom of the screen (cancel notice, approval
+    /// prompt, shutdown); the indicator must not paint until it is resumed.
+    suspended: bool,
+    /// The block is currently on screen.
+    painted: bool,
+    /// Number of terminal rows the painted block occupies (1 for the spinner
+    /// row, plus the live `thinking` rows below it). Needed to move back to the
+    /// top of the block when erasing it.
+    painted_rows: u16,
+    /// Reasoning text streamed so far this turn, shown live under the spinner.
+    thinking: String,
+    /// Show the whole `thinking` text (as much as the terminal can hold)
+    /// instead of the last [`THINKING_ROWS`] rows. Toggled by clicking the
+    /// block; kept across turns, since it is a view preference.
+    expanded: bool,
+    /// Fixed terminal height, used by tests instead of querying the terminal.
+    height_override: Option<usize>,
+    /// Whether reasoning is shown at all (`[ui] show_thinking` is not
+    /// `hidden`). With no `thinking` view there is nothing to click, so mouse
+    /// reporting is left alone and text selection keeps working during a turn.
+    thinking_view: bool,
+}
+
+impl StatusIndicator {
+    fn new(out: Box<dyn std::io::Write + Send>, enabled: bool, raw_mode: bool) -> Self {
+        Self {
+            out,
+            enabled,
+            raw_mode,
+            width_override: None,
+            run: None,
+            suspended: false,
+            painted: false,
+            painted_rows: 0,
+            thinking: String::new(),
+            expanded: false,
+            height_override: None,
+            thinking_view: true,
+        }
+    }
+
+    /// An indicator that never draws anything: used where there is no
+    /// interactive terminal (serve mode, piped stdin, `show_progress = false`).
+    fn disabled() -> Self {
+        Self::new(Box::new(std::io::sink()), false, false)
+    }
+
+    fn newline(&self) -> &'static str {
+        if self.raw_mode {
+            "\r\n"
+        } else {
+            "\n"
+        }
+    }
+
+    fn width(&self) -> usize {
+        self.width_override
+            .unwrap_or_else(PromptRenderer::terminal_width)
+    }
+
+    fn height(&self) -> usize {
+        self.height_override.unwrap_or_else(|| {
+            terminal::size()
+                .map(|(_, h)| h as usize)
+                .unwrap_or(24)
+                .max(1)
+        })
+    }
+
+    /// Begin tracking a turn. Any suspension from a previous turn is lifted;
+    /// the block itself is drawn by the following [`StatusIndicator::paint`].
+    fn start(&mut self) {
+        if !self.enabled {
+            return;
+        }
+        self.suspended = false;
+        self.thinking.clear();
+        self.run = Some(Run {
+            started: std::time::Instant::now(),
+            frame: 0,
+        });
+        // Clicking the block toggles the thinking view, so the terminal has to
+        // report mouse events — but only while a turn is running, so ordinary
+        // text selection keeps working at the prompt.
+        self.set_mouse_capture(true);
+    }
+
+    /// Append streamed reasoning text to the live `thinking` view.
+    fn push_thinking(&mut self, text: &str) {
+        if !self.enabled || !self.thinking_view || self.run.is_none() {
+            return;
+        }
+        self.thinking.push_str(text);
+    }
+
+    /// Switch the `thinking` view between the last [`THINKING_ROWS`] rows and
+    /// as much of the text as the terminal can hold, redrawing the block in
+    /// place. Called from the input loop when the block is clicked.
+    fn toggle_expanded(&mut self) {
+        if !self.enabled || self.run.is_none() {
+            return;
+        }
+        self.expanded = !self.expanded;
+        if self.painted && !self.suspended {
+            self.repaint();
+        }
+    }
+
+    /// Number of rows the block occupies on screen, `0` when it is not drawn.
+    fn painted_rows(&self) -> u16 {
+        if self.painted {
+            self.painted_rows
+        } else {
+            0
+        }
+    }
+
+    fn set_mouse_capture(&mut self, on: bool) {
+        if !self.enabled || !self.raw_mode || !self.thinking_view {
+            return;
+        }
+        let _ = if on {
+            crossterm::queue!(self.out, crossterm::event::EnableMouseCapture)
+        } else {
+            crossterm::queue!(self.out, crossterm::event::DisableMouseCapture)
+        };
+        let _ = self.out.flush();
+    }
+
+    /// The rows drawn below the spinner: the tail of the reasoning text, or as
+    /// much of it as fits when expanded, with a marker row counting what was
+    /// left out.
+    fn thinking_rows(&self) -> Vec<String> {
+        if self.thinking.trim().is_empty() {
+            return Vec::new();
+        }
+        let cols = self.width().saturating_sub(1);
+        // Indented by two columns so the block reads as a detail of the
+        // spinner row above it.
+        let rows = crate::editor::wrap_display(self.thinking.trim_end(), cols.saturating_sub(2));
+        // Never take more than the screen can hold: the activity line, the
+        // spinner row, the marker row and two rows of context stay visible, so
+        // expanding cannot push the whole conversation off the screen.
+        let budget = self.height().saturating_sub(5).max(1);
+        let visible = if self.expanded {
+            budget
+        } else {
+            THINKING_ROWS.min(budget)
+        };
+        let hidden = rows.len().saturating_sub(visible);
+        let mut out: Vec<String> = Vec::with_capacity(visible + 1);
+        if hidden > 0 || self.expanded {
+            let hint = if self.expanded {
+                "click to collapse".to_string()
+            } else {
+                "click to expand".to_string()
+            };
+            let marker = if hidden > 0 {
+                format!("… +{hidden} more ({hint})")
+            } else {
+                format!("… ({hint})")
+            };
+            out.push(crate::editor::truncate_display(&marker, cols));
+        }
+        out.extend(
+            rows[rows.len() - visible.min(rows.len())..]
+                .iter()
+                .map(|r| crate::editor::truncate_display(&format!("  {r}"), cols)),
+        );
+        out
+    }
+
+    /// Advance the spinner and refresh the elapsed time, but only where the
+    /// row is already on screen — a tick never *introduces* a row, so it
+    /// cannot land in the middle of streamed output.
+    fn tick(&mut self) {
+        if self.run.is_none() || !self.enabled || self.suspended || !self.painted {
+            return;
+        }
+        if let Some(run) = self.run.as_mut() {
+            run.frame = run.frame.wrapping_add(1);
+        }
+        self.repaint();
+    }
+
+    /// Draw the row when allowed to. `at_line_start` is the caller's knowledge
+    /// of where the cursor is.
+    fn paint(&mut self, at_line_start: bool) {
+        if !self.enabled || self.suspended || self.run.is_none() || !at_line_start {
+            return;
+        }
+        self.repaint();
+    }
+
+    fn repaint(&mut self) {
+        self.clear();
+        let Some(run) = self.run.as_ref() else {
+            return;
+        };
+        let status = crate::editor::truncate_display(
+            &format!(
+                "{} {}",
+                spinner_frame(run.frame),
+                format_elapsed(run.started.elapsed())
+            ),
+            self.width().saturating_sub(1),
+        );
+        let mut rows = Vec::with_capacity(1 + THINKING_ROWS);
+        rows.push(status);
+        rows.extend(self.thinking_rows());
+        let nl = self.newline();
+        let _ = write!(self.out, "{}", rows.join(nl));
+        let _ = self.out.flush();
+        self.painted = true;
+        self.painted_rows = rows.len() as u16;
+    }
+
+    /// Erase the block, leaving the cursor exactly at its origin (column 0 of
+    /// the row where painting began), so the output above is untouched and the
+    /// next write continues where it would have without the indicator.
+    fn clear(&mut self) {
+        if !self.painted {
+            return;
+        }
+        use crossterm::cursor::{MoveToColumn, MoveUp};
+        // The cursor sits on the last row of the block; go back to its first.
+        if self.painted_rows > 1 {
+            let _ = crossterm::queue!(self.out, MoveUp(self.painted_rows - 1));
+        }
+        let _ = crossterm::queue!(
+            self.out,
+            MoveToColumn(0),
+            terminal::Clear(ClearType::FromCursorDown)
+        );
+        let _ = self.out.flush();
+        self.painted = false;
+        self.painted_rows = 0;
+    }
+
+    /// Close the turn: erase the row and leave one permanent line marking the
+    /// outcome and the total elapsed time.
+    fn finish(&mut self, mark: Mark) {
+        self.clear();
+        let Some(run) = self.run.take() else {
+            return;
+        };
+        self.thinking.clear();
+        self.set_mouse_capture(false);
+        if !self.enabled || self.suspended {
+            return;
+        }
+        let cols = self.width().saturating_sub(1);
+        let line = crate::editor::truncate_display(
+            &format!("{} {}", mark.glyph(), format_elapsed(run.started.elapsed())),
+            cols,
+        );
+        let nl = self.newline();
+        let _ = write!(self.out, "{line}{nl}");
+        let _ = self.out.flush();
+    }
+
+    /// Drop the turn without marking it (its output was discarded, e.g. a
+    /// cancelled turn draining behind a fresh prompt). Also used when the turn
+    /// ends with nothing to mark.
+    fn abandon_run(&mut self) {
+        self.clear();
+        if self.run.take().is_some() {
+            self.thinking.clear();
+            self.set_mouse_capture(false);
+        }
+    }
+
+    /// The input loop is about to write at the bottom of the screen.
+    fn suspend(&mut self) {
+        self.clear();
+        self.suspended = true;
+    }
+
+    fn resume(&mut self) {
+        self.suspended = false;
+    }
+}
+
+/// Lock the shared indicator, recovering from a poisoned mutex: a panic in one
+/// writer must not take the REPL's display down with it.
+fn lock_indicator(
+    indicator: &std::sync::Mutex<StatusIndicator>,
+) -> std::sync::MutexGuard<'_, StatusIndicator> {
+    indicator.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut DisplayState) {
     let rm = state.raw_mode;
     match ev {
+        // The turn boundary drives the progress indicator only; it prints
+        // nothing itself, so every non-interactive path stays byte-identical.
+        AgentEvent::TurnStart => {}
         AgentEvent::Text { delta } => {
             if !state.answer_printed {
                 state.section_header("[answer]");
@@ -1654,6 +2236,9 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
             }
             raw_print_str(rm, &delta);
         }
+        // Captured by the progress indicator, which shows it live under the
+        // spinner; printing it here too would duplicate it into the scrollback.
+        AgentEvent::Thinking { .. } if state.capture_thinking => {}
         AgentEvent::Thinking { text } => match show_thinking {
             ShowThinkingMode::Hidden => {}
             ShowThinkingMode::Collapsed => {
@@ -1675,11 +2260,31 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
             }
         },
         AgentEvent::ToolCall { name, args } => {
-            state.section_header(&format!("[tool-call] {name} {args}"));
+            let line = one_line_tool_call(&name, &args);
+            let line = if state.compact_output {
+                crate::editor::truncate_display(
+                    &line,
+                    PromptRenderer::terminal_width().saturating_sub(1),
+                )
+            } else {
+                format!("[tool-call] {name} {args}")
+            };
+            state.section_header(&line);
         }
         AgentEvent::ToolResult { name, ok, output } => {
             let mark = if ok { "ok" } else { "ERR" };
-            raw_eprintln(rm, &format!("[tool-result {mark}] {name}: {output}"));
+            let line = if state.compact_output {
+                compact_tool_result(
+                    mark,
+                    &name,
+                    &output,
+                    PromptRenderer::terminal_width(),
+                    TOOL_RESULT_ROWS,
+                )
+            } else {
+                format!("[tool-result {mark}] {name}: {output}")
+            };
+            raw_eprintln(rm, &line);
         }
         AgentEvent::Done => {
             state.reset();
@@ -2420,6 +3025,7 @@ mod tests {
             auto_approve: Arc::new(AtomicBool::new(false)),
             cancel: Arc::new(CancelToken::default()),
             suppress: Arc::new(AtomicUsize::new(0)),
+            indicator: Arc::new(std::sync::Mutex::new(StatusIndicator::disabled())),
             commands_dir: dir.to_path_buf(),
             commands: RwLock::new(Vec::new()),
             config_source: ConfigSource {
@@ -3014,6 +3620,531 @@ mod tests {
         assert_eq!(suppression_decision(true, 2), (true, false, 1));
         assert_eq!(suppression_decision(true, 1), (true, false, 0));
         assert_eq!(suppression_decision(true, 0), (false, true, 0));
+    }
+
+    // --- Turn progress indicator (activity line + spinner/elapsed) ---
+
+    /// Capture sink standing in for the terminal, so the indicator's output can
+    /// be asserted without a TTY.
+    #[derive(Clone, Default)]
+    struct CaptureSink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CaptureSink {
+        fn taken(&self) -> String {
+            let mut buf = self.0.lock().unwrap();
+            let out = String::from_utf8_lossy(&buf).to_string();
+            buf.clear();
+            out
+        }
+    }
+
+    impl std::io::Write for CaptureSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// An indicator writing into `sink`, enabled, with a fixed 40-column width.
+    fn test_indicator(sink: &CaptureSink) -> StatusIndicator {
+        let mut ind = StatusIndicator::new(Box::new(sink.clone()), true, false);
+        ind.width_override = Some(40);
+        ind
+    }
+
+    #[test]
+    fn format_elapsed_switches_from_seconds_to_minutes() {
+        assert_eq!(format_elapsed(Duration::from_millis(0)), "0.0s");
+        assert_eq!(format_elapsed(Duration::from_millis(430)), "0.4s");
+        assert_eq!(format_elapsed(Duration::from_millis(12_440)), "12.4s");
+        // Truncated, never rounded up into a bogus "60.0s".
+        assert_eq!(format_elapsed(Duration::from_millis(59_990)), "59.9s");
+        assert_eq!(format_elapsed(Duration::from_secs(60)), "1m00s");
+        assert_eq!(format_elapsed(Duration::from_secs(123)), "2m03s");
+    }
+
+    #[test]
+    fn spinner_frame_cycles_through_the_frames() {
+        assert_eq!(spinner_frame(0), SPINNER_FRAMES[0]);
+        assert_eq!(spinner_frame(3), SPINNER_FRAMES[3]);
+        // Wraps around rather than panicking on a long turn.
+        assert_eq!(spinner_frame(SPINNER_FRAMES.len()), SPINNER_FRAMES[0]);
+        assert_eq!(
+            spinner_frame(usize::MAX),
+            SPINNER_FRAMES[usize::MAX % SPINNER_FRAMES.len()]
+        );
+    }
+
+    #[test]
+    fn one_line_tool_call_matches_the_permanent_line_and_stays_on_one_line() {
+        let args = serde_json::json!({ "command": "echo hi" });
+        let line = one_line_tool_call("bash", &args);
+        assert_eq!(line, r#"[tool-call] bash {"command":"echo hi"}"#);
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn event_ends_at_line_start_tracks_the_cursor_per_event() {
+        let mode = ShowThinkingMode::Collapsed;
+        // Whole-line events always leave the cursor at column 0.
+        for ev in [
+            AgentEvent::Done,
+            AgentEvent::Error { message: "e".into() },
+            AgentEvent::Info { message: "i".into() },
+            AgentEvent::ToolResult { name: "bash".into(), ok: true, output: "o".into() },
+            AgentEvent::ToolCall { name: "bash".into(), args: serde_json::json!({}) },
+        ] {
+            assert!(event_ends_at_line_start(&ev, mode, false, false), "{ev:?}");
+        }
+        // Streamed text only when the delta ends with a newline.
+        let mid = AgentEvent::Text { delta: "partial".into() };
+        assert!(!event_ends_at_line_start(&mid, mode, false, true));
+        let ended = AgentEvent::Text { delta: "line\n".into() };
+        assert!(event_ends_at_line_start(&ended, mode, false, false));
+        // An empty delta prints nothing, so the previous state stands.
+        let empty = AgentEvent::Text { delta: String::new() };
+        assert!(event_ends_at_line_start(&empty, mode, false, true));
+        assert!(!event_ends_at_line_start(&empty, mode, false, false));
+    }
+
+    #[test]
+    fn event_ends_at_line_start_respects_the_thinking_mode() {
+        let ev = AgentEvent::Thinking { text: "reasoning".into() };
+        // Shown: printed without a trailing newline, so the cursor is mid-row.
+        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Collapsed, false, true));
+        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Expanded, false, true));
+        // Hidden: nothing is printed, so the previous state stands.
+        assert!(event_ends_at_line_start(&ev, ShowThinkingMode::Hidden, false, true));
+        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Hidden, false, false));
+        // The turn boundary prints nothing either.
+        let start = AgentEvent::TurnStart;
+        assert!(event_ends_at_line_start(&start, ShowThinkingMode::Collapsed, false, true));
+        assert!(!event_ends_at_line_start(&start, ShowThinkingMode::Collapsed, false, false));
+    }
+
+    #[test]
+    fn indicator_paints_the_spinner_row_headed_by_the_frame() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(true);
+        let out = sink.taken();
+        // One row, no newline: it sits directly under the line describing what
+        // is running and is redrawn in place.
+        assert!(!out.contains('\n'), "the row must not break the line: {out:?}");
+        assert!(
+            out.starts_with(SPINNER_FRAMES[0]),
+            "spinner must head the row: {out:?}"
+        );
+        assert!(out.ends_with('s'), "elapsed time expected: {out:?}");
+        assert!(crate::editor::str_display_width(&out) <= 39);
+    }
+
+    #[test]
+    fn indicator_does_not_paint_while_the_cursor_is_mid_row() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(false);
+        assert_eq!(sink.taken(), "", "nothing may be drawn mid-row");
+        // A tick cannot introduce a block either.
+        ind.tick();
+        assert_eq!(sink.taken(), "");
+    }
+
+    #[test]
+    fn indicator_tick_repaints_in_place() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.tick();
+        let out = sink.taken();
+        // Move back to the block origin, clear it, then draw the next frame.
+        assert!(out.contains("\u{1b}["), "an erase sequence is expected: {out:?}");
+        assert!(
+            out.contains(SPINNER_FRAMES[1]),
+            "the spinner must have advanced: {out:?}"
+        );
+    }
+
+    #[test]
+    fn indicator_clear_removes_the_block_once() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.clear();
+        assert!(!sink.taken().is_empty(), "the block must be erased");
+        // Already erased: a second clear writes nothing.
+        ind.clear();
+        assert_eq!(sink.taken(), "");
+    }
+
+    #[test]
+    fn indicator_finish_leaves_exactly_one_completion_line() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.finish(Mark::Ok);
+        let out = sink.taken();
+        let tail = out.rsplit('\u{1b}').next().unwrap_or(&out);
+        assert!(tail.contains('✔'), "completion mark expected: {out:?}");
+        assert_eq!(out.matches('✔').count(), 1);
+        assert!(out.ends_with('\n'), "the line must be terminated: {out:?}");
+        // The turn is over: a second terminal event adds nothing.
+        ind.finish(Mark::Ok);
+        assert_eq!(sink.taken(), "");
+    }
+
+    #[test]
+    fn indicator_finish_marks_a_failed_turn() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.finish(Mark::Err);
+        let out = sink.taken();
+        assert!(out.contains('✗'), "failure mark expected: {out:?}");
+        assert!(!out.contains('✔'));
+    }
+
+    #[test]
+    fn indicator_abandons_a_cancelled_turn_without_a_completion_line() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.abandon_run();
+        let out = sink.taken();
+        assert!(!out.contains('✔') && !out.contains('✗'), "no mark: {out:?}");
+        // The run is gone, so nothing more is drawn.
+        ind.paint(true);
+        ind.tick();
+        assert_eq!(sink.taken(), "");
+    }
+
+    #[test]
+    fn indicator_paints_nothing_while_suspended_and_resumes_afterwards() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(true);
+        let _ = sink.taken();
+        // The input loop takes the bottom rows (cancel notice, approval prompt).
+        ind.suspend();
+        assert!(!sink.taken().is_empty(), "suspend must erase the block");
+        ind.paint(true);
+        ind.tick();
+        assert_eq!(sink.taken(), "", "nothing may be drawn while suspended");
+        ind.resume();
+        ind.paint(true);
+        assert!(!sink.taken().is_empty(), "painting resumes after the prompt");
+    }
+
+    #[test]
+    fn indicator_start_lifts_a_suspension_from_the_previous_turn() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(true);
+        ind.suspend();
+        let _ = sink.taken();
+        // A cancel suspended the indicator; the next turn must draw again.
+        ind.start();
+        ind.paint(true);
+        assert!(sink.taken().contains(SPINNER_FRAMES[0]));
+    }
+
+    #[test]
+    fn disabled_indicator_writes_nothing_at_all() {
+        let sink = CaptureSink::default();
+        let mut ind = StatusIndicator::new(Box::new(sink.clone()), false, false);
+        ind.width_override = Some(40);
+        ind.start();
+        ind.paint(true);
+        ind.tick();
+        ind.paint(true);
+        ind.finish(Mark::Ok);
+        ind.clear();
+        assert_eq!(sink.taken(), "", "a disabled indicator must be a no-op");
+    }
+
+    #[test]
+    fn tool_call_line_is_cut_to_one_row_while_the_indicator_is_drawing() {
+        let long = serde_json::json!({ "command": "cargo test ".repeat(40) });
+        // Without the indicator the line keeps its full, historical form.
+        let mut plain = DisplayState::new(false);
+        assert!(!plain.compact_output);
+        // With it, the activity line is cut to a single terminal row so the
+        // spinner stays directly beneath it.
+        plain.compact_output = true;
+        let cut = crate::editor::truncate_display(
+            &one_line_tool_call("bash", &long),
+            PromptRenderer::terminal_width().saturating_sub(1),
+        );
+        assert!(cut.ends_with('…'));
+        assert!(!cut.contains('\n'));
+        assert!(
+            crate::editor::str_display_width(&cut) < PromptRenderer::terminal_width()
+        );
+    }
+
+    // --- Live `thinking` view under the spinner ---
+
+    /// An indicator with a fixed 40x24 terminal and reasoning already streamed.
+    fn indicator_with_thinking(sink: &CaptureSink, lines: usize) -> StatusIndicator {
+        let mut ind = test_indicator(sink);
+        ind.height_override = Some(24);
+        ind.start();
+        let text: String = (0..lines)
+            .map(|i| format!("reasoning line {i}\n"))
+            .collect();
+        ind.push_thinking(&text);
+        ind
+    }
+
+    #[test]
+    fn thinking_view_shows_the_last_rows_and_counts_the_rest() {
+        let sink = CaptureSink::default();
+        let ind = indicator_with_thinking(&sink, 30);
+        let rows = ind.thinking_rows();
+        // One marker row plus the capped number of reasoning rows.
+        assert_eq!(rows.len(), THINKING_ROWS + 1);
+        assert!(rows[0].contains("+20 more"), "marker row: {:?}", rows[0]);
+        assert!(rows[0].contains("click to expand"));
+        // The tail is what is shown: the newest reasoning, not the oldest.
+        assert!(rows[1].contains("reasoning line 20"), "{:?}", rows[1]);
+        assert!(rows[THINKING_ROWS].contains("reasoning line 29"));
+    }
+
+    #[test]
+    fn thinking_view_without_overflow_has_no_marker() {
+        let sink = CaptureSink::default();
+        let ind = indicator_with_thinking(&sink, 3);
+        let rows = ind.thinking_rows();
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].contains("reasoning line 0"));
+        assert!(!rows[0].contains("click"));
+    }
+
+    #[test]
+    fn thinking_view_is_empty_before_any_reasoning_arrives() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        assert!(ind.thinking_rows().is_empty());
+        ind.push_thinking("   \n  ");
+        assert!(ind.thinking_rows().is_empty(), "blank reasoning stays hidden");
+    }
+
+    #[test]
+    fn expanding_shows_more_rows_but_never_more_than_the_screen() {
+        let sink = CaptureSink::default();
+        let mut ind = indicator_with_thinking(&sink, 30);
+        assert_eq!(ind.thinking_rows().len(), THINKING_ROWS + 1);
+        ind.toggle_expanded();
+        let rows = ind.thinking_rows();
+        // 24-row terminal: the activity line, the spinner, the marker and two
+        // rows of context stay visible, so 19 reasoning rows are shown.
+        assert_eq!(rows.len(), 19 + 1);
+        assert!(rows[0].contains("+11 more"), "{:?}", rows[0]);
+        assert!(rows[0].contains("click to collapse"));
+        // Toggling back restores the short view.
+        ind.toggle_expanded();
+        assert_eq!(ind.thinking_rows().len(), THINKING_ROWS + 1);
+    }
+
+    #[test]
+    fn thinking_rows_stay_within_one_terminal_row_each() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.height_override = Some(24);
+        ind.start();
+        ind.push_thinking(&"x".repeat(500));
+        for row in ind.thinking_rows() {
+            assert!(
+                crate::editor::str_display_width(&row) <= 39,
+                "row wider than the terminal: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn painting_the_thinking_view_tracks_the_block_height() {
+        let sink = CaptureSink::default();
+        let mut ind = indicator_with_thinking(&sink, 4);
+        let _ = sink.taken();
+        ind.paint(true);
+        let out = sink.taken();
+        // Spinner row + four reasoning rows, and the erase must know it.
+        assert_eq!(out.matches('\n').count(), 4, "block rows: {out:?}");
+        assert_eq!(ind.painted_rows(), 5);
+        ind.clear();
+        assert_eq!(ind.painted_rows(), 0);
+        assert!(sink.taken().contains("\u{1b}["), "the block must be erased");
+    }
+
+    #[test]
+    fn a_finished_turn_drops_the_thinking_view() {
+        let sink = CaptureSink::default();
+        let mut ind = indicator_with_thinking(&sink, 4);
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.finish(Mark::Ok);
+        let out = sink.taken();
+        assert!(!out.contains("reasoning line"), "the live view is not kept: {out:?}");
+        assert!(out.contains('✔'));
+        assert!(ind.thinking_rows().is_empty());
+    }
+
+    #[test]
+    fn mouse_reporting_stays_off_when_reasoning_is_not_shown() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.raw_mode = true;
+        ind.thinking_view = false;
+        ind.start();
+        ind.push_thinking("reasoning");
+        // Nothing to click, so the terminal keeps its own mouse handling and
+        // the reasoning is not collected either.
+        assert!(sink.taken().is_empty(), "no mouse-capture escape expected");
+        assert!(ind.thinking_rows().is_empty());
+    }
+
+    #[test]
+    fn mouse_reporting_is_enabled_for_the_turn_and_released_at_its_end() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.raw_mode = true;
+        ind.start();
+        assert!(sink.taken().contains("1000h"), "capture on for the turn");
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.finish(Mark::Ok);
+        assert!(sink.taken().contains("1000l"), "capture released at the end");
+    }
+
+    #[test]
+    fn thinking_is_ignored_outside_a_turn_and_by_a_disabled_indicator() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        // No turn in flight: nothing to attach the reasoning to.
+        ind.push_thinking("stray");
+        assert!(ind.thinking_rows().is_empty());
+        let mut off = StatusIndicator::disabled();
+        off.start();
+        off.push_thinking("reasoning");
+        off.toggle_expanded();
+        assert!(off.thinking_rows().is_empty());
+    }
+
+    #[test]
+    fn click_hits_indicator_covers_exactly_the_painted_block() {
+        // A five-row block whose last row is screen row 20 covers rows 16..=20.
+        assert!(click_hits_indicator(5, 20, 16));
+        assert!(click_hits_indicator(5, 20, 20));
+        assert!(!click_hits_indicator(5, 20, 15));
+        assert!(!click_hits_indicator(5, 20, 21));
+        // A single-row block is just the cursor row.
+        assert!(click_hits_indicator(1, 7, 7));
+        assert!(!click_hits_indicator(1, 7, 6));
+        // Nothing painted: no click can hit it.
+        assert!(!click_hits_indicator(0, 7, 7));
+        // Near the top of the screen the block cannot start above row 0.
+        assert!(click_hits_indicator(5, 2, 0));
+    }
+
+    #[test]
+    fn captured_thinking_leaves_the_cursor_where_it_was() {
+        let ev = AgentEvent::Thinking { text: "reasoning".into() };
+        // Captured by the indicator: nothing is printed, so the previous state stands.
+        assert!(event_ends_at_line_start(&ev, ShowThinkingMode::Collapsed, true, true));
+        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Collapsed, true, false));
+        // Not captured: printed inline, so the cursor sits mid-row.
+        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Collapsed, false, true));
+    }
+
+    #[test]
+    fn display_event_skips_thinking_that_the_indicator_shows() {
+        let mut state = DisplayState::new(false);
+        state.capture_thinking = true;
+        // Nothing is printed and no `[thinking]` section is opened.
+        display_event(
+            AgentEvent::Thinking { text: "reasoning".into() },
+            ShowThinkingMode::Collapsed,
+            &mut state,
+        );
+        assert!(!state.thinking_printed, "no inline thinking section");
+        assert!(!state.section_printed);
+    }
+
+    // --- Elided tool results ---
+
+    #[test]
+    fn a_short_tool_result_is_printed_verbatim() {
+        let out = compact_tool_result("ok", "bash", "{\"exit_code\":0}", 80, 5);
+        assert_eq!(out, "[tool-result ok] bash: {\"exit_code\":0}");
+        assert!(!out.contains('…'));
+    }
+
+    #[test]
+    fn a_long_tool_result_is_cut_to_the_row_budget_with_a_count() {
+        let output: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        let out = compact_tool_result("ok", "bash", &output, 80, 5);
+        let rows: Vec<&str> = out.split('\n').collect();
+        // Five rows of output plus the marker.
+        assert_eq!(rows.len(), 6, "{out:?}");
+        assert!(rows[0].starts_with("[tool-result ok] bash: line 0"));
+        // The head is shown: a result is read from the top.
+        assert!(rows[4].contains("line 4"));
+        assert_eq!(rows[5], "… +26 more lines");
+    }
+
+    #[test]
+    fn a_wide_tool_result_counts_wrapped_rows_too() {
+        // One very long line still occupies many rows on a narrow terminal.
+        let output = "x".repeat(500);
+        let out = compact_tool_result("ok", "bash", &output, 40, 5);
+        let rows: Vec<&str> = out.split('\n').collect();
+        assert_eq!(rows.len(), 6);
+        for row in &rows[..5] {
+            assert!(
+                crate::editor::str_display_width(row) <= 40,
+                "row wider than the terminal: {row:?}"
+            );
+        }
+        assert!(rows[5].starts_with("… +"), "{:?}", rows[5]);
+    }
+
+    #[test]
+    fn a_failed_tool_result_keeps_its_marker() {
+        let out = compact_tool_result("ERR", "bash", &"e\n".repeat(20), 80, 5);
+        assert!(out.starts_with("[tool-result ERR] bash:"));
+        assert!(out.contains("… +"));
+    }
+
+    #[test]
+    fn display_event_only_elides_tool_results_while_the_indicator_draws() {
+        let long: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        // The historical form is kept when nothing is drawing beneath it.
+        let verbatim = format!("[tool-result ok] bash: {long}");
+        assert_eq!(
+            compact_tool_result("ok", "bash", &long, 80, usize::MAX),
+            verbatim
+        );
+        let mut state = DisplayState::new(false);
+        assert!(!state.compact_output, "off unless the indicator is enabled");
+        state.compact_output = true;
     }
 
     #[test]

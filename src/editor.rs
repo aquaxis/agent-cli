@@ -15,6 +15,88 @@ pub fn str_display_width(s: &str) -> usize {
         .sum()
 }
 
+/// Character appended when a string had to be cut to fit one terminal row.
+const ELLIPSIS: char = '…';
+
+/// Flatten `s` onto a single line: newlines, tabs and other control characters
+/// become spaces, runs of whitespace collapse to one, and the result is
+/// trimmed. Used wherever arbitrary text (a prompt, tool arguments) has to be
+/// shown on one terminal row without corrupting the display.
+pub fn flatten_one_line(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut pending_space = false;
+    for c in s.chars() {
+        if c.is_whitespace() || c.is_control() {
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            pending_space = false;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Cut `s` to at most `max_cols` display columns, marking a cut with a trailing
+/// `…`. Measured in columns (not chars) so full-width CJK text is never cut
+/// mid-cell, and the `…` itself is accounted for, so the result never exceeds
+/// `max_cols`. Returns an empty string when there is no room at all.
+pub fn truncate_display(s: &str, max_cols: usize) -> String {
+    if max_cols == 0 {
+        return String::new();
+    }
+    if str_display_width(s) <= max_cols {
+        return s.to_string();
+    }
+    // Room for the content is one column less: the last cell carries the `…`.
+    let budget = max_cols - 1;
+    let mut out = String::new();
+    let mut width = 0;
+    for c in s.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+        if width + w > budget {
+            break;
+        }
+        out.push(c);
+        width += w;
+    }
+    out.push(ELLIPSIS);
+    out
+}
+
+/// Break `s` into rows that each fit within `cols` display columns.
+///
+/// Existing newlines are hard breaks; anything longer than `cols` is wrapped
+/// (greedily, by display column, so a full-width character is never split
+/// across two rows) instead of being cut, so no text is lost. Tabs become
+/// single spaces. Used to lay out a block of text — the live `thinking`
+/// view — inside a fixed number of terminal rows.
+pub fn wrap_display(s: &str, cols: usize) -> Vec<String> {
+    if cols == 0 {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    for line in s.split('\n') {
+        let line = line.trim_end_matches('\r');
+        let mut current = String::new();
+        let mut width = 0;
+        for c in line.chars() {
+            let c = if c == '\t' || c.is_control() { ' ' } else { c };
+            let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+            if width + w > cols {
+                rows.push(std::mem::take(&mut current));
+                width = 0;
+            }
+            current.push(c);
+            width += w;
+        }
+        rows.push(current);
+    }
+    rows
+}
+
 /// State for the in-terminal line editor.
 ///
 /// `history_index` is `None` when the user is editing a new line (not browsing
@@ -210,6 +292,75 @@ impl InputState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- One-line text helpers (progress indicator / turn label) ---
+
+    #[test]
+    fn flatten_one_line_replaces_control_characters_with_single_spaces() {
+        assert_eq!(flatten_one_line("a\nb\tc"), "a b c");
+        assert_eq!(flatten_one_line("a\r\n\r\nb"), "a b");
+        assert_eq!(flatten_one_line("  padded  \n"), "padded");
+        assert_eq!(flatten_one_line("plain text"), "plain text");
+        assert_eq!(flatten_one_line("\n\n"), "");
+    }
+
+    #[test]
+    fn truncate_display_keeps_text_that_already_fits() {
+        assert_eq!(truncate_display("hello", 10), "hello");
+        // Exactly the budget: no ellipsis.
+        assert_eq!(truncate_display("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_display_cuts_with_an_ellipsis() {
+        let out = truncate_display("hello world", 8);
+        assert_eq!(out, "hello w…");
+        assert_eq!(str_display_width(&out), 8);
+    }
+
+    #[test]
+    fn truncate_display_cuts_cjk_on_a_column_boundary() {
+        // Each character is two columns wide: a budget of 7 leaves room for
+        // three of them plus the ellipsis (6 + 1 columns).
+        let out = truncate_display("日本語テキスト", 7);
+        assert_eq!(out, "日本語…");
+        assert!(str_display_width(&out) <= 7);
+    }
+
+    #[test]
+    fn truncate_display_handles_degenerate_widths() {
+        assert_eq!(truncate_display("hello", 0), "");
+        // One column: only the ellipsis fits.
+        assert_eq!(truncate_display("hello", 1), "…");
+        assert_eq!(truncate_display("", 0), "");
+    }
+
+    #[test]
+    fn wrap_display_breaks_on_newlines_and_width() {
+        assert_eq!(wrap_display("one\ntwo", 10), vec!["one", "two"]);
+        // Long line wrapped instead of cut: no text is lost.
+        assert_eq!(wrap_display("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        // Blank lines are preserved as empty rows.
+        assert_eq!(wrap_display("a\n\nb", 4), vec!["a", "", "b"]);
+        assert_eq!(wrap_display("", 4), vec![""]);
+        assert!(wrap_display("anything", 0).is_empty());
+    }
+
+    #[test]
+    fn wrap_display_never_splits_a_wide_character() {
+        // Three columns cannot hold two full-width characters.
+        let rows = wrap_display("日本語", 3);
+        assert_eq!(rows, vec!["日", "本", "語"]);
+        for r in wrap_display("日本語テキスト", 5) {
+            assert!(str_display_width(&r) <= 5, "row too wide: {r:?}");
+        }
+    }
+
+    #[test]
+    fn wrap_display_flattens_tabs_and_control_characters() {
+        assert_eq!(wrap_display("a\tb", 10), vec!["a b"]);
+        assert_eq!(wrap_display("a\r\nb", 10), vec!["a", "b"]);
+    }
 
     #[test]
     fn insert_char_appends_at_cursor() {

@@ -102,6 +102,8 @@ max_output_kb = 256
 
 [ui]
 show_thinking = "collapsed"
+# Activity line + spinner/elapsed while a turn runs (interactive terminals only).
+show_progress = true
 
 [history]
 # Opt-in hybrid window management. When disabled (default), the full
@@ -494,18 +496,28 @@ fn default_true() -> bool {
 pub struct UiConfig {
     #[serde(default = "default_show_thinking")]
     pub show_thinking: String,
+    /// Draw the progress indicator (activity line + spinner and elapsed time)
+    /// while a turn runs. Ignored when the output is not an interactive
+    /// terminal, where the indicator is never drawn.
+    #[serde(default = "default_show_progress")]
+    pub show_progress: bool,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             show_thinking: default_show_thinking(),
+            show_progress: default_show_progress(),
         }
     }
 }
 
 fn default_show_thinking() -> String {
     "collapsed".to_string()
+}
+
+fn default_show_progress() -> bool {
+    true
 }
 
 /// `[history]` — hybrid history-window management. Opt-in (`enabled = false`
@@ -939,6 +951,7 @@ max_tool_iterations = 4294967295
         ] {
             let ui = UiConfig {
                 show_thinking: raw.into(),
+                ..UiConfig::default()
             };
             assert_eq!(ui.show_thinking_mode(), expected, "raw={raw}");
         }
@@ -948,6 +961,7 @@ max_tool_iterations = 4294967295
     fn show_thinking_mode_unknown_value_falls_back_to_collapsed() {
         let ui = UiConfig {
             show_thinking: "verbose".into(),
+            ..UiConfig::default()
         };
         assert_eq!(ui.show_thinking_mode(), ShowThinkingMode::Collapsed);
         // Unspecified (default) also equals Collapsed.
@@ -955,6 +969,26 @@ max_tool_iterations = 4294967295
             UiConfig::default().show_thinking_mode(),
             ShowThinkingMode::Collapsed
         );
+    }
+
+    /// `[ui] show_progress` defaults to true, so a config file written before
+    /// the progress indicator existed keeps working and shows it.
+    #[test]
+    fn show_progress_defaults_to_enabled() {
+        assert!(UiConfig::default().show_progress);
+        let cfg: Config = toml::from_str(tests_default_config()).unwrap();
+        assert!(cfg.ui.show_progress, "absent key must default to true");
+        let off: Config = toml::from_str(
+            r#"
+[provider]
+kind = "ollama"
+
+[ui]
+show_progress = false
+"#,
+        )
+        .unwrap();
+        assert!(!off.ui.show_progress);
     }
 
     /// Default value of `max_tool_iterations` is 24 (raised from 8 on 2026-05-03).

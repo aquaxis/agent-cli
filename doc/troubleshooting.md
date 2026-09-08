@@ -268,6 +268,22 @@ What cancelling does — and does not — do:
 
 If a long shell command must be stoppable, give it a shorter `timeout_ms` in the tool call, or lower `[tools.bash] timeout_ms`.
 
+### The spinner / elapsed time is missing, or looks wrong
+
+While a turn runs, an interactive REPL shows the line being executed and, beneath it, a spinner with the elapsed time, ending as `✔ <elapsed>` (`✗ <elapsed>` after an error).
+
+| Symptom | Cause / remedy |
+|------|------|
+| Nothing is drawn | It requires **both** stdin and stderr to be terminals. Piped or redirected output, `agent-cli serve`, and `[ui] show_progress = false` all disable it — by design, so redirected output stays free of escape sequences |
+| The spinner stops while an answer streams | Expected: the row is not redrawn while the cursor sits in the middle of a streamed line. The flowing text is the sign of activity; the spinner returns at the next complete line |
+| `[tool-call]` lines look truncated | Also expected while the indicator is on: the call is cut to one terminal row with `…` so the spinner stays directly beneath it. Set `[ui] show_progress = false` to get the full arguments back |
+| The spinner or `✔` shows as `?` / boxes | The terminal font has no braille or check-mark glyphs. The layout is unaffected; set `[ui] show_progress = false` if the substitutes are distracting |
+| A stray row is left behind after resizing | Resizing mid-turn can leave one row of a previously drawn indicator on screen. It is cosmetic and disappears with the next full turn |
+| Dragging to select text does nothing during a turn | Mouse reporting is on while a turn runs so the reasoning block can be clicked. Hold **Shift** while dragging (the usual terminal override), or set `[ui] show_thinking = "hidden"` / `[ui] show_progress = false`, either of which leaves mouse reporting off |
+| Clicking the reasoning block does not expand it | The click must land on the block itself (the spinner row or the reasoning rows below it). If the terminal does not answer cursor-position queries, the click is taken at face value instead, so it may toggle from anywhere |
+| A tool result ends in `… +N more lines` | Expected while the indicator is on: the on-screen copy is cut to five rows so it cannot push the spinner off the screen. The model still receives the whole result, and the full text is in the conversation log (`[runtime] log_dir`). `[ui] show_progress = false` prints it in full |
+| Reasoning disappears when the turn ends | Expected: the block belongs to the running turn. The full reasoning is written to the conversation log; set `[ui] show_progress = false` to get the old inline `[thinking]` output in the scrollback instead |
+
 ## Shell Tool Issues
 
 ### `timed out after <N> ms: ...`

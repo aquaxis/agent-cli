@@ -104,6 +104,10 @@ pub enum AgentInput {
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    /// Start of a turn, emitted exactly once before any other event of that
+    /// turn. It prints nothing; it is the boundary the REPL's progress
+    /// indicator starts its spinner and elapsed-time count from.
+    TurnStart,
     Thinking {
         text: String,
     },
@@ -285,6 +289,11 @@ impl Agent {
         // A cancellation raised while the agent was idle (e.g. `/cancel` at the
         // prompt) must not cancel this fresh turn.
         self.cancel.reset();
+
+        // Mark the turn boundary for the REPL's progress indicator. Emitted
+        // before anything else of this turn (including compaction), so the
+        // elapsed time it shows covers the whole turn.
+        let _ = event_tx.send(AgentEvent::TurnStart).await;
 
         // Hybrid history-window management (opt-in `[history]`). Runs before
         // the provider call so the compacted history is what gets sent.
@@ -917,6 +926,49 @@ mod tests {
         }
         assert_eq!(text, "answer");
         assert!(!agent.cancel.is_cancelled(), "the turn start clears the flag");
+    }
+
+    // --- Turn boundary (progress indicator) ---
+
+    #[tokio::test]
+    async fn a_turn_opens_with_exactly_one_turn_start_event() {
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = build_test_agent(
+            vec![vec![
+                ProviderEvent::Text {
+                    delta: "answer".into(),
+                },
+                ProviderEvent::Done,
+            ]],
+            history,
+        );
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::UserPrompt("what is this?".into()))
+            .await
+            .unwrap();
+
+        // The first event of the turn, and exactly one per turn.
+        let first = ev_rx.recv().await.expect("an event is expected");
+        assert!(
+            matches!(first, AgentEvent::TurnStart),
+            "TurnStart must come first, got {first:?}"
+        );
+        let mut starts = 0;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::TurnStart => starts += 1,
+                AgentEvent::Done => break,
+                _ => {}
+            }
+        }
+        assert_eq!(starts, 0, "exactly one TurnStart per turn");
+
+        drop(in_tx);
+        let _ = handle.await;
     }
 
     fn build_test_agent(scripts: Vec<Vec<ProviderEvent>>, history: Vec<Message>) -> Agent {

@@ -4,6 +4,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.11.0]
+
+### Added
+
+- Turn progress indicator — while the agent works, the REPL shows what is being executed on one line and, directly beneath it, a spinner with the elapsed time; the turn ends as a single `✔ <elapsed>` line.
+  - The line above the spinner describes the current activity: the question you submitted, then each tool call. While the indicator is on, a `[tool-call]` line is cut to a single terminal row with `…`, so raw arguments no longer push the display around.
+  - The spinner row is redrawn in place ten times a second (`0.4s` → `12.4s` → `2m03s`) and is cut to the terminal width, so it never wraps. It is drawn only from the start of a fresh row, leaving streamed text untouched, and is erased before any other output.
+  - A finished turn leaves `✔ <elapsed>`; a failed one `✗ <elapsed>`. A turn stopped with `Esc` still prints `[cancelled]` and leaves no mark. The indicator steps aside for the tool-approval prompt and resumes once it is answered.
+  - New `[ui] show_progress` (default `true`) turns it off. It is drawn only when stdin and stderr are both terminals, so piped output, redirects and `agent-cli serve` are unchanged, as is every path with the setting disabled.
+  - The model's reasoning is shown **live under the spinner**, the last 10 rows at a time with a `… +N more (click to expand)` marker. Clicking the block with the mouse switches to as much of the reasoning as the screen can hold and clicking again collapses it; the choice carries over to later turns. The block belongs to the running turn and is cleared when it ends — the full reasoning is still written to the conversation log.
+  - Tool results are cut to five rows on screen while the indicator is on, ending in `… +N more lines`, so a large `bash` output no longer pushes the spinner down the screen. This is a display change only: the model still receives the full result and the conversation log keeps it.
+  - Mouse reporting is enabled only while a turn is running, and only when reasoning is shown (`[ui] show_thinking` other than `"hidden"`); while it is on, selecting text needs the terminal's usual Shift override. With `show_progress = false` the previous inline `[thinking]` output is unchanged.
+  - Internally: a new `AgentEvent::TurnStart` marks the turn boundary and prints nothing. No new dependency; Linux-only as before.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/usage.md`, `doc/config.md`, `doc/architecture.md` (§3.1), `doc/troubleshooting.md`.
+
 ## [0.10.0]
 
 ### Added
@@ -152,7 +167,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/aquaxis/agent-cli/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/aquaxis/agent-cli/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/aquaxis/agent-cli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/aquaxis/agent-cli/compare/v0.7.0...v0.8.0
