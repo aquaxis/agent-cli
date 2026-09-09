@@ -290,16 +290,18 @@ On an interactive terminal the output is colour-coded, so the parts you wrote, t
 | **The answer body** | **not coloured** — it is the longest thing on screen |
 | `[tool-call] <tool>` | cyan, bold |
 | Tool arguments | grey |
-| `[tool-result …]` | grey, dim |
+| `[tool-result …]` | dark yellow |
 | `[thinking]` and the live reasoning rows | grey, dim |
-| Spinner, elapsed time, `… +N more` markers | grey, dim |
+| Spinner, elapsed time, `… +N more` markers | dark yellow |
 | `✔ <elapsed>` | green, bold |
 | `✗ <elapsed>`, `[error]` | red, bold |
 | `[info]`, `[auto]` | blue |
 | `[tool approval]`, `approve? [y/N]:` | yellow, bold |
 | `[cancelled]` | grey, dim |
-| `/history` entries, the command hint above the prompt | dim |
-| `agent-cli ready` banner (details dimmed) | magenta, bold |
+| The command hint above the prompt | dark yellow |
+| `/history` entries | dim |
+| `agent-cli ready` banner | magenta, bold |
+| The startup rows under it (`id`, `name`, `provider`, …) | not coloured |
 
 Only the ANSI 16 colours are used and only as foreground colours, so your terminal's own palette decides the exact shades and the scheme works on light and dark backgrounds alike.
 
