@@ -1728,8 +1728,8 @@ fn print_header(
     theme: &Theme,
 ) {
     let display_name = name.unwrap_or("(unnamed)");
-    // The banner carries the brand colour; its detail rows are dimmed, so the
-    // eye lands on the name and moves on.
+    // The banner carries the brand colour; the startup information beneath it
+    // stays in the terminal's default foreground, so it reads as plain text.
     let detail = |line: String| println!("{}", theme.out(Role::BannerDetail, &line));
     println!("{}", theme.out(Role::Banner, "agent-cli ready"));
     detail(format!("  id        : {id}"));

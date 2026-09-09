@@ -4,6 +4,11 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Changed
+
+- The `[tool-result …]` lines, the spinner and its elapsed time (with the `… +N more` markers) and the slash-command hint above the prompt are now **dark yellow** instead of dimmed grey — they are secondary, but they still have to be readable. The reasoning rows, the tool arguments, `[cancelled]` and the `/history` listing keep their grey.
+- The startup information under the `agent-cli ready` banner — `id`, `name`, `provider`, `features`, `role`, `skills` and the `/help` hint — is no longer dimmed: it is printed in the terminal's default foreground. The banner line itself stays magenta and bold.
+
 ## [0.12.0]
 
 ### Changed

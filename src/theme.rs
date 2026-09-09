@@ -40,12 +40,14 @@ pub enum Role {
     ToolName,
     /// The arguments of a tool call.
     ToolArgs,
-    /// A `[tool-result …]` line: skimmable output.
+    /// A `[tool-result …]` line: secondary output, set apart in dark yellow so
+    /// it stays legible while the eye passes over it.
     ToolOutput,
     /// Reasoning — the `[thinking]` marker, its inline text, and the live rows
     /// under the progress indicator.
     Thinking,
-    /// The spinner, the elapsed time and the `… +N more` markers.
+    /// The spinner, the elapsed time and the `… +N more` markers, in the same
+    /// dark yellow as the tool output.
     Progress,
     /// A completed turn (`✔`).
     Success,
@@ -58,10 +60,15 @@ pub enum Role {
     /// `[cancelled]`.
     Cancelled,
     /// The slash-command suggestion row above the prompt.
+    ///
+    /// Dark yellow, like the other secondary rows: it has to be read to be
+    /// acted on, so it must not disappear into the background.
     Hint,
     /// The startup banner.
     Banner,
-    /// The banner's detail rows (id, name, provider, …).
+    /// The banner's detail rows (id, name, provider, …): the startup
+    /// information, left in the terminal's default foreground so it reads as
+    /// ordinary text rather than as something to skim past.
     BannerDetail,
 }
 
@@ -91,17 +98,17 @@ fn sgr(role: Role) -> (Option<u8>, &'static [u8]) {
         Role::AnswerMarker => (Some(MAGENTA), BOLD),
         Role::ToolName => (Some(CYAN), BOLD),
         Role::ToolArgs => (Some(BRIGHT_BLACK), NONE),
-        Role::ToolOutput => (Some(BRIGHT_BLACK), DIM),
+        Role::ToolOutput => (Some(YELLOW), NONE),
         Role::Thinking => (Some(BRIGHT_BLACK), DIM),
-        Role::Progress => (Some(BRIGHT_BLACK), DIM),
+        Role::Progress => (Some(YELLOW), NONE),
         Role::Success => (Some(GREEN), BOLD),
         Role::Failure => (Some(RED), BOLD),
         Role::Info => (Some(BLUE), NONE),
         Role::Confirm => (Some(YELLOW), BOLD),
         Role::Cancelled => (Some(BRIGHT_BLACK), DIM),
-        Role::Hint => (Some(BRIGHT_BLACK), DIM),
+        Role::Hint => (Some(YELLOW), NONE),
         Role::Banner => (Some(MAGENTA), BOLD),
-        Role::BannerDetail => (None, DIM),
+        Role::BannerDetail => (None, NONE),
     }
 }
 
@@ -109,12 +116,17 @@ fn sgr(role: Role) -> (Option<u8>, &'static [u8]) {
 ///
 /// Attributes come first, then the colour, so the parameters read the same way
 /// the palette table does. Empty text yields an empty string: a bare
-/// set/reset pair would be written for nothing.
+/// set/reset pair would be written for nothing. A role with neither a colour nor
+/// an attribute — the terminal's own default — returns the text as it is, for
+/// the same reason.
 pub fn paint(role: Role, text: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
     let (color, attrs) = sgr(role);
+    if color.is_none() && attrs.is_empty() {
+        return text.to_string();
+    }
     let mut params = String::new();
     for a in attrs {
         if !params.is_empty() {
@@ -330,24 +342,35 @@ mod tests {
             "\u{1b}[1;35m[answer]\u{1b}[0m"
         );
         assert_eq!(paint(Role::ToolArgs, "{}"), "\u{1b}[90m{}\u{1b}[0m");
-        assert_eq!(paint(Role::ToolOutput, "x"), "\u{1b}[2;90mx\u{1b}[0m");
+        // The secondary rows share one dark yellow, with no dim attribute:
+        // they are meant to be readable, only less prominent.
+        assert_eq!(paint(Role::ToolOutput, "x"), "\u{1b}[33mx\u{1b}[0m");
+        assert_eq!(paint(Role::Progress, "⠹ 1.0s"), "\u{1b}[33m⠹ 1.0s\u{1b}[0m");
+        assert_eq!(paint(Role::Hint, "/help"), "\u{1b}[33m/help\u{1b}[0m");
         assert_eq!(paint(Role::Success, "✔"), "\u{1b}[1;32m✔\u{1b}[0m");
         assert_eq!(paint(Role::Failure, "✗"), "\u{1b}[1;31m✗\u{1b}[0m");
         assert_eq!(paint(Role::Info, "i"), "\u{1b}[34mi\u{1b}[0m");
         assert_eq!(paint(Role::Confirm, "y/N"), "\u{1b}[1;33my/N\u{1b}[0m");
         assert_eq!(paint(Role::Banner, "b"), "\u{1b}[1;35mb\u{1b}[0m");
-        assert_eq!(paint(Role::BannerDetail, "d"), "\u{1b}[2md\u{1b}[0m");
+        // The startup detail rows carry the terminal's default foreground, so
+        // nothing is written around them at all.
+        assert_eq!(paint(Role::BannerDetail, "d"), "d");
     }
 
     #[test]
     fn every_role_is_self_closing_and_uses_ansi_16_only() {
         for role in ALL_ROLES {
             let painted = paint(role, "x");
+            let (color, attrs) = sgr(role);
+            if color.is_none() && attrs.is_empty() {
+                // A default-foreground role writes no sequence to close.
+                assert_eq!(painted, "x", "{role:?} must be left unstyled");
+                continue;
+            }
             assert!(
                 painted.starts_with("\u{1b}[") && painted.ends_with("\u{1b}[0m"),
                 "{role:?} must open and close its sequence: {painted:?}"
             );
-            let (color, _) = sgr(role);
             if let Some(c) = color {
                 assert!(
                     (30..=37).contains(&c) || (90..=97).contains(&c),
