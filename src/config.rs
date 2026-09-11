@@ -112,6 +112,15 @@ mouse_scroll     = true
 # Lines of output kept for scrolling back (0 disables the wheel scrollback).
 scrollback_lines = 2000
 
+[shell]
+# Run `!<command>` typed at the prompt (no approval: it is your own command).
+enabled       = true
+timeout_ms    = 120000
+# How much of the output the model is given (the screen always shows all of it).
+max_output_kb = 256
+# Hand the command and its output to the model as context.
+context       = true
+
 [history]
 # Opt-in hybrid window management. When disabled (default), the full
 # conversation is replayed verbatim each turn (unchanged behavior).
@@ -154,6 +163,8 @@ pub struct Config {
     pub history: HistoryConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub shell: ShellConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -554,6 +565,58 @@ fn default_mouse_scroll() -> bool {
 
 fn default_scrollback_lines() -> usize {
     2000
+}
+
+/// `[shell]` — running a command typed at the prompt with `!<command>`.
+///
+/// This is the user's own command, not a tool call the model asked for, so it
+/// is not subject to the approval gate or to `[tools] enabled`; `enabled`
+/// below is its only switch. The timeout and the output cap default to the
+/// same values as `[tools.bash]`, so the two execution paths behave alike.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShellConfig {
+    /// Run `!<command>` typed at the prompt. When false, such a line is sent
+    /// to the model as an ordinary prompt.
+    #[serde(default = "default_shell_enabled")]
+    pub enabled: bool,
+    /// Give up on a command after this long and kill it.
+    #[serde(default = "default_shell_timeout_ms")]
+    pub timeout_ms: u64,
+    /// How much of the output is handed to the model. The screen always shows
+    /// all of it; this bounds only the copy that enters the conversation.
+    #[serde(default = "default_shell_max_output_kb")]
+    pub max_output_kb: u64,
+    /// Hand the command and its output to the model as context, so the next
+    /// question can refer to it without pasting.
+    #[serde(default = "default_shell_context")]
+    pub context: bool,
+}
+
+impl Default for ShellConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_shell_enabled(),
+            timeout_ms: default_shell_timeout_ms(),
+            max_output_kb: default_shell_max_output_kb(),
+            context: default_shell_context(),
+        }
+    }
+}
+
+fn default_shell_enabled() -> bool {
+    true
+}
+
+fn default_shell_timeout_ms() -> u64 {
+    120_000
+}
+
+fn default_shell_max_output_kb() -> u64 {
+    256
+}
+
+fn default_shell_context() -> bool {
+    true
 }
 
 /// `[history]` — hybrid history-window management. Opt-in (`enabled = false`
@@ -1070,6 +1133,54 @@ scrollback_lines = 500
         .unwrap();
         assert_eq!(sized.ui.scrollback_lines, 500);
         assert!(sized.ui.mouse_scroll, "the other key keeps its default");
+    }
+
+    /// The `[shell]` section is absent from older config files and must come
+    /// up with the feature on and the same limits as `[tools.bash]`.
+    #[test]
+    fn the_shell_section_defaults_to_enabled_with_bash_like_limits() {
+        let d = ShellConfig::default();
+        assert!(d.enabled);
+        assert!(d.context);
+        assert_eq!(d.timeout_ms, 120_000);
+        assert_eq!(d.max_output_kb, 256);
+
+        let cfg: Config = toml::from_str(tests_default_config()).unwrap();
+        assert!(cfg.shell.enabled, "an absent section must default to on");
+        assert_eq!(cfg.shell.timeout_ms, 120_000);
+
+        let tuned: Config = toml::from_str(
+            r#"
+[provider]
+kind = "ollama"
+
+[shell]
+enabled = false
+timeout_ms = 5000
+max_output_kb = 8
+context = false
+"#,
+        )
+        .unwrap();
+        assert!(!tuned.shell.enabled);
+        assert!(!tuned.shell.context);
+        assert_eq!(tuned.shell.timeout_ms, 5_000);
+        assert_eq!(tuned.shell.max_output_kb, 8);
+
+        // A partial section keeps the other defaults.
+        let partial: Config = toml::from_str(
+            r#"
+[provider]
+kind = "ollama"
+
+[shell]
+timeout_ms = 1000
+"#,
+        )
+        .unwrap();
+        assert_eq!(partial.shell.timeout_ms, 1_000);
+        assert!(partial.shell.enabled);
+        assert_eq!(partial.shell.max_output_kb, 256);
     }
 
     /// `[ui] color` defaults to `"auto"`, so a config file written before the

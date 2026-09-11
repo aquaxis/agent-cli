@@ -63,6 +63,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 [tools.websearch]           # websearch tool endpoint / key (opt-in)
 
 [ui]                        # Display mode
+[shell]                     # `!<command>` typed at the prompt
 [history]                   # Opt-in history-window management
 [mcp]                       # MCP client: global options
 [[mcp.servers]]             # MCP client: one external server per entry
@@ -259,6 +260,27 @@ provider    = "tavily"
 | `mouse_scroll` | bool | `true` | Scroll the session log with the mouse wheel, keeping the prompt line pinned. Only active when stdin and stderr are both terminals; see "UI Display Mode" below |
 | `scrollback_lines` | integer | `2000` | Lines of session output kept for scrolling back. `0` keeps none, which also disables the wheel scrollback |
 
+### `[shell]`
+
+Running a command typed at the prompt with `!<command>` (see [`doc/usage.md`](usage.md), "Running Shell Commands (`!`)"). This is your own command, not a tool call the model asked for, so it is not subject to the approval gate or to `[tools] enabled`.
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `enabled` | bool | `true` | Run `!<command>` typed at the prompt. When false, such a line is sent to the model as an ordinary prompt |
+| `timeout_ms` | integer | `120000` | Stop a command that runs longer than this (the whole job is killed) |
+| `max_output_kb` | integer | `256` | How much of the output the model is given. The screen always shows all of it; this bounds only the copy that enters the conversation, keeping the end of the output |
+| `context` | bool | `true` | Hand the command and its output to the model as context, so the next question can refer to it. No turn is started by it |
+
+```toml
+[shell]
+enabled       = true
+timeout_ms    = 120000
+max_output_kb = 256
+context       = true
+```
+
+The defaults for `timeout_ms` and `max_output_kb` match `[tools.bash]`, so a command you run and a command the model runs behave the same way until you change one.
+
 ### `[history]`
 
 Opt-in hybrid history-window management. When `enabled = false` (default), the
@@ -392,6 +414,12 @@ show_progress    = true
 color            = "auto"
 mouse_scroll     = true
 scrollback_lines = 2000
+
+[shell]
+enabled       = true
+timeout_ms    = 120000
+max_output_kb = 256
+context       = true
 ```
 
 ### 4.3 Full-featured Configuration

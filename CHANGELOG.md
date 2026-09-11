@@ -4,6 +4,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- `!` shell commands — typing `!<command>` at the prompt runs it in the shell straight away, as Claude Code's bash mode does.
+  - No approval prompt and no round trip through the model: it is your own command, so it is not subject to the tool-approval gate or to `[tools] enabled`. The model's own shell access is still the `bash` tool, unchanged.
+  - The output **streams as it is produced**, so a long `!cargo build` shows progress; it is ordinary session output, so it wraps, colours and scrolls back with the mouse wheel like everything else. A non-zero exit is reported as `[shell] exit <code>`; a successful command shows nothing but its own output.
+  - The command and its output are then **handed to the model as context** without starting a turn — nothing is sent to the provider until you ask something — so `!git diff` followed by "why did this break?" works without pasting. A new `AgentInput::Context` is the only input that appends to the conversation without running a turn; the conversation log records the command too.
+  - While the line being typed starts with `!` the prompt is drawn in yellow, so the shell mode is visible before Enter. The line enters the input history like any other.
+  - `Esc` / `Ctrl+C` cancels a running command and hands the prompt straight back; the whole process group is signalled, so nothing is left behind. `[shell] timeout_ms` (two minutes by default) stops one that overruns, and a `/quit`, `Ctrl+D` or `SIGTERM` shutdown stops it too.
+  - **Only a line you typed can run a command**: a peer agent's prompt is wrapped before it reaches the REPL's classification, so it is always text. This is structural, not a check.
+  - New `[shell]` section: `enabled` (default `true`), `timeout_ms` (`120000`), `max_output_kb` (`256`, bounding only the copy the model receives — the screen shows everything) and `context` (`true`). With `enabled = false` a `!` line is an ordinary prompt again and the output is byte-identical to v0.14.0.
+  - Not a terminal: stdio is piped and stdin is closed, so interactive and full-screen programs (`vim`, `less`, `top`, `ssh`) are out of scope, and each `!` is its own `bash -lc`, so `cd` does not persist between commands.
+  - Internally: a new `shell.rs` module holds the pure line classification, the runner and the context rendering. No new dependency; Linux-only as before.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/usage.md`, `doc/config.md`, `doc/architecture.md`, `doc/troubleshooting.md`.
+
 ## [0.14.0]
 
 ### Added

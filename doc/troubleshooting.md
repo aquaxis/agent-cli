@@ -284,6 +284,21 @@ While a turn runs, an interactive REPL shows the line being executed and, beneat
 | A tool result ends in `… +N more lines` | Expected while the indicator is on: the on-screen copy is cut to five rows so it cannot push the spinner off the screen. The model still receives the whole result, and the full text is in the conversation log (`[runtime] log_dir`). `[ui] show_progress = false` prints it in full |
 | Reasoning disappears when the turn ends | Expected: the block belongs to the running turn. The full reasoning is written to the conversation log; set `[ui] show_progress = false` to get the old inline `[thinking]` output in the scrollback instead |
 
+### `!` does not run my command, or the command misbehaves
+
+`!<command>` runs a command typed at the prompt (see [`doc/usage.md`](usage.md), "Running Shell Commands (`!`)").
+
+| Symptom | Cause / remedy |
+|------|------|
+| The line was sent to the model instead of being run | The `!` has to be the **first** character of the line, and `[shell] enabled` must be true. With it false, a `!` line is an ordinary prompt by design |
+| `!vim`, `!less`, `!top` or `!ssh` hangs or shows nothing | Expected: the command has pipes, not a terminal, so full-screen and interactive programs cannot work. Press `Esc` and run those in a separate terminal |
+| A command that waits for input never finishes | Its stdin is closed (the terminal belongs to the REPL), so it gets EOF, not your keystrokes. Pass the input on the command line, or from a file |
+| `!cd somewhere` has no effect on the next command | Each `!` is its own `bash -lc`, so directory changes and exported variables do not persist. Use `!cd somewhere && make` |
+| `[shell] timed out after 120000 ms` | The command outran `[shell] timeout_ms` and the whole job was killed. Raise the setting, or run long jobs in another terminal |
+| The model does not seem to know the output | `[shell] context = false` keeps commands to yourself. With it on, the output is added to the conversation and is used from the **next** question onwards; `/clear` discards it like any other message |
+| The model got only part of a long output | `[shell] max_output_kb` bounds the copy the model receives, keeping the end of the output. The screen still showed everything, and the full text is in the conversation log |
+| A command survived after agent-cli was killed | `Esc`, the timeout, `/quit`, `Ctrl+D` and a `SIGTERM` shutdown all stop the job. A `SIGKILL`, or closing the terminal window outright, leaves no chance to clean up |
+
 ### The mouse wheel does not scroll, or the mouse behaves oddly
 
 The wheel scrolls the session log while the prompt stays pinned (see [`doc/usage.md`](usage.md), "Scrolling Back Through the Session").
