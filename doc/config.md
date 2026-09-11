@@ -256,6 +256,8 @@ provider    = "tavily"
 | `show_thinking` | string | `"collapsed"` | Thinking display mode: `"collapsed"` (truncated to the first 80 characters + first line) / `"expanded"` (full text) / `"hidden"` (not displayed). See "UI Display Mode" below for details |
 | `show_progress` | bool | `true` | Draw the progress indicator (activity line + spinner and elapsed time) while a turn runs. Only ever drawn when stdin and stderr are both terminals; see "UI Display Mode" below |
 | `color` | string | `"auto"` | Colour the output: `"auto"` (colour a stream only when it is an interactive terminal and `NO_COLOR` is unset), `"always"`, `"never"`. See "UI Display Mode" below |
+| `mouse_scroll` | bool | `true` | Scroll the session log with the mouse wheel, keeping the prompt line pinned. Only active when stdin and stderr are both terminals; see "UI Display Mode" below |
+| `scrollback_lines` | integer | `2000` | Lines of session output kept for scrolling back. `0` keeps none, which also disables the wheel scrollback |
 
 ### `[history]`
 
@@ -385,9 +387,11 @@ timeout_ms    = 120000
 max_output_kb = 512
 
 [ui]
-show_thinking = "collapsed"
-show_progress = true
-color         = "auto"
+show_thinking    = "collapsed"
+show_progress    = true
+color            = "auto"
+mouse_scroll     = true
+scrollback_lines = 2000
 ```
 
 ### 4.3 Full-featured Configuration
@@ -564,6 +568,16 @@ The indicator additionally requires stdin **and** stderr to be interactive termi
 | `"never"` | No colour is ever written |
 
 stdout and stderr are decided independently, so `agent-cli run > answer.txt` started from a terminal writes a plain file while the status display on screen keeps its colour. `agent-cli serve` never colours anything. Only the ANSI 16 colours are used, as foreground colours: the terminal's own palette decides the shades, and there is no background colour to clash with your theme.
+
+`ui.mouse_scroll` and `ui.scrollback_lines` control the wheel scrollback described in [`doc/usage.md`](usage.md) ("Scrolling Back Through the Session"): the wheel scrolls the session log while the prompt line stays where it is.
+
+| Setting | Behavior |
+|----|------|
+| `mouse_scroll = true` (default) | The terminal reports mouse events to agent-cli for the whole session, the wheel scrolls the log, and a click still expands the reasoning block during a turn. Selecting text with the mouse needs your terminal's override, usually `Shift` |
+| `mouse_scroll = false` | No mouse reporting at the prompt and no wheel scrollback; the wheel, selection and the terminal's own scrollback behave exactly as they did before the feature existed |
+| `scrollback_lines` | How many lines of output are kept to scroll back over. `0` keeps none and disables the feature as completely as `mouse_scroll = false` |
+
+Like the progress indicator, the scrollback needs stdin **and** stderr to be interactive terminals: with piped or redirected output, and in `agent-cli serve`, no transcript is kept and nothing changes. The keyboard is untouched — `↑` / `↓` stay on the input history and the arrows stay in the line being edited.
 
 Configuration changes take effect after restarting `agent-cli`. Dynamic switching at runtime is not supported.
 

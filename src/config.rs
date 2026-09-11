@@ -107,6 +107,10 @@ show_thinking = "collapsed"
 show_progress = true
 # Colour the output: "auto" (terminals only, honours NO_COLOR) / "always" / "never".
 color         = "auto"
+# Scroll the session log with the mouse wheel, keeping the prompt line pinned.
+mouse_scroll     = true
+# Lines of output kept for scrolling back (0 disables the wheel scrollback).
+scrollback_lines = 2000
 
 [history]
 # Opt-in hybrid window management. When disabled (default), the full
@@ -508,6 +512,16 @@ pub struct UiConfig {
     /// interactive terminal and `NO_COLOR` is unset), `"always"`, `"never"`.
     #[serde(default = "default_color")]
     pub color: String,
+    /// Scroll the session log with the mouse wheel, keeping the prompt line
+    /// pinned where it is. While this is on the terminal reports wheel and
+    /// click events to agent-cli, so its own scrollback and text selection
+    /// need the usual `Shift` override; turning it off restores them.
+    #[serde(default = "default_mouse_scroll")]
+    pub mouse_scroll: bool,
+    /// Lines of session output kept for scrolling back. `0` keeps none, which
+    /// also disables the wheel scrollback.
+    #[serde(default = "default_scrollback_lines")]
+    pub scrollback_lines: usize,
 }
 
 impl Default for UiConfig {
@@ -516,6 +530,8 @@ impl Default for UiConfig {
             show_thinking: default_show_thinking(),
             show_progress: default_show_progress(),
             color: default_color(),
+            mouse_scroll: default_mouse_scroll(),
+            scrollback_lines: default_scrollback_lines(),
         }
     }
 }
@@ -530,6 +546,14 @@ fn default_show_progress() -> bool {
 
 fn default_color() -> String {
     "auto".to_string()
+}
+
+fn default_mouse_scroll() -> bool {
+    true
+}
+
+fn default_scrollback_lines() -> usize {
+    2000
 }
 
 /// `[history]` — hybrid history-window management. Opt-in (`enabled = false`
@@ -1007,6 +1031,45 @@ show_progress = false
         )
         .unwrap();
         assert!(!off.ui.show_progress);
+    }
+
+    /// The wheel scrollback is on by default and keeps 2000 lines, so a config
+    /// file written before the keys existed behaves as the feature intends.
+    #[test]
+    fn the_scrollback_keys_default_to_enabled_and_two_thousand_lines() {
+        assert!(UiConfig::default().mouse_scroll);
+        assert_eq!(UiConfig::default().scrollback_lines, 2000);
+        let cfg: Config = toml::from_str(tests_default_config()).unwrap();
+        assert!(cfg.ui.mouse_scroll, "absent key must default to on");
+        assert_eq!(cfg.ui.scrollback_lines, 2000);
+        let off: Config = toml::from_str(
+            r#"
+[provider]
+kind = "ollama"
+
+[ui]
+mouse_scroll = false
+scrollback_lines = 0
+"#,
+        )
+        .unwrap();
+        assert!(!off.ui.mouse_scroll);
+        assert_eq!(
+            off.ui.scrollback_lines, 0,
+            "zero keeps no transcript, which also disables the wheel"
+        );
+        let sized: Config = toml::from_str(
+            r#"
+[provider]
+kind = "ollama"
+
+[ui]
+scrollback_lines = 500
+"#,
+        )
+        .unwrap();
+        assert_eq!(sized.ui.scrollback_lines, 500);
+        assert!(sized.ui.mouse_scroll, "the other key keeps its default");
     }
 
     /// `[ui] color` defaults to `"auto"`, so a config file written before the
