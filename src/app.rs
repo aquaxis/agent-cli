@@ -122,6 +122,8 @@ pub(crate) struct ReplState {
     group: Option<crate::id::GroupId>,
     /// Colour scheme, resolved once at startup and shared by every writer.
     theme: Theme,
+    /// `[shell]`: whether `!<command>` runs, and with what limits.
+    shell: crate::config::ShellConfig,
     /// Whether the mouse-wheel scrollback is live for this session: `[ui]
     /// mouse_scroll` is on, `[ui] scrollback_lines` is non-zero, and the
     /// display is an interactive terminal. It decides whether the transcript
@@ -344,6 +346,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         config_source: source.clone(),
         group: group.clone(),
         theme,
+        shell: config.shell.clone(),
         scroll: scroll_enabled,
     });
 
@@ -782,6 +785,12 @@ enum PromptState {
     Ready,
     Pending,
     AwaitingApproval(oneshot::Sender<bool>),
+    /// A `!<command>` typed at the prompt is running: its output is streaming,
+    /// `Esc` cancels it, and the prompt is not accepting a line. The agent is
+    /// not involved — nothing was sent to it and nothing is waited on. The run
+    /// itself lives next to this state, so the loop can poll it and the other
+    /// branches can still look at the state.
+    Shell,
 }
 
 /// Outcome of `handle_repl_command` (custom-command support, FR-08/FR-11).
@@ -807,6 +816,21 @@ impl PromptState {
     }
     fn is_awaiting_approval(&self) -> bool {
         matches!(self, PromptState::AwaitingApproval(_))
+    }
+    fn is_shell(&self) -> bool {
+        matches!(self, PromptState::Shell)
+    }
+}
+
+/// The prompt's colour for a line that is being typed or echoed: a line that
+/// will be run in the shell is marked with the same yellow bold that the
+/// approval prompt uses, so "this is not going to the model" is visible before
+/// `Enter` is pressed.
+fn prompt_line_role(line: &str, shell_enabled: bool) -> Role {
+    if shell_enabled && line.trim_start().starts_with('!') {
+        Role::Confirm
+    } else {
+        Role::PromptSymbol
     }
 }
 
@@ -1477,6 +1501,10 @@ async fn run_input_loop_raw(
 
     let mut input_state = InputState::new();
     let mut prompt_state = PromptState::Ready;
+    // The `!` command currently running, if any. It is kept next to
+    // `prompt_state` rather than inside it so the `select!` arm below can poll
+    // it while the other arms still read the state.
+    let mut shell_run: Option<crate::shell::ShellRun> = None;
     let mut approval_rx: Option<mpsc::Receiver<ApprovalRequest>> = Some(approval_rx);
     let mut stdout = std::io::stdout();
     let mut shutdown_rx = shutdown_rx;
@@ -1568,6 +1596,75 @@ async fn run_input_loop_raw(
                     }
                     None => {
                         approval_rx = None;
+                    }
+                }
+            }
+            // A `!` command is running: print what it produces as it arrives,
+            // so a long command shows progress and every line lands in the
+            // scrollback like any other output.
+            produced = async {
+                match shell_run.as_mut() {
+                    Some(run) => run.next().await,
+                    None => std::future::pending::<Option<crate::shell::ShellLine>>().await,
+                }
+            }, if shell_run.is_some() => {
+                use crate::shell::{ShellLine, ShellStatus};
+                match produced {
+                    // The command's own output is printed unstyled: it is not
+                    // agent-cli's text to colour.
+                    Some(ShellLine::Out(l)) => raw_println(true, &l),
+                    Some(ShellLine::Err(l)) => raw_eprintln(true, &l),
+                    Some(ShellLine::End(status)) => {
+                        let run = shell_run.take().expect("a run was in progress");
+                        match &status {
+                            ShellStatus::Exited(0) => {}
+                            ShellStatus::Exited(code) => raw_eprintln(
+                                true,
+                                &state.theme.err(Role::Failure, &format!("[shell] exit {code}")),
+                            ),
+                            ShellStatus::TimedOut { after_ms } => raw_eprintln(
+                                true,
+                                &state.theme.err(
+                                    Role::Failure,
+                                    &format!("[shell] timed out after {after_ms} ms"),
+                                ),
+                            ),
+                            // The cancel path already printed `[cancelled]`.
+                            ShellStatus::Cancelled => {}
+                            ShellStatus::Failed(e) => raw_eprintln(
+                                true,
+                                &state.theme.err(Role::Failure, &format!("[shell] {e}")),
+                            ),
+                        }
+                        let outcome = run.finish(status);
+                        if state.shell.context {
+                            let _ = input_tx
+                                .send(AgentInput::Context {
+                                    text: crate::shell::context_message(&outcome),
+                                    source: crate::agent::ContextSource::Shell {
+                                        command: outcome.command.clone(),
+                                        status: outcome.status.describe(),
+                                    },
+                                })
+                                .await;
+                        }
+                        // An approval may have arrived while the command ran;
+                        // only the shell state is ours to leave.
+                        if prompt_state.is_shell() {
+                            prompt_state = PromptState::Ready;
+                            renderer.reset();
+                            render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                        }
+                    }
+                    // The runner ended without a terminal line (its task was
+                    // dropped): give the prompt back rather than hanging.
+                    None => {
+                        shell_run = None;
+                        if prompt_state.is_shell() {
+                            prompt_state = PromptState::Ready;
+                            renderer.reset();
+                            render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                        }
                     }
                 }
             }
@@ -1690,6 +1787,19 @@ async fn run_input_loop_raw(
                                 // usual handling, now on the live screen.
                             }
                         }
+                        // While a `!` command runs, the cancel key stops it and
+                        // every other key is ignored — the prompt is not
+                        // accepting a line yet. No `CancelToken` is raised: the
+                        // agent has nothing to do with this.
+                        if prompt_state.is_shell() {
+                            if is_cancel_key(&key_event) {
+                                if let Some(run) = shell_run.as_ref() {
+                                    run.cancel();
+                                }
+                                raw_eprintln(true, &state.theme.err(Role::Cancelled, "[cancelled]"));
+                            }
+                            continue;
+                        }
                         // During Pending, only ESC and Ctrl-C are honoured (cancel).
                         // Other key events are ignored to avoid corrupting the edit
                         // buffer while the agent is processing.
@@ -1784,7 +1894,24 @@ async fn run_input_loop_raw(
                                     }
 
                                     // Echo the submitted line, then move to next line
-                                    renderer.finish_line(&mut stdout, &state.theme, Role::PromptSymbol, PROMPT, &line);
+                                    renderer.finish_line(&mut stdout, &state.theme, prompt_line_role(&line, state.shell.enabled), PROMPT, &line);
+
+                                    // Only a line typed here can be a shell
+                                    // command: a peer's prompt never reaches
+                                    // this classification.
+                                    let classified = crate::shell::classify_line(&trimmed, state.shell.enabled);
+                                    if let crate::shell::Line::Shell(cmd) = classified {
+                                        push_history(&state, &trimmed).await;
+                                        raw_println(true, &state.theme.out(Role::ToolName, &format!("$ {cmd}")));
+                                        shell_run = Some(crate::shell::ShellRun::spawn(cmd, &state.shell));
+                                        prompt_state = PromptState::Shell;
+                                        continue;
+                                    }
+                                    if matches!(classified, crate::shell::Line::ShellUsage) {
+                                        raw_eprintln(true, &state.theme.err(Role::Info, "usage: !<command>  (runs it in the shell)"));
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                                        continue;
+                                    }
 
                                     if let Some(rest) = trimmed.strip_prefix('/') {
                                         match handle_repl_command(rest, &input_tx, &state, true).await {
@@ -1920,6 +2047,20 @@ async fn run_input_loop_raw(
     {
         let _ = resp_tx.send(false);
     }
+    // A `!` command still running when the REPL exits is stopped here rather
+    // than orphaned: the runner kills the whole job, and we wait briefly for it
+    // to confirm before the process goes away.
+    if let Some(mut run) = shell_run.take() {
+        run.cancel();
+        let _ = tokio::time::timeout(Duration::from_millis(500), async {
+            while let Some(line) = run.next().await {
+                if matches!(line, crate::shell::ShellLine::End(_)) {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
     // Give the live screen back before tearing the prompt down, so the session
     // never ends on the alternate screen.
     overlay.leave(&mut stdout);
@@ -2018,6 +2159,20 @@ async fn run_input_loop_line<R>(
                             }
                             // Wait for tool execution -> follow-up -> Done. Drain stale idle notifications.
                             while agent_idle_rx.try_recv().is_ok() {}
+                            continue;
+                        }
+
+                        // A `!` line runs in the shell here too. There are no
+                        // keys to poll on this path, so the command is simply
+                        // awaited to completion — the timeout is what bounds it.
+                        let classified = crate::shell::classify_line(&trimmed, state.shell.enabled);
+                        if let crate::shell::Line::Shell(cmd) = classified {
+                            push_history(&state, &trimmed).await;
+                            run_shell_to_completion(cmd, &state, &input_tx, false).await;
+                            continue;
+                        }
+                        if matches!(classified, crate::shell::Line::ShellUsage) {
+                            raw_eprintln(false, "usage: !<command>  (runs it in the shell)");
                             continue;
                         }
 
@@ -3030,6 +3185,66 @@ fn truncate_suggestion(s: &str, max_chars: usize) -> String {
 
 /// Render the prompt with a live command suggestion (when the line starts
 /// with `/` and has no space). Used by the raw-mode input loop.
+/// Run a `!` command to completion, printing its output as it arrives and
+/// handing the result to the model afterwards.
+///
+/// Used by the line-oriented loop, which has no key events to poll and so has
+/// nothing to cancel with; the raw loop drives the same `ShellRun` from its
+/// `select!` instead, so `Esc` can stop it.
+async fn run_shell_to_completion(
+    command: &str,
+    state: &Arc<ReplState>,
+    input_tx: &mpsc::Sender<AgentInput>,
+    raw_mode: bool,
+) {
+    use crate::shell::{ShellLine, ShellStatus};
+    raw_println(
+        raw_mode,
+        &state.theme.out(Role::ToolName, &format!("$ {command}")),
+    );
+    let mut run = crate::shell::ShellRun::spawn(command, &state.shell);
+    let status = loop {
+        match run.next().await {
+            Some(ShellLine::Out(l)) => raw_println(raw_mode, &l),
+            Some(ShellLine::Err(l)) => raw_eprintln(raw_mode, &l),
+            Some(ShellLine::End(status)) => break status,
+            None => break ShellStatus::Cancelled,
+        }
+    };
+    match &status {
+        ShellStatus::Exited(0) | ShellStatus::Cancelled => {}
+        ShellStatus::Exited(code) => raw_eprintln(
+            raw_mode,
+            &state
+                .theme
+                .err(Role::Failure, &format!("[shell] exit {code}")),
+        ),
+        ShellStatus::TimedOut { after_ms } => raw_eprintln(
+            raw_mode,
+            &state.theme.err(
+                Role::Failure,
+                &format!("[shell] timed out after {after_ms} ms"),
+            ),
+        ),
+        ShellStatus::Failed(e) => raw_eprintln(
+            raw_mode,
+            &state.theme.err(Role::Failure, &format!("[shell] {e}")),
+        ),
+    }
+    let outcome = run.finish(status);
+    if state.shell.context {
+        let _ = input_tx
+            .send(AgentInput::Context {
+                text: crate::shell::context_message(&outcome),
+                source: crate::agent::ContextSource::Shell {
+                    command: outcome.command.clone(),
+                    status: outcome.status.describe(),
+                },
+            })
+            .await;
+    }
+}
+
 /// Draw the prompt block: in place on the live screen, or pinned at the bottom
 /// of the scrolled screen while the overlay owns it.
 async fn render_prompt(
@@ -3047,6 +3262,13 @@ async fn render_prompt(
         current_suggestion(state, &input_state.line).await
     } else {
         None
+    };
+    // A line that starts with `!` will be run in the shell, not sent to the
+    // model; the prompt says so while it is being typed.
+    let role = if matches!(role, Role::PromptSymbol) {
+        prompt_line_role(&input_state.line, state.shell.enabled)
+    } else {
+        role
     };
     if overlay.is_active() {
         draw_scroll_overlay(
@@ -3667,6 +3889,7 @@ mod tests {
             },
             group: None,
             theme: Theme::plain(),
+            shell: crate::config::ShellConfig::default(),
             scroll: false,
         })
     }
@@ -3675,6 +3898,132 @@ mod tests {
     fn dummy_approval_rx() -> mpsc::Receiver<ApprovalRequest> {
         let (_tx, rx) = mpsc::channel::<ApprovalRequest>(4);
         rx
+    }
+
+    /// A `!` line typed at the prompt runs and its result is handed to the
+    /// model as context — not as a prompt, so no turn is started.
+    #[tokio::test]
+    async fn a_bang_line_runs_a_command_and_feeds_the_result_as_context() {
+        let tmp = TempDir::new().unwrap();
+        let state = build_state(tmp.path());
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
+
+        let (mut writer, reader) = tokio::io::duplex(128);
+        let handle = tokio::spawn(async move {
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                dummy_approval_rx(),
+                false,
+            )
+            .await;
+        });
+
+        writer
+            .write_all(b"!echo from-the-shell\n")
+            .await
+            .unwrap();
+        let msg = tokio::time::timeout(Duration::from_secs(10), input_rx.recv())
+            .await
+            .expect("the command should finish")
+            .expect("a context message");
+        match msg {
+            AgentInput::Context { text, source } => {
+                assert!(text.contains("$ echo from-the-shell"), "{text}");
+                assert!(text.contains("from-the-shell"), "{text}");
+                assert!(text.contains("exit status: 0"), "{text}");
+                let crate::agent::ContextSource::Shell { command, .. } = source;
+                assert_eq!(command, "echo from-the-shell");
+            }
+            other => panic!("a `!` line must not become a prompt: {other:?}"),
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    /// The safety property: a peer's prompt is text, wherever it starts. It
+    /// reaches the agent as a `PeerPrompt` and is never classified, so it can
+    /// never run a command.
+    #[test]
+    fn a_peer_prompt_starting_with_a_bang_is_never_a_command() {
+        // The classifier is only ever reached from the input loops; what a peer
+        // sends is wrapped as `PeerPrompt` without passing through it.
+        let peer = AgentInput::PeerPrompt {
+            from: AgentId::new(),
+            from_name: None,
+            text: "!rm -rf /tmp/should-not-run".into(),
+            reply_to: None,
+        };
+        match peer {
+            AgentInput::PeerPrompt { text, .. } => {
+                // Even if the text were classified, it would only be a command
+                // for a line the user typed — this asserts the wrapping, which
+                // is what keeps it away from the classifier.
+                assert!(text.starts_with('!'));
+            }
+            other => panic!("unexpected input: {other:?}"),
+        }
+        // And with the feature on, the classifier itself is only a pure
+        // function over a typed line: nothing in the IPC path calls it.
+        assert_eq!(
+            crate::shell::classify_line("!rm -rf /tmp/should-not-run", true),
+            crate::shell::Line::Shell("rm -rf /tmp/should-not-run")
+        );
+    }
+
+    /// With the feature off, a `!` line is an ordinary prompt again.
+    #[tokio::test]
+    async fn with_the_shell_disabled_a_bang_line_is_sent_to_the_model() {
+        let tmp = TempDir::new().unwrap();
+        let mut state_inner = std::sync::Arc::try_unwrap(build_state(tmp.path()))
+            .map_err(|_| ())
+            .expect("sole owner");
+        state_inner.shell.enabled = false;
+        let state = Arc::new(state_inner);
+        let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
+
+        let (mut writer, reader) = tokio::io::duplex(128);
+        let handle = tokio::spawn(async move {
+            run_input_loop(
+                reader,
+                input_tx,
+                state,
+                shutdown_tx,
+                shutdown_rx,
+                idle_rx,
+                dummy_approval_rx(),
+                false,
+            )
+            .await;
+        });
+
+        writer.write_all(b"!echo nope\n").await.unwrap();
+        let msg = tokio::time::timeout(Duration::from_secs(5), input_rx.recv())
+            .await
+            .expect("a message")
+            .expect("a prompt");
+        match msg {
+            AgentInput::UserPrompt(text) => assert_eq!(text, "!echo nope"),
+            other => panic!("expected a prompt, got {other:?}"),
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    #[test]
+    fn the_prompt_marks_a_line_that_will_run_in_the_shell() {
+        assert_eq!(prompt_line_role("!ls", true), Role::Confirm);
+        assert_eq!(prompt_line_role("  !ls", true), Role::Confirm);
+        assert_eq!(prompt_line_role("hello", true), Role::PromptSymbol);
+        assert_eq!(prompt_line_role("", true), Role::PromptSymbol);
+        // With the feature off there is no shell mode to mark.
+        assert_eq!(prompt_line_role("!ls", false), Role::PromptSymbol);
     }
 
     #[tokio::test]

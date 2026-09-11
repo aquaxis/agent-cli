@@ -100,6 +100,22 @@ pub enum AgentInput {
     /// Issued from the REPL command `/clear`.
     ClearHistory,
     Cancel,
+    /// Text to add to the conversation **without running a turn**: the result
+    /// of a `!` command the user ran in their own terminal. The agent appends
+    /// it and goes back to waiting — no provider request, no events — so the
+    /// next question carries it.
+    Context {
+        text: String,
+        /// What produced the text, for the conversation log only.
+        source: ContextSource,
+    },
+}
+
+/// Where an [`AgentInput::Context`] message came from.
+#[derive(Debug, Clone)]
+pub enum ContextSource {
+    /// A `!<command>` run at the REPL prompt.
+    Shell { command: String, status: String },
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +284,23 @@ impl Agent {
                             ),
                         })
                         .await;
+                }
+                AgentInput::Context { text, source } => {
+                    // Context only: the conversation grows by one message and
+                    // nothing else happens — no request to the provider, no
+                    // event, so the display stays quiet and the REPL is not
+                    // waiting on anything.
+                    if let Some(log) = log.as_ref() {
+                        let ContextSource::Shell { command, status } = &source;
+                        let _ = log
+                            .write(crate::log::LogEvent::Shell {
+                                command,
+                                status,
+                                output: &text,
+                            })
+                            .await;
+                    }
+                    self.history.push(Message::User { content: text });
                 }
                 AgentInput::Cancel => {
                     let _ = event_tx
@@ -1240,6 +1273,70 @@ mod tests {
             got_info = message.contains("system prompt");
         }
         assert!(got_info);
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// `Context` — the result of a `!` command — appends exactly one message
+    /// and does nothing else: no provider request, no event, no turn. The
+    /// append is verified indirectly through `ClearHistory`'s removal count,
+    /// which is also the proof that no event was emitted in between.
+    #[tokio::test]
+    async fn context_appends_one_message_without_running_a_turn() {
+        // One script, which must still be unconsumed after the Context input:
+        // if a turn had run, the following prompt would find nothing to reply.
+        let scripts = vec![vec![
+            ProviderEvent::Text {
+                delta: "answer".into(),
+            },
+            ProviderEvent::Done,
+        ]];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = build_test_agent(scripts, history);
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+
+        in_tx
+            .send(AgentInput::Context {
+                text: "I ran a shell command in my terminal.\n\n$ echo hi".into(),
+                source: ContextSource::Shell {
+                    command: "echo hi".into(),
+                    status: "exit status: 0".into(),
+                },
+            })
+            .await
+            .unwrap();
+
+        // The very next event must be the one `ClearHistory` produces: the
+        // context input emitted none of its own.
+        in_tx.send(AgentInput::ClearHistory).await.unwrap();
+        match ev_rx.recv().await.expect("info expected") {
+            AgentEvent::Info { message } => {
+                assert!(message.contains("history cleared"), "{message}");
+                assert!(
+                    message.contains("1 message(s) removed"),
+                    "the context added exactly one message: {message}"
+                );
+            }
+            other => panic!("context must not emit an event of its own: {other:?}"),
+        }
+
+        // And the conversation still works: the unconsumed script answers now.
+        in_tx
+            .send(AgentInput::UserPrompt("and now?".into()))
+            .await
+            .unwrap();
+        let mut saw_text = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::Text { delta } if delta == "answer" => saw_text = true,
+                AgentEvent::Done => break,
+                _ => {}
+            }
+        }
+        assert!(saw_text, "the provider script was still unconsumed");
 
         drop(in_tx);
         let _ = handle.await;

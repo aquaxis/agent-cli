@@ -307,6 +307,26 @@ Only the ANSI 16 colours are used and only as foreground colours, so your termin
 
 Colour is decided per stream: stdout (the answer, the banner) and stderr (everything else) are judged separately, so `agent-cli run > answer.txt` from a terminal writes a clean file while the status display on screen stays coloured. Redirected output, `agent-cli serve`, `NO_COLOR` and `TERM=dumb` all produce exactly the same plain bytes as before the scheme existed. See `[ui] color` in [`doc/config.md`](config.md) to force it on or off.
 
+### Running Shell Commands (`!`)
+
+Type `!` followed by a command and it runs in the shell right away — no approval prompt, and nothing goes through the model to get there:
+
+```
+> !git status --short
+$ git status --short
+ M src/app.rs
+```
+
+While the line you are typing starts with `!`, the prompt is drawn in yellow, so you can see before pressing Enter that the line will be run rather than sent to the model. The line goes into the input history like any other, so `↑` brings back `!cargo test`.
+
+- **The output streams as it is produced**, so a long `!cargo build` shows progress rather than appearing at the end. It is ordinary session output: wrapped, in the conversation's scrollback, and reachable with the mouse wheel.
+- **The model is given the command and its output afterwards**, without a turn being started — nothing is sent to the provider until you ask something. So `!git diff` followed by "why did this break?" works without pasting anything. Set `[shell] context = false` to keep commands entirely to yourself.
+- **`Esc` (or `Ctrl+C`) cancels** a running command: the whole job is stopped and the prompt comes straight back. A command that outlives `[shell] timeout_ms` (two minutes by default) is stopped the same way.
+- **A non-zero exit is reported** as `[shell] exit <code>`; a successful command shows nothing but its own output.
+- **Only a line you typed here can run a command.** A prompt that arrives from a peer agent — or anything the model produces — is text, never a command: it does not pass through this part of the REPL at all. The model's own shell access is the `bash` tool, which still asks for approval.
+
+What `!` is not for: it has no terminal of its own, so interactive and full-screen programs (`vim`, `less`, `top`, `ssh`) will not work — use a separate terminal for those. Each command is its own `bash -lc`, so `!cd ..` does not carry over to the next one (`!cd build && make` does what you want). Its stdin is closed, so a command that waits for input gets EOF instead of your keystrokes.
+
 ### Scrolling Back Through the Session
 
 Turn the mouse wheel up and the session log scrolls behind the prompt: the prompt line stays exactly where it is, still showing what you had typed and where the cursor was, and stays editable while you read. Turn the wheel back down to return; reaching the bottom puts the live view back, and so does pressing `Esc`. Submitting a line with `Enter` also returns to the live view and then sends the line as usual.

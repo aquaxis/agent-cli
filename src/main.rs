@@ -17,6 +17,7 @@ mod log;
 mod mcp;
 mod persona;
 mod scroll;
+mod shell;
 mod theme;
 mod tools;
 mod update;

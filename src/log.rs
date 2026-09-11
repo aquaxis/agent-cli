@@ -38,6 +38,13 @@ pub enum LogEvent<'a> {
     System {
         message: &'a str,
     },
+    /// A shell command the user ran at the prompt with `!`, and the text that
+    /// was handed to the model because of it.
+    Shell {
+        command: &'a str,
+        status: &'a str,
+        output: &'a str,
+    },
 }
 
 pub struct ConversationLog {
