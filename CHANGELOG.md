@@ -4,6 +4,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- Mouse-wheel scrollback — turning the wheel scrolls the session log while the **prompt line stays where it is**.
+  - The pinned prompt keeps the text you had typed and the cursor where it was, and stays editable while you read: typing, `Backspace`, the arrows and history navigation all redraw it in place. Scrolling back to the bottom returns to the live view, and so do `Esc` and submitting the line with `Enter`.
+  - It works during a turn as well: output arriving meanwhile is kept but does not move the view, and the spinner with its elapsed time is pinned at the bottom of the screen. The wheel was previously swallowed while a turn ran, since mouse reporting was on only for the clickable reasoning block — clicking it still toggles that block on the live screen.
+  - The keyboard is unchanged: `↑` / `↓` stay on the input history, the arrows stay in the line being edited, and `Esc` / `Ctrl+C` still cancel a turn once the view is back at the bottom (the first `Esc` returns from the scrolled view).
+  - New `[ui] mouse_scroll` (default `true`) and `[ui] scrollback_lines` (default `2000`). Either `mouse_scroll = false` or `scrollback_lines = 0` disables it completely, and the output is then byte-identical to v0.13.0; the feature also requires stdin and stderr to be interactive terminals, so piped output and `agent-cli serve` are untouched.
+  - While it is on the terminal reports mouse events to agent-cli, so selecting text — and the terminal's own scrollback — need the usual `Shift` override.
+  - The scrolled view is drawn on the terminal's alternate screen, so returning to the live view restores the screen, and the terminal's own scrollback, exactly as they were.
+  - Internally: a new `scroll.rs` module keeps the session transcript (recorded at the four `raw_*` writers, bounded, excluding anything the display erases) and the pure viewport arithmetic, including an SGR-aware wrap so a styled line can be re-wrapped without breaking a colour. No new dependency; Linux-only as before.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/usage.md`, `doc/config.md`, `doc/architecture.md`, `doc/troubleshooting.md`.
+
 ## [0.13.0]
 
 ### Changed

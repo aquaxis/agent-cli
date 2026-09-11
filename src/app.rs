@@ -28,9 +28,16 @@ use crate::theme::{Role, Theme};
 use crate::tools::ToolRegistry;
 /// In raw mode, the terminal does not convert LF to CR+LF. These helpers ensure
 /// line endings include CR so the cursor returns to column 0 after each newline.
+///
+/// They are also the single seam every REPL message passes through, so each one
+/// tees into the session transcript (`scroll.rs`) before the CR+LF rewriting —
+/// the transcript holds the lines as they appear on screen, styling included.
+/// When no transcript is installed (piped input, `serve`, the scrollback turned
+/// off) recording is a no-op and nothing is allocated.
 
 /// Print a string to stdout, replacing LF with CR+LF, then append CR+LF.
 fn raw_println(raw: bool, msg: &str) {
+    crate::scroll::record_line(msg);
     if raw {
         let out = msg.replace('\n', "\r\n");
         let _ = std::io::stdout().write_all(out.as_bytes());
@@ -43,6 +50,7 @@ fn raw_println(raw: bool, msg: &str) {
 
 /// Print a string to stdout, replacing LF with CR+LF (no trailing newline added).
 fn raw_print_str(raw: bool, msg: &str) {
+    crate::scroll::record(msg);
     if raw {
         let out = msg.replace('\n', "\r\n");
         let _ = std::io::stdout().write_all(out.as_bytes());
@@ -55,6 +63,7 @@ fn raw_print_str(raw: bool, msg: &str) {
 
 /// Print a string to stderr, replacing LF with CR+LF, then append CR+LF.
 fn raw_eprintln(raw: bool, msg: &str) {
+    crate::scroll::record_line(msg);
     if raw {
         let out = msg.replace('\n', "\r\n");
         let _ = std::io::stderr().write_all(out.as_bytes());
@@ -67,6 +76,7 @@ fn raw_eprintln(raw: bool, msg: &str) {
 
 /// Print a string to stderr, replacing LF with CR+LF (no trailing newline added).
 fn raw_eprint(raw: bool, msg: &str) {
+    crate::scroll::record(msg);
     if raw {
         let out = msg.replace('\n', "\r\n");
         let _ = std::io::stderr().write_all(out.as_bytes());
@@ -112,6 +122,12 @@ pub(crate) struct ReplState {
     group: Option<crate::id::GroupId>,
     /// Colour scheme, resolved once at startup and shared by every writer.
     theme: Theme,
+    /// Whether the mouse-wheel scrollback is live for this session: `[ui]
+    /// mouse_scroll` is on, `[ui] scrollback_lines` is non-zero, and the
+    /// display is an interactive terminal. It decides whether the transcript
+    /// is recorded, whether mouse reporting is enabled at the prompt, and
+    /// whether the wheel does anything.
+    scroll: bool,
 }
 
 const HISTORY_LIMIT: usize = 200;
@@ -260,10 +276,25 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // Colour scheme. Resolved once, separately per stream, so a redirected
     // answer stays plain even while the status display keeps its colour.
     let theme = Theme::from_env(config.ui.color_mode());
+    // Mouse-wheel scrollback. The transcript is recorded only for the
+    // interactive REPL, so every other path keeps no buffer at all. While it is
+    // live the input loop owns mouse reporting for the whole session, and the
+    // indicator must not switch it off at the end of a turn.
+    let scroll_enabled = {
+        use std::io::IsTerminal;
+        config.ui.mouse_scroll
+            && config.ui.scrollback_lines > 0
+            && stdin_is_tty()
+            && std::io::stderr().is_terminal()
+    };
+    if scroll_enabled {
+        crate::scroll::install(config.ui.scrollback_lines);
+    }
     let indicator = Arc::new(std::sync::Mutex::new(if progress_enabled {
         let mut ind = StatusIndicator::new(Box::new(std::io::stderr()), true, stdin_is_tty());
         ind.thinking_view = config.ui.show_thinking_mode() != ShowThinkingMode::Hidden;
         ind.theme = theme;
+        ind.owns_mouse = !scroll_enabled;
         ind
     } else {
         StatusIndicator::disabled()
@@ -313,6 +344,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         config_source: source.clone(),
         group: group.clone(),
         theme,
+        scroll: scroll_enabled,
     });
 
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
@@ -893,8 +925,12 @@ impl PromptRenderer {
         use crossterm::style::Print;
         // Remove the interactive render (cursor may be mid-line) before echoing.
         self.clear_block(stdout);
-        let _ = stdout.execute(Print(theme.out(prompt_role, prompt)));
-        let _ = stdout.execute(Print(theme.out(Role::InputText, line)));
+        let styled_prompt = theme.out(prompt_role, prompt);
+        let styled_line = theme.out(Role::InputText, line);
+        // The echo is what stays on screen — the block being edited is not.
+        crate::scroll::record_line(&format!("{styled_prompt}{styled_line}"));
+        let _ = stdout.execute(Print(&styled_prompt));
+        let _ = stdout.execute(Print(&styled_line));
         // Advance to a fresh line; CR+LF is required in raw mode.
         let _ = stdout.execute(Print("\r\n"));
         self.cursor_row = 0;
@@ -989,6 +1025,214 @@ fn click_hits_indicator(painted_rows: u16, cursor_row: u16, row: u16) -> bool {
     }
     let top = cursor_row.saturating_sub(painted_rows - 1);
     row >= top && row <= cursor_row
+}
+
+/// The REPL's input prompt, and the prompt that asks for a tool approval.
+const PROMPT: &str = "> ";
+const APPROVAL_PROMPT: &str = "approve? [y/N]: ";
+
+/// Terminal height in rows, with the same fallback as the width helper.
+fn terminal_height() -> usize {
+    terminal::size()
+        .map(|(_, h)| h as usize)
+        .unwrap_or(24)
+        .max(1)
+}
+
+/// Rows the prompt block occupies on screen: the optional suggestion row above
+/// it, plus the rows the prompt and the edited line wrap onto. Pure, so the
+/// scrolled screen's row budget can be unit-tested without a terminal.
+fn prompt_block_rows(
+    prompt_cols: usize,
+    cursor_cols: usize,
+    total_cols: usize,
+    sug_rows: u16,
+    width: usize,
+) -> u16 {
+    let (end_row, cursor_row, _) = layout_cursor(prompt_cols, cursor_cols, total_cols, width);
+    sug_rows + end_row.max(cursor_row) as u16 + 1
+}
+
+/// The scrolled view of the session log.
+///
+/// While it is active it owns the screen: the terminal is switched to the
+/// alternate screen, the transcript slice is drawn there with the prompt block
+/// pinned beneath it, and the switch is undone when the view returns to the
+/// bottom. The main screen is never written to in between, so leaving restores
+/// it — and the terminal's own scrollback with it — exactly as it was.
+struct ScrollOverlay {
+    view: crate::scroll::ScrollView,
+    /// The alternate screen is currently ours.
+    active: bool,
+    /// When the screen was last drawn, so a running turn's pinned spinner can
+    /// be refreshed without repainting on every 50ms poll.
+    last_draw: std::time::Instant,
+}
+
+/// How often a scrolled screen is redrawn while a turn runs: often enough for
+/// the pinned spinner to live, rare enough not to flicker.
+const SCROLL_REFRESH: Duration = Duration::from_millis(100);
+
+/// How often it is redrawn when no turn is running. Nothing should be writing
+/// underneath it then — but a peer's prompt can start a turn the REPL did not,
+/// so the screen is repaired on a slow beat rather than never.
+const SCROLL_IDLE_REFRESH: Duration = Duration::from_secs(1);
+
+impl ScrollOverlay {
+    fn new() -> Self {
+        Self {
+            view: crate::scroll::ScrollView::default(),
+            active: false,
+            last_draw: std::time::Instant::now(),
+        }
+    }
+
+    /// Whether the overlay owns the screen.
+    fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Whether the view has moved off the bottom of the log.
+    fn view_active(&self) -> bool {
+        self.view.is_active()
+    }
+
+    /// A wheel report: move the view by one notch. Returns whether the screen
+    /// needs redrawing, so a burst of reports costs one repaint.
+    fn wheel(&mut self, up: bool, cols: usize, body: usize) -> bool {
+        let max = crate::scroll::with(|t| crate::scroll::max_offset(t, cols, body)).unwrap_or(0);
+        let step = crate::scroll::STEP as isize;
+        self.view.scroll(if up { step } else { -step }, max)
+    }
+
+    fn needs_refresh(&self, turn_running: bool) -> bool {
+        let interval = if turn_running {
+            SCROLL_REFRESH
+        } else {
+            SCROLL_IDLE_REFRESH
+        };
+        self.active && self.last_draw.elapsed() >= interval
+    }
+
+    fn enter(&mut self, stdout: &mut std::io::Stdout) {
+        if self.active {
+            return;
+        }
+        let _ = stdout.execute(terminal::EnterAlternateScreen);
+        self.active = true;
+    }
+
+    /// Return to the live screen. Idempotent, so every path out of the REPL can
+    /// call it without checking first.
+    fn leave(&mut self, stdout: &mut std::io::Stdout) {
+        self.view.reset();
+        if !self.active {
+            return;
+        }
+        let _ = stdout.execute(terminal::LeaveAlternateScreen);
+        self.active = false;
+    }
+}
+
+impl Drop for ScrollOverlay {
+    /// A panic, a signal or any early return must not leave the terminal on the
+    /// alternate screen.
+    fn drop(&mut self) {
+        if self.active {
+            let _ = std::io::stdout().execute(terminal::LeaveAlternateScreen);
+        }
+    }
+}
+
+/// What is pinned to the bottom of the scrolled screen: the prompt when the
+/// REPL is waiting for input, the running turn's spinner row when it is not.
+enum ScrollBottom<'a> {
+    Prompt {
+        role: Role,
+        prompt: &'a str,
+        input: &'a InputState,
+        suggestion: Option<&'a str>,
+    },
+    Status(String),
+}
+
+/// Draw the scrolled screen: the transcript slice for the current offset, one
+/// row per terminal row, with the bottom block pinned beneath it. Every row is
+/// cleared as it is written, so a redraw never flickers and output a running
+/// turn wrote underneath is repaired.
+fn draw_scroll_overlay(
+    overlay: &mut ScrollOverlay,
+    stdout: &mut std::io::Stdout,
+    renderer: &mut PromptRenderer,
+    theme: &Theme,
+    bottom: ScrollBottom<'_>,
+) {
+    use crossterm::cursor::MoveTo;
+    use crossterm::style::Print;
+
+    let width = PromptRenderer::terminal_width();
+    let height = terminal_height();
+    let bottom_rows = match &bottom {
+        ScrollBottom::Prompt {
+            prompt,
+            input,
+            suggestion,
+            ..
+        } => {
+            let prompt_cols = crate::editor::str_display_width(prompt);
+            prompt_block_rows(
+                prompt_cols,
+                input.display_cursor(),
+                prompt_cols + input.display_width(),
+                suggestion_rows(*suggestion, width),
+                width,
+            )
+        }
+        ScrollBottom::Status(_) => 1,
+    };
+    let body = crate::scroll::body_rows(height, bottom_rows);
+    let rows = crate::scroll::with(|t| {
+        crate::scroll::visible_rows(t, width, body, overlay.view.offset())
+    })
+    .unwrap_or_default();
+    // A log shorter than the screen sits against the bottom block, where it
+    // would be on a terminal that has not scrolled yet.
+    let top = body.saturating_sub(rows.len());
+    for r in 0..body {
+        let _ = crossterm::queue!(
+            stdout,
+            MoveTo(0, r as u16),
+            terminal::Clear(ClearType::UntilNewLine)
+        );
+        if let Some(line) = r.checked_sub(top).and_then(|i| rows.get(i)) {
+            let _ = crossterm::queue!(stdout, Print(line));
+        }
+    }
+    let _ = crossterm::queue!(stdout, MoveTo(0, body as u16));
+    let _ = stdout.flush();
+
+    // The prompt goes through its own renderer, so the cursor arithmetic —
+    // wrapping, multibyte widths, the suggestion row — has one implementation.
+    renderer.reset();
+    match bottom {
+        ScrollBottom::Prompt {
+            role,
+            prompt,
+            input,
+            suggestion,
+        } => {
+            renderer.render(stdout, theme, role, prompt, input, suggestion);
+        }
+        ScrollBottom::Status(row) => {
+            let _ = crossterm::queue!(
+                stdout,
+                terminal::Clear(ClearType::UntilNewLine),
+                Print(theme.err(Role::Progress, &row))
+            );
+            let _ = stdout.flush();
+        }
+    }
+    overlay.last_draw = std::time::Instant::now();
 }
 
 /// Classify whether a key event should trigger a cancel during the Pending state
@@ -1238,11 +1482,26 @@ async fn run_input_loop_raw(
     let mut shutdown_rx = shutdown_rx;
     let mut agent_idle_rx = agent_idle_rx;
     let mut renderer = PromptRenderer::new();
-    const PROMPT: &str = "> ";
-    const APPROVAL_PROMPT: &str = "approve? [y/N]: ";
+    // The wheel scrollback: the terminal has to report mouse events for the
+    // whole session, not only while a turn runs, so the input loop owns
+    // reporting here (the indicator's own switch is disabled in that case) and
+    // `RawModeGuard::drop` turns it off exactly once, when raw mode ends.
+    let mut overlay = ScrollOverlay::new();
+    if state.scroll {
+        let _ = std::io::stderr().execute(crossterm::event::EnableMouseCapture);
+    }
 
     // Draw initial prompt
-    render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+    render_prompt(
+        &mut overlay,
+        &mut renderer,
+        &mut stdout,
+        Role::PromptSymbol,
+        PROMPT,
+        &state,
+        &input_state,
+    )
+    .await;
 
     loop {
         // Read current history for navigation (deduplicated for smooth up/down browsing)
@@ -1268,7 +1527,7 @@ async fn run_input_loop_raw(
                         prompt_state = PromptState::Ready;
                         // Redraw prompt after AI response on a fresh line
                         renderer.reset();
-                        render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                     }
                     None => break,
                 }
@@ -1282,6 +1541,12 @@ async fn run_input_loop_raw(
             }, if !prompt_state.is_awaiting_approval() && approval_rx.is_some() => {
                 match req {
                     Some(req) => {
+                        // An approval needs an answer, so the scrolled view
+                        // gives the screen back before the request is printed.
+                        if overlay.is_active() {
+                            overlay.leave(&mut stdout);
+                            renderer.reset();
+                        }
                         // Clear the current (possibly wrapped) prompt block, then print
                         // the approval request on a fresh line. The indicator is
                         // suspended for as long as the approval prompt owns the
@@ -1299,7 +1564,7 @@ async fn run_input_loop_raw(
                         // Reset input state for the approval prompt
                         input_state = InputState::new();
                         prompt_state = PromptState::AwaitingApproval(req.response);
-                        renderer.render(&mut stdout, &state.theme, Role::Confirm, APPROVAL_PROMPT, &input_state, None);
+                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::Confirm, APPROVAL_PROMPT, &state, &input_state).await;
                     }
                     None => {
                         approval_rx = None;
@@ -1318,14 +1583,61 @@ async fn run_input_loop_raw(
                 // event-drain `while` to terminate the outer input loop — a plain
                 // `break` here would only stop draining events, not exit the REPL.
                 let mut exit_loop = false;
+                // Set by a wheel report that moved the view, so a burst of
+                // notches is drawn once, after the whole drain.
+                let mut scroll_dirty = false;
                 while event::poll(Duration::from_millis(0)).unwrap_or(false) {
                     let ct_event = event::read();
-                    // Mouse reporting is only on while a turn is running, so a
-                    // click there is aimed at the progress indicator: clicking
-                    // its block switches the live `thinking` view between the
-                    // last few rows and everything the terminal can hold.
                     if let Ok(CtEvent::Mouse(mouse_event)) = &ct_event {
+                        // The wheel scrolls the session log behind the prompt,
+                        // which stays where it is. The keyboard is untouched:
+                        // the arrows still move within the line and through the
+                        // history.
+                        if state.scroll
+                            && matches!(
+                                mouse_event.kind,
+                                crossterm::event::MouseEventKind::ScrollUp
+                                    | crossterm::event::MouseEventKind::ScrollDown
+                            )
+                        {
+                            let up = matches!(
+                                mouse_event.kind,
+                                crossterm::event::MouseEventKind::ScrollUp
+                            );
+                            let width = PromptRenderer::terminal_width();
+                            // The rows left for the log once the bottom block
+                            // is pinned. The suggestion row is not counted: it
+                            // only shifts the clamp by one row.
+                            let bottom_rows = if prompt_state.is_pending() {
+                                1
+                            } else {
+                                let p = if prompt_state.is_awaiting_approval() {
+                                    APPROVAL_PROMPT
+                                } else {
+                                    PROMPT
+                                };
+                                let prompt_cols = crate::editor::str_display_width(p);
+                                prompt_block_rows(
+                                    prompt_cols,
+                                    input_state.display_cursor(),
+                                    prompt_cols + input_state.display_width(),
+                                    0,
+                                    width,
+                                )
+                            };
+                            let body = crate::scroll::body_rows(terminal_height(), bottom_rows);
+                            if overlay.wheel(up, width, body) {
+                                scroll_dirty = true;
+                            }
+                            continue;
+                        }
+                        // A click is aimed at the progress indicator: clicking
+                        // its block switches the live `thinking` view between
+                        // the last few rows and everything the terminal can
+                        // hold. While the view is scrolled the block is not on
+                        // screen, so there is nothing to click.
                         if prompt_state.is_pending()
+                            && !overlay.is_active()
                             && matches!(
                                 mouse_event.kind,
                                 crossterm::event::MouseEventKind::Down(
@@ -1349,6 +1661,35 @@ async fn run_input_loop_raw(
                         continue;
                     }
                     if let Ok(CtEvent::Key(key_event)) = ct_event {
+                        // While the view is scrolled the overlay owns the
+                        // screen. `Esc` returns to the live view and is
+                        // consumed there — it must not also cancel the turn or
+                        // deny an approval; `Enter` and the exit keys return to
+                        // it and then mean what they always mean. Every other
+                        // key edits the line in the pinned prompt block, so the
+                        // arrows keep moving within the line and through the
+                        // history.
+                        if overlay.is_active()
+                            && key_event.kind != crossterm::event::KeyEventKind::Release
+                        {
+                            let ctrl = key_event.modifiers.contains(KeyModifiers::CONTROL);
+                            let back_to_live = matches!(key_event.code, KeyCode::Esc | KeyCode::Enter)
+                                || (ctrl
+                                    && matches!(key_event.code, KeyCode::Char('c') | KeyCode::Char('d')));
+                            if back_to_live {
+                                overlay.leave(&mut stdout);
+                                lock_indicator(&state.indicator).resume();
+                                renderer.reset();
+                                if key_event.code == KeyCode::Esc {
+                                    if !prompt_state.is_pending() {
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, if prompt_state.is_awaiting_approval() { Role::Confirm } else { Role::PromptSymbol }, if prompt_state.is_awaiting_approval() { APPROVAL_PROMPT } else { PROMPT }, &state, &input_state).await;
+                                    }
+                                    continue;
+                                }
+                                // Enter / Ctrl-C / Ctrl-D fall through to their
+                                // usual handling, now on the live screen.
+                            }
+                        }
                         // During Pending, only ESC and Ctrl-C are honoured (cancel).
                         // Other key events are ignored to avoid corrupting the edit
                         // buffer while the agent is processing.
@@ -1367,7 +1708,7 @@ async fn run_input_loop_raw(
                                 raw_eprintln(true, &state.theme.err(Role::Cancelled, "[cancelled]"));
                                 prompt_state = PromptState::Ready;
                                 renderer.reset();
-                                render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                                render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                             }
                             // All other keys during Pending are ignored.
                             continue;
@@ -1390,7 +1731,7 @@ async fn run_input_loop_raw(
                             raw_eprintln(true, &state.theme.err(Role::Cancelled, "[cancelled]"));
                             input_state = InputState::new();
                             renderer.reset();
-                            render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                            render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                             continue;
                         }
 
@@ -1413,7 +1754,7 @@ async fn run_input_loop_raw(
                                 input_state.line = completed;
                                 input_state.move_end();
                             }
-                            render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                            render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                             continue;
                         }
 
@@ -1457,14 +1798,14 @@ async fn run_input_loop_raw(
                                             }
                                             CommandResult::Continue => {
                                                 // Redraw prompt after command
-                                                render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                                                render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                                             }
                                         }
                                         continue;
                                     }
                                     if trimmed.is_empty() {
                                         // Blank line: just redraw prompt
-                                        render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                                         continue;
                                     }
 
@@ -1497,9 +1838,9 @@ async fn run_input_loop_raw(
                                 KeyAction::ClearLine => {
                                     // Redraw prompt with cleared state
                                     if prompt_state.is_awaiting_approval() {
-                                        renderer.render(&mut stdout, &state.theme, Role::Confirm, APPROVAL_PROMPT, &input_state, None);
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::Confirm, APPROVAL_PROMPT, &state, &input_state).await;
                                     } else {
-                                        render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                                     }
                                 }
                                 KeyAction::Eof => {
@@ -1508,9 +1849,9 @@ async fn run_input_loop_raw(
                                 }
                                 KeyAction::Continue => {
                                     if prompt_state.is_awaiting_approval() {
-                                        renderer.render(&mut stdout, &state.theme, Role::Confirm, APPROVAL_PROMPT, &input_state, None);
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::Confirm, APPROVAL_PROMPT, &state, &input_state).await;
                                     } else {
-                                        render_prompt(&mut renderer, &mut stdout, PROMPT, &state, &input_state).await;
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                                     }
                                 }
                             }
@@ -1520,6 +1861,53 @@ async fn run_input_loop_raw(
                 }
                 if exit_loop {
                     break;
+                }
+                // The wheel moved the view: take the screen (the first notch
+                // switches to the alternate screen, so the live one is frozen
+                // as it is), redraw, or give it back once the view is at the
+                // bottom again.
+                if scroll_dirty {
+                    if overlay.view_active() {
+                        if !overlay.is_active() {
+                            lock_indicator(&state.indicator).suspend();
+                            renderer.clear_block(&mut stdout);
+                            overlay.enter(&mut stdout);
+                        }
+                    } else if overlay.is_active() {
+                        overlay.leave(&mut stdout);
+                        lock_indicator(&state.indicator).resume();
+                        renderer.reset();
+                    }
+                }
+                // A scrolled screen is redrawn a few times a second: the pinned
+                // spinner stays alive while the indicator's own block is
+                // suspended, and anything a running turn wrote underneath is
+                // repaired.
+                if overlay.is_active()
+                    && (scroll_dirty || overlay.needs_refresh(prompt_state.is_pending()))
+                {
+                    draw_scrolled(
+                        &mut overlay,
+                        &mut renderer,
+                        &mut stdout,
+                        &state,
+                        &input_state,
+                        prompt_state.is_pending(),
+                        prompt_state.is_awaiting_approval(),
+                    )
+                    .await;
+                } else if scroll_dirty && !prompt_state.is_pending() {
+                    // Back on the live screen: put the prompt back where it was.
+                    render_prompt(
+                        &mut overlay,
+                        &mut renderer,
+                        &mut stdout,
+                        if prompt_state.is_awaiting_approval() { Role::Confirm } else { Role::PromptSymbol },
+                        if prompt_state.is_awaiting_approval() { APPROVAL_PROMPT } else { PROMPT },
+                        &state,
+                        &input_state,
+                    )
+                    .await;
                 }
             }
         }
@@ -1532,6 +1920,9 @@ async fn run_input_loop_raw(
     {
         let _ = resp_tx.send(false);
     }
+    // Give the live screen back before tearing the prompt down, so the session
+    // never ends on the alternate screen.
+    overlay.leave(&mut stdout);
     // Ensure the prompt block (possibly wrapped) is cleaned up before exit
     lock_indicator(&state.indicator).suspend();
     renderer.clear_block(&mut stdout);
@@ -1730,8 +2121,11 @@ fn print_header(
     let display_name = name.unwrap_or("(unnamed)");
     // The banner carries the brand colour; the startup information beneath it
     // stays in the terminal's default foreground, so it reads as plain text.
-    let detail = |line: String| println!("{}", theme.out(Role::BannerDetail, &line));
-    println!("{}", theme.out(Role::Banner, "agent-cli ready"));
+    // Through the writer seam, so the banner is part of the session log the
+    // wheel scrolls back to. Raw mode is not on yet, so the bytes are the same
+    // as a plain `println!`.
+    let detail = |line: String| raw_println(false, &theme.out(Role::BannerDetail, &line));
+    raw_println(false, &theme.out(Role::Banner, "agent-cli ready"));
     detail(format!("  id        : {id}"));
     detail(format!("  name      : {display_name}"));
     detail(format!("  provider  : {provider} ({model})"));
@@ -2064,6 +2458,11 @@ struct StatusIndicator {
     /// width, and separately from its neighbours, so the row bookkeeping and
     /// the erase are unaffected.
     theme: Theme,
+    /// Whether mouse reporting is the indicator's to switch on and off. With
+    /// the wheel scrollback live the input loop owns it for the whole session
+    /// (it has to be on at the prompt too), so the end of a turn must not be
+    /// able to turn it off underneath the wheel.
+    owns_mouse: bool,
 }
 
 impl StatusIndicator {
@@ -2082,6 +2481,7 @@ impl StatusIndicator {
             height_override: None,
             thinking_view: true,
             theme: Theme::plain(),
+            owns_mouse: true,
         }
     }
 
@@ -2162,7 +2562,7 @@ impl StatusIndicator {
     }
 
     fn set_mouse_capture(&mut self, on: bool) {
-        if !self.enabled || !self.raw_mode || !self.thinking_view {
+        if !self.enabled || !self.raw_mode || !self.thinking_view || !self.owns_mouse {
             return;
         }
         let _ = if on {
@@ -2238,19 +2638,41 @@ impl StatusIndicator {
         self.repaint();
     }
 
-    fn repaint(&mut self) {
-        self.clear();
-        let Some(run) = self.run.as_ref() else {
-            return;
-        };
-        let status = crate::editor::truncate_display(
+    /// The status row as it would be painted now — spinner and elapsed time,
+    /// cut to the terminal width — or `None` when no turn is running.
+    fn status_row(&self) -> Option<String> {
+        let run = self.run.as_ref()?;
+        Some(crate::editor::truncate_display(
             &format!(
                 "{} {}",
                 spinner_frame(run.frame),
                 format_elapsed(run.started.elapsed())
             ),
             self.width().saturating_sub(1),
-        );
+        ))
+    }
+
+    /// The status row for the scroll overlay, which pins it at the bottom of
+    /// the screen while a turn runs. The block itself is suspended for as long
+    /// as the overlay owns the screen, so `tick` does nothing and the spinner
+    /// is advanced here instead.
+    fn overlay_status_row(&mut self) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        let run = self.run.as_mut()?;
+        run.frame = run.frame.wrapping_add(1);
+        self.status_row()
+    }
+
+    fn repaint(&mut self) {
+        self.clear();
+        if self.run.is_none() {
+            return;
+        }
+        let Some(status) = self.status_row() else {
+            return;
+        };
         let mut rows = Vec::with_capacity(1 + THINKING_ROWS);
         rows.push(status);
         rows.extend(self.thinking_rows());
@@ -2323,6 +2745,10 @@ impl StatusIndicator {
             Mark::Err => Role::Failure,
         };
         let line = self.theme.err(role, &line);
+        // The outcome row stays on screen, so it belongs to the transcript —
+        // unlike the block above it, which is erased and redrawn ten times a
+        // second and is never recorded.
+        crate::scroll::record_line(&line);
         let nl = self.newline();
         let _ = write!(self.out, "{line}{nl}");
         let _ = self.out.flush();
@@ -2604,22 +3030,75 @@ fn truncate_suggestion(s: &str, max_chars: usize) -> String {
 
 /// Render the prompt with a live command suggestion (when the line starts
 /// with `/` and has no space). Used by the raw-mode input loop.
+/// Draw the prompt block: in place on the live screen, or pinned at the bottom
+/// of the scrolled screen while the overlay owns it.
 async fn render_prompt(
+    overlay: &mut ScrollOverlay,
     renderer: &mut PromptRenderer,
     stdout: &mut std::io::Stdout,
+    role: Role,
     prompt: &str,
     state: &Arc<ReplState>,
     input_state: &InputState,
 ) {
-    let sug = current_suggestion(state, &input_state.line).await;
-    renderer.render(
-        stdout,
-        &state.theme,
-        Role::PromptSymbol,
-        prompt,
-        input_state,
-        sug.as_deref(),
-    );
+    // The slash-command hint belongs to the input prompt; the approval prompt
+    // takes a y/N answer and never has one.
+    let sug = if matches!(role, Role::PromptSymbol) {
+        current_suggestion(state, &input_state.line).await
+    } else {
+        None
+    };
+    if overlay.is_active() {
+        draw_scroll_overlay(
+            overlay,
+            stdout,
+            renderer,
+            &state.theme,
+            ScrollBottom::Prompt {
+                role,
+                prompt,
+                input: input_state,
+                suggestion: sug.as_deref(),
+            },
+        );
+    } else {
+        renderer.render(stdout, &state.theme, role, prompt, input_state, sug.as_deref());
+    }
+}
+
+/// Redraw the scrolled screen from whatever the REPL is currently doing: the
+/// prompt (or the approval prompt) when it waits for input, the running turn's
+/// spinner row when it does not.
+async fn draw_scrolled(
+    overlay: &mut ScrollOverlay,
+    renderer: &mut PromptRenderer,
+    stdout: &mut std::io::Stdout,
+    state: &Arc<ReplState>,
+    input_state: &InputState,
+    pending: bool,
+    awaiting_approval: bool,
+) {
+    if pending {
+        // The block is suspended while the overlay owns the screen, so the
+        // spinner is advanced here and pinned as a single row.
+        let row = lock_indicator(&state.indicator).overlay_status_row();
+        if let Some(row) = row {
+            draw_scroll_overlay(
+                overlay,
+                stdout,
+                renderer,
+                &state.theme,
+                ScrollBottom::Status(row),
+            );
+            return;
+        }
+    }
+    let (role, prompt) = if awaiting_approval {
+        (Role::Confirm, APPROVAL_PROMPT)
+    } else {
+        (Role::PromptSymbol, PROMPT)
+    };
+    render_prompt(overlay, renderer, stdout, role, prompt, state, input_state).await;
 }
 
 async fn handle_repl_command(
@@ -3188,6 +3667,7 @@ mod tests {
             },
             group: None,
             theme: Theme::plain(),
+            scroll: false,
         })
     }
 
@@ -3808,6 +4288,117 @@ mod tests {
         let mut ind = StatusIndicator::new(Box::new(sink.clone()), true, false);
         ind.width_override = Some(40);
         ind
+    }
+
+    #[test]
+    fn prompt_block_rows_counts_the_rows_the_prompt_occupies() {
+        // "> " plus a short line: one row.
+        assert_eq!(prompt_block_rows(2, 0, 2, 0, 80), 1);
+        assert_eq!(prompt_block_rows(2, 5, 7, 0, 80), 1);
+        // The suggestion row above the prompt is part of the block.
+        assert_eq!(prompt_block_rows(2, 5, 7, 1, 80), 2);
+        // A line that wraps takes the rows it wraps onto.
+        assert_eq!(prompt_block_rows(2, 20, 25, 0, 10), 3);
+        // A line that exactly fills a row leaves the cursor on a fresh one.
+        assert_eq!(prompt_block_rows(2, 8, 10, 0, 10), 2);
+    }
+
+    #[test]
+    fn the_wheel_takes_the_view_off_the_bottom_and_back_to_it() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        for i in 0..50 {
+            crate::scroll::record_line(&format!("log line {i}"));
+        }
+        let mut overlay = ScrollOverlay::new();
+        assert!(!overlay.view_active());
+        // A notch up moves the view; the overlay only takes the screen once
+        // the view has actually left the bottom.
+        assert!(overlay.wheel(true, 80, 10));
+        assert!(overlay.view_active());
+        assert!(!overlay.is_active(), "the screen is taken by the caller");
+        // Down again, and the view is live: offset 0 is the only position
+        // without an overlay.
+        assert!(overlay.wheel(false, 80, 10));
+        assert!(!overlay.view_active());
+        assert!(
+            !overlay.wheel(false, 80, 10),
+            "already at the bottom: nothing to redraw"
+        );
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn the_wheel_does_nothing_when_the_log_fits_on_the_screen() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        crate::scroll::record_line("one line only");
+        let mut overlay = ScrollOverlay::new();
+        assert!(!overlay.wheel(true, 80, 24));
+        assert!(!overlay.view_active());
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn the_writers_record_what_stays_on_screen_and_not_what_is_erased() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+
+        // Whole-line messages, and streamed text arriving in fragments.
+        raw_println(false, "MARK banner");
+        raw_eprintln(false, "MARK [info] something");
+        raw_print_str(false, "MARK answer ");
+        raw_print_str(false, "text\n");
+
+        // The prompt echo stays; the block being edited does not.
+        let mut renderer = PromptRenderer::new();
+        let mut stdout = std::io::stdout();
+        renderer.finish_line(
+            &mut stdout,
+            &Theme::plain(),
+            Role::PromptSymbol,
+            "MARK> ",
+            "the question",
+        );
+
+        // The indicator's block is erased and redrawn ten times a second, so
+        // only its closing line belongs to the transcript.
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        ind.start();
+        ind.paint(true);
+        ind.repaint();
+        ind.finish(Mark::Ok);
+
+        let lines = crate::scroll::with(|t| {
+            t.lines()
+                .filter(|l| l.starts_with("MARK") || l.starts_with('✔'))
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+        crate::scroll::uninstall();
+
+        assert_eq!(
+            lines[..4],
+            [
+                "MARK banner",
+                "MARK [info] something",
+                "MARK answer text",
+                "MARK> the question",
+            ],
+            "recorded lines, in write order"
+        );
+        assert_eq!(lines.len(), 5, "one outcome row, and no transient rows");
+        let outcome = lines.last().unwrap();
+        assert!(
+            outcome.starts_with('✔') && !outcome.contains('\u{1b}'),
+            "the outcome row is recorded, the erased block is not: {outcome:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains(SPINNER_FRAMES[0])),
+            "no transient spinner row was recorded"
+        );
     }
 
     #[test]

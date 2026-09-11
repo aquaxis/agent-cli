@@ -307,6 +307,16 @@ Only the ANSI 16 colours are used and only as foreground colours, so your termin
 
 Colour is decided per stream: stdout (the answer, the banner) and stderr (everything else) are judged separately, so `agent-cli run > answer.txt` from a terminal writes a clean file while the status display on screen stays coloured. Redirected output, `agent-cli serve`, `NO_COLOR` and `TERM=dumb` all produce exactly the same plain bytes as before the scheme existed. See `[ui] color` in [`doc/config.md`](config.md) to force it on or off.
 
+### Scrolling Back Through the Session
+
+Turn the mouse wheel up and the session log scrolls behind the prompt: the prompt line stays exactly where it is, still showing what you had typed and where the cursor was, and stays editable while you read. Turn the wheel back down to return; reaching the bottom puts the live view back, and so does pressing `Esc`. Submitting a line with `Enter` also returns to the live view and then sends the line as usual.
+
+- **The keyboard is unchanged.** `↑` / `↓` still move through the input history, the arrows still move within the line you are typing, and `Esc` / `Ctrl+C` still cancel a running turn once the view is back at the bottom. Only the wheel scrolls.
+- **It works during a turn.** While the agent is streaming an answer or running a tool you can scroll back over what it has already written; output arriving meanwhile is kept but does not move the view, and the spinner with its elapsed time is pinned at the bottom of the screen so you can see the turn is still going. Everything appears in place when you return to the live view.
+- **The log is what agent-cli printed**, up to `[ui] scrollback_lines` lines (2000 by default) — the banner, your submitted lines, answers, tool calls and results, and each turn's `✔ <elapsed>`. The progress block itself is not part of it: it is erased and redrawn while a turn runs.
+- **Text selection needs `Shift`.** While the scrollback is on, the terminal reports wheel and click events to agent-cli, so selecting text with the mouse — and the terminal's own scrollback — need the override your terminal uses for that, usually holding `Shift`. Set `[ui] mouse_scroll = false` to give the mouse back to the terminal.
+- Scrolling is drawn on the terminal's alternate screen, so returning to the live view restores the screen — and the terminal's own scrollback — exactly as it was.
+
 ### Custom Slash Commands
 
 Any `*.md` file in the commands directory becomes a slash command named after the file stem: `.agent-cli/commands/review.md` defines `/review`. Running it expands the file content and submits the result to the agent as a user prompt — the file is a prompt template, not a script.

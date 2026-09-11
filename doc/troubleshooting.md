@@ -284,6 +284,20 @@ While a turn runs, an interactive REPL shows the line being executed and, beneat
 | A tool result ends in `… +N more lines` | Expected while the indicator is on: the on-screen copy is cut to five rows so it cannot push the spinner off the screen. The model still receives the whole result, and the full text is in the conversation log (`[runtime] log_dir`). `[ui] show_progress = false` prints it in full |
 | Reasoning disappears when the turn ends | Expected: the block belongs to the running turn. The full reasoning is written to the conversation log; set `[ui] show_progress = false` to get the old inline `[thinking]` output in the scrollback instead |
 
+### The mouse wheel does not scroll, or the mouse behaves oddly
+
+The wheel scrolls the session log while the prompt stays pinned (see [`doc/usage.md`](usage.md), "Scrolling Back Through the Session").
+
+| Symptom | Cause / remedy |
+|------|------|
+| The wheel does nothing | There may be nothing to scroll yet: the log has to be longer than the screen. Otherwise the feature is off — `[ui] mouse_scroll = false` or `[ui] scrollback_lines = 0` — or the display is not an interactive terminal (piped or redirected output, `agent-cli serve`), where no transcript is kept |
+| Selecting text with the mouse stopped working | Expected while the scrollback is on: the terminal reports mouse events to agent-cli instead. Use your terminal's override (usually holding `Shift`) to select, or set `[ui] mouse_scroll = false` to give the mouse back to the terminal |
+| The terminal's own scrollbar / wheel no longer reaches older output | Same cause. agent-cli's own scrollback replaces it while the REPL is in the foreground; `Shift`+wheel usually still reaches the terminal's |
+| Scrolling stops before the start of the session | `[ui] scrollback_lines` (2000 by default) bounds what is kept; older lines are dropped. The full conversation is still in the log (`[runtime] log_dir`) |
+| Output from a running turn does not appear while scrolled | Intended: the view stays where you put it. It is all there when you scroll back to the bottom or press `Esc` |
+| `Esc` did not cancel the turn | The first `Esc` returns from the scrolled view to the live one and is consumed there; press it again to cancel |
+| The screen looks stuck in a scrolled view | Press `Esc`, or scroll back to the bottom. Exiting the REPL always returns to the normal screen, including after `Ctrl+C` / `Ctrl+D` |
+
 ### The colours are missing, wrong, or end up in a file
 
 The REPL colour-codes its output (see [`doc/usage.md`](usage.md), "Colours on Screen"). Colour is resolved once at startup, separately for stdout and stderr.
