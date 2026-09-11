@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.15.0]
+
 ### Added
 
 - `!` shell commands — typing `!<command>` at the prompt runs it in the shell straight away, as Claude Code's bash mode does.
@@ -223,7 +225,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/aquaxis/agent-cli/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/aquaxis/agent-cli/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/aquaxis/agent-cli/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/aquaxis/agent-cli/compare/v0.11.0...v0.12.0
