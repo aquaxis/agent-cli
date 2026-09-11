@@ -44,7 +44,7 @@ impl Tool for SpawnTool {
     }
 
     fn description(&self) -> &str {
-        "Create a new detached agent-cli peer that runs headless in its own session and does not depend on this process. It shares this agent's config (same registry), so you can reach it afterwards with send_to. Optionally give it a name/provider/model/persona and an initial prompt."
+        "Create a new detached agent-cli peer that runs headless in its own session and does not depend on this process. It shares this agent's config (same registry), so you can reach it afterwards with send_to, see it with list_agents and stop it with stop_agent. The number of live children and the depth of the chain are limited; when a limit is reached this returns an error saying which. Optionally give it a name/provider/model/persona and an initial prompt."
     }
 
     fn schema(&self) -> Value {
@@ -63,6 +63,20 @@ impl Tool for SpawnTool {
 
     async fn invoke(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let parsed: SpawnArgs = serde_json::from_value(args)?;
+
+        // The bound comes first, so a refusal costs nothing and creates
+        // nothing. Live children are counted from the registry, which prunes
+        // dead peers as it reads — a child that exited has already freed its
+        // slot.
+        let live = crate::ipc::registry::children_of(&ctx.registry_dir, &ctx.self_id)
+            .map(|c| c.len() as u32)
+            .unwrap_or(0);
+        if let crate::swarm::Allowance::Denied(why) =
+            crate::swarm::spawn_allowance(live, ctx.ancestors.len() as u32, ctx.spawn_limits)
+        {
+            return Ok(ToolOutput::err(why));
+        }
+
         let run_args = RunArgs {
             name: parsed.name,
             // Explicit group wins; otherwise inherit this agent's group.
@@ -75,10 +89,14 @@ impl Tool for SpawnTool {
             auto_approve_tools: false,
         };
 
+        let mut chain = ctx.ancestors.clone();
+        chain.push(ctx.self_id.clone());
         let entry = match crate::commands::spawn_detached(
             &ctx.config_source.path,
             &ctx.registry_dir,
             &run_args,
+            // The child's chain is this agent's chain plus this agent itself.
+            &chain,
         )
         .await
         {
@@ -122,6 +140,7 @@ impl Tool for SpawnTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::id::AgentId;
 
     #[test]
     fn spawn_tool_metadata() {
@@ -144,6 +163,48 @@ mod tests {
         assert!(parsed.provider.is_none());
         assert!(parsed.group.is_none());
         assert!(parsed.prompt.is_none());
+    }
+
+    /// At a limit the tool refuses with the reason and creates nothing. The
+    /// registry directory does not exist, so any attempt to spawn would be
+    /// visible: a denial must happen before that.
+    #[tokio::test]
+    async fn the_tool_refuses_at_each_limit_without_creating_anything() {
+        use crate::swarm::SpawnLimits;
+        use crate::tools::list_agents::tests_support::{ctx, register};
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let me = register(dir, "me", &[]).await;
+        let _c1 = register(dir, "c1", std::slice::from_ref(&me)).await;
+        let _c2 = register(dir, "c2", std::slice::from_ref(&me)).await;
+
+        // Two live children against a limit of two.
+        let mut at_child_limit = ctx(dir, me.clone(), &[]);
+        at_child_limit.spawn_limits = SpawnLimits {
+            max_children: 2,
+            max_depth: 4,
+        };
+        let out = SpawnTool.invoke(json!({}), &at_child_limit).await.unwrap();
+        assert!(!out.ok, "{}", out.content);
+        assert!(out.content.contains("child limit reached"), "{}", out.content);
+        assert!(out.content.contains("2 live child agent(s)"), "{}", out.content);
+
+        // An agent as deep as the chain is allowed to go.
+        let ancestors = vec![AgentId::new(), AgentId::new()];
+        let mut at_depth_limit = ctx(dir, AgentId::new(), &ancestors);
+        at_depth_limit.spawn_limits = SpawnLimits {
+            max_children: 4,
+            max_depth: 2,
+        };
+        let out = SpawnTool.invoke(json!({}), &at_depth_limit).await.unwrap();
+        assert!(!out.ok, "{}", out.content);
+        assert!(out.content.contains("depth limit reached"), "{}", out.content);
+
+        // Nothing new was registered by either refusal.
+        let live = crate::ipc::registry::list_entries(dir).unwrap();
+        assert_eq!(live.len(), 3, "no agent may be created by a refused call");
     }
 
     #[test]

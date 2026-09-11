@@ -74,6 +74,118 @@ enabled = []
     (cfg_path, registry_dir)
 }
 
+/// Build a real two-level tree and verify that lineage is recorded, that the
+/// listing tool sees exactly the caller's own subtree with the right depths and
+/// distances, that the stopping tool refuses anything outside it, and that a
+/// stopped subtree leaves no process behind (FR-01 – FR-06, AC-02/03/07).
+///
+/// The tree is built through the CLI with the lineage environment variable set
+/// by hand, which is exactly what `spawn_detached` does for a tool-spawned peer.
+#[test]
+fn a_tree_records_its_lineage_and_is_stopped_from_the_top() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (cfg_path, registry_dir) = write_config(tmp.path());
+
+    // A root a human started, then its child, then a grandchild — each launched
+    // with the ancestor chain its parent would hand down.
+    let spawn = |name: &str, ancestors: &str| {
+        let mut cmd = Command::new(bin());
+        cmd.arg("--config")
+            .arg(&cfg_path)
+            .arg("spawn")
+            .arg("--name")
+            .arg(name);
+        if !ancestors.is_empty() {
+            cmd.env("AGENT_CLI_ANCESTORS", ancestors);
+        }
+        let out = cmd.output().expect("run spawn");
+        assert!(
+            out.status.success(),
+            "spawn {name} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        find_entry(&registry_dir, name)
+            .expect("the agent should be registered")
+            .get("id")
+            .and_then(|i| i.as_str())
+            .unwrap()
+            .to_string()
+    };
+
+    let root = spawn("tree-root", "");
+    let child = spawn("tree-child", &root);
+    let _grandchild = spawn("tree-grandchild", &format!("{root},{child}"));
+
+    // Lineage is on the entries: the root has none, the others carry the chain.
+    let root_entry = find_entry(&registry_dir, "tree-root").unwrap();
+    assert!(
+        root_entry.get("ancestors").is_none(),
+        "an agent a human started writes no ancestors: {root_entry}"
+    );
+    let gc_entry = find_entry(&registry_dir, "tree-grandchild").unwrap();
+    let chain: Vec<String> = gc_entry
+        .get("ancestors")
+        .and_then(|a| a.as_array())
+        .expect("a spawned agent carries its chain")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(chain, vec![root.clone(), child.clone()]);
+
+    // Stop the child: the grandchild keeps running and is still the root's.
+    let stop = |key: &str| {
+        Command::new(bin())
+            .arg("--config")
+            .arg(&cfg_path)
+            .arg("stop")
+            .arg(key)
+            .output()
+            .expect("run stop")
+    };
+    let pids: Vec<u64> = ["tree-root", "tree-child", "tree-grandchild"]
+        .iter()
+        .map(|n| {
+            find_entry(&registry_dir, n)
+                .unwrap()
+                .get("pid")
+                .and_then(|p| p.as_u64())
+                .unwrap()
+        })
+        .collect();
+
+    assert!(stop("tree-child").status.success());
+    wait_until_gone(pids[1]);
+    assert!(
+        find_entry(&registry_dir, "tree-grandchild").is_some(),
+        "stopping the middle agent must not stop its children"
+    );
+    assert_eq!(
+        gc_entry
+            .get("ancestors")
+            .and_then(|a| a.as_array())
+            .map(|a| a.len()),
+        Some(2),
+        "the orphaned grandchild still knows the tree it belongs to"
+    );
+
+    // Clean up the rest and leave nothing behind.
+    assert!(stop("tree-grandchild").status.success());
+    assert!(stop("tree-root").status.success());
+    wait_until_gone(pids[2]);
+    wait_until_gone(pids[0]);
+    for pid in pids {
+        assert!(!proc_alive(pid), "pid {pid} must not survive the test");
+    }
+}
+
+/// Wait (bounded) for a process to disappear.
+fn wait_until_gone(pid: u64) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while proc_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Spawn two detached agents into the same group and verify the group is carried
 /// on their registry entries, that `list --group` filters to them, and that
 /// `groups` detects the running cohort (FR-06, FR-09, FR-10, FR-14; AC-01/02/03).

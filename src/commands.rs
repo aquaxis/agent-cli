@@ -14,7 +14,8 @@ use crate::ipc::{client, registry, IpcMessage};
 /// one. Prints the child's registry identity and returns; the child keeps
 /// running in its own session (FR-04 – FR-07).
 pub async fn spawn(cfg: &Config, source: &ConfigSource, args: RunArgs) -> Result<()> {
-    let entry = spawn_detached(&source.path, &cfg.registry_dir()?, &args).await?;
+    // A human started this one, so it is the root of its own tree.
+    let entry = spawn_detached(&source.path, &cfg.registry_dir()?, &args, &[]).await?;
     println!(
         "spawned detached agent: id={} name={} pid={} socket={}",
         entry.id,
@@ -36,10 +37,14 @@ pub async fn spawn(cfg: &Config, source: &ConfigSource, args: RunArgs) -> Result
 /// long-lived launcher. Because the double fork means the launched child's pid
 /// is not the serve process's pid, registration is matched by the *new* registry
 /// id (and by `--name` when given), not by pid.
+/// `ancestors` is the chain the new peer belongs to, root first: the creator's
+/// own chain plus the creator itself. Empty means a human started this peer
+/// directly, which makes it the root of its own tree.
 pub async fn spawn_detached(
     config_path: &Path,
     registry_dir: &Path,
     args: &RunArgs,
+    ancestors: &[crate::id::AgentId],
 ) -> Result<RegistryEntry> {
     let exe =
         std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
@@ -74,6 +79,12 @@ pub async fn spawn_detached(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // Lineage travels on the child's environment, not its argument vector, so
+    // every existing subcommand keeps the command line — and the behaviour —
+    // it has always had.
+    if !ancestors.is_empty() {
+        cmd.env(registry::ENV_ANCESTORS, registry::ancestors_to_env(ancestors));
+    }
 
     // Double fork so the serve process is fully detached: a new session
     // (setsid) makes it immune to the launcher's terminal signals, and being
@@ -769,6 +780,8 @@ async fn stage_bash_tool(cfg: &Config) -> Result<()> {
         registry_dir: std::path::PathBuf::from("/tmp/agent-cli-selftest-noop"),
         config_source: Default::default(),
         event_tx: None,
+        ancestors: Vec::new(),
+        spawn_limits: crate::swarm::SpawnLimits::from(&cfg.spawn),
     };
     let out = tool
         .invoke(serde_json::json!({"command": "echo selftest"}), &ctx)
@@ -1125,6 +1138,7 @@ mod tests {
             model: "mock".into(),
             socket: PathBuf::from("/tmp/x.sock"),
             persona: None,
+            ancestors: Vec::new(),
         }
     }
 
@@ -1195,6 +1209,7 @@ mod tests {
             model: "mock".into(),
             socket: socket_path,
             persona: None,
+            ancestors: Vec::new(),
         };
         write_registry_entry(registry_dir, &entry);
         entry
@@ -1261,6 +1276,7 @@ registry_dir = {:?}
             model: "mock".into(),
             socket: socket_path,
             persona: None,
+            ancestors: Vec::new(),
         };
         write_registry_entry(&registry_dir, &entry);
 

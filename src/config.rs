@@ -93,24 +93,43 @@ registry_dir       = ""
 agents_dir         = "~/.config/agent-cli/agents"
 persona_file       = ""
 commands_dir       = ".agent-cli/commands"   # custom slash commands (*.md)
+# Max tool-use iterations per turn (default 24, minimum 1).
+# max_tool_iterations = 24
+# Shared group id for agents this config launches; --group overrides it and
+# detached children inherit it (`agent-cli list --group <id>` / `agent-cli groups`).
+# group             = ""
 
 [tools]
-enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
+enabled = ["bash", "read", "write", "send_to", "list_agents", "stop_agent", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
 [tools.bash]
 timeout_ms    = 120000
 max_output_kb = 256
 
+# Web search (opt-in network tool). Without endpoint / api_key_env the tool
+# returns a configuration error instead of failing silently.
+# [tools.websearch]
+# api_key_env = "TAVILY_API_KEY"
+# endpoint    = "https://api.tavily.com/search"
+# provider    = "tavily"
+
 [ui]
-show_thinking = "collapsed"
+show_thinking    = "collapsed"
 # Activity line + spinner/elapsed while a turn runs (interactive terminals only).
-show_progress = true
+show_progress    = true
 # Colour the output: "auto" (terminals only, honours NO_COLOR) / "always" / "never".
-color         = "auto"
+color            = "auto"
 # Scroll the session log with the mouse wheel, keeping the prompt line pinned.
 mouse_scroll     = true
 # Lines of output kept for scrolling back (0 disables the wheel scrollback).
 scrollback_lines = 2000
+
+[spawn]
+# How many live children the `spawn` *tool* may give one agent (0 disables it).
+# `agent-cli spawn` and the REPL's /spawn are not bounded by these.
+max_children = 4
+# How deep a chain of tool-spawned agents may go.
+max_depth    = 2
 
 [shell]
 # Run `!<command>` typed at the prompt (no approval: it is your own command).
@@ -165,6 +184,8 @@ pub struct Config {
     pub mcp: McpConfig,
     #[serde(default)]
     pub shell: ShellConfig,
+    #[serde(default)]
+    pub spawn: SpawnConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,6 +422,11 @@ fn default_tools_enabled() -> Vec<String> {
         "read".to_string(),
         "write".to_string(),
         "send_to".to_string(),
+        // Managing the agents this one created: listing is read-only, and
+        // stopping cannot reach outside the caller's own tree, so both are on
+        // by default. Creating agents (`spawn`) stays opt-in.
+        "list_agents".to_string(),
+        "stop_agent".to_string(),
         "monitor".to_string(),
         "edit".to_string(),
         "glob".to_string(),
@@ -617,6 +643,40 @@ fn default_shell_max_output_kb() -> u64 {
 
 fn default_shell_context() -> bool {
     true
+}
+
+/// `[spawn]` — how far an agent may go in creating agents of its own.
+///
+/// These bound the **`spawn` tool**, i.e. the path the model takes on its own.
+/// `agent-cli spawn` and the REPL's `/spawn` are a person deciding and are not
+/// bounded; their behaviour is unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpawnConfig {
+    /// Live direct children one agent may have. 0 disables autonomous spawning.
+    #[serde(default = "default_max_children")]
+    pub max_children: u32,
+    /// How deep a chain of tool-spawned agents may go: with 2, a root spawns a
+    /// child and that child spawns a grandchild, which may not spawn further.
+    /// 0 also disables autonomous spawning.
+    #[serde(default = "default_max_depth")]
+    pub max_depth: u32,
+}
+
+impl Default for SpawnConfig {
+    fn default() -> Self {
+        Self {
+            max_children: default_max_children(),
+            max_depth: default_max_depth(),
+        }
+    }
+}
+
+fn default_max_children() -> u32 {
+    4
+}
+
+fn default_max_depth() -> u32 {
+    2
 }
 
 /// `[history]` — hybrid history-window management. Opt-in (`enabled = false`
@@ -923,7 +983,7 @@ mod tests {
         assert!(cfg.provider.claude.is_some());
         assert!(cfg.provider.ollama.is_some());
         assert!(cfg.provider.llamacpp.is_some());
-        assert_eq!(cfg.tools.enabled.len(), 10);
+        assert_eq!(cfg.tools.enabled.len(), 12);
         assert_eq!(cfg.tools.bash.timeout_ms, 120_000);
         assert_eq!(cfg.runtime.commands_dir, ".agent-cli/commands");
     }
@@ -1135,6 +1195,47 @@ scrollback_lines = 500
         assert!(sized.ui.mouse_scroll, "the other key keeps its default");
     }
 
+    /// `[spawn]` bounds what the `spawn` tool may create; an absent section
+    /// means the shipped defaults.
+    #[test]
+    fn the_spawn_section_defaults_to_four_children_and_depth_two() {
+        let d = SpawnConfig::default();
+        assert_eq!(d.max_children, 4);
+        assert_eq!(d.max_depth, 2);
+
+        let cfg: Config = toml::from_str(tests_default_config()).unwrap();
+        assert_eq!(cfg.spawn.max_children, 4, "an absent section uses defaults");
+        assert_eq!(cfg.spawn.max_depth, 2);
+
+        let tuned: Config = toml::from_str(
+            r#"
+[provider]
+kind = "ollama"
+
+[spawn]
+max_children = 1
+max_depth = 0
+"#,
+        )
+        .unwrap();
+        assert_eq!(tuned.spawn.max_children, 1);
+        assert_eq!(tuned.spawn.max_depth, 0);
+
+        // A partial section keeps the other default.
+        let partial: Config = toml::from_str(
+            r#"
+[provider]
+kind = "ollama"
+
+[spawn]
+max_children = 8
+"#,
+        )
+        .unwrap();
+        assert_eq!(partial.spawn.max_children, 8);
+        assert_eq!(partial.spawn.max_depth, 2);
+    }
+
     /// The `[shell]` section is absent from older config files and must come
     /// up with the feature on and the same limits as `[tools.bash]`.
     #[test]
@@ -1307,7 +1408,7 @@ auto_approve_tools = false
 log_dir            = "~/.local/share/agent-cli/logs"
 
 [tools]
-enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
+enabled = ["bash", "read", "write", "send_to", "list_agents", "stop_agent", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
 [tools.bash]
 timeout_ms    = 120000
@@ -1347,7 +1448,7 @@ agents_dir         = "~/.config/agent-cli/agents"
 persona_file       = ""
 
 [tools]
-enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
+enabled = ["bash", "read", "write", "send_to", "list_agents", "stop_agent", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
 [tools.bash]
 timeout_ms    = 120000
@@ -1375,8 +1476,19 @@ show_thinking = "expanded"
     fn enabled_tool_names_match_implementation() {
         let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
         let known = [
-            "bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep",
-            "websearch", "webfetch",
+            "bash",
+            "read",
+            "write",
+            "send_to",
+            "spawn",
+            "list_agents",
+            "stop_agent",
+            "monitor",
+            "edit",
+            "glob",
+            "grep",
+            "websearch",
+            "webfetch",
         ];
         for name in &cfg.tools.enabled {
             assert!(

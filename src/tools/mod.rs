@@ -19,8 +19,10 @@ pub mod glob;
 pub mod grep;
 pub mod monitor;
 pub mod read;
-pub mod send_to;
+pub mod list_agents;
+mod send_to;
 pub mod spawn;
+pub mod stop_agent;
 pub mod webfetch;
 pub mod websearch;
 pub mod write;
@@ -59,6 +61,11 @@ pub struct ToolCtx {
     /// Optional event channel for tools that stream progress (e.g. `monitor`).
     /// Most tools ignore this field.
     pub event_tx: Option<mpsc::Sender<AgentEvent>>,
+    /// The agents that created this one, root first (empty when a human started
+    /// it). Its length is this agent's depth, and a peer this agent spawns gets
+    /// this chain plus this agent's own id.
+    pub ancestors: Vec<crate::id::AgentId>,
+    pub spawn_limits: crate::swarm::SpawnLimits,
 }
 
 /// Abstract tool callable by the AI.
@@ -104,6 +111,8 @@ impl ToolRegistry {
             ("write", Arc::new(write::WriteTool)),
             ("send_to", Arc::new(send_to::SendToTool)),
             ("spawn", Arc::new(spawn::SpawnTool)),
+            ("list_agents", Arc::new(list_agents::ListAgentsTool)),
+            ("stop_agent", Arc::new(stop_agent::StopAgentTool)),
             ("monitor", Arc::new(monitor::MonitorTool)),
             ("edit", Arc::new(edit::EditTool)),
             ("glob", Arc::new(glob::GlobTool)),

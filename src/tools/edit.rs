@@ -91,6 +91,8 @@ mod tests {
             registry_dir: PathBuf::from("/tmp"),
             config_source: Default::default(),
             event_tx: None,
+            ancestors: Vec::new(),
+            spawn_limits: crate::swarm::SpawnLimits::default(),
         }
     }
 

@@ -4,6 +4,27 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Fixed
+
+- Documentation corrections found by an audit of the doc set against the code.
+  - **The tool-approval prompt**: `doc/usage.md` and `doc/troubleshooting.md` said `Esc` **or** `Ctrl+C` denies the pending tool. Only `Esc` does; `Ctrl+C` keeps its ordinary meaning there and exits agent-cli on an empty line.
+  - **Mouse reporting** was still described as v0.13.0 behaviour in four places (`doc/usage.md`, `doc/config.md`, `doc/architecture.md`, `doc/troubleshooting.md`): with the wheel scrollback on (the default since v0.14.0) reporting is enabled for the whole session, not only while a turn runs, and `[ui] mouse_scroll = false` — not `show_thinking = "hidden"` — is what turns it off.
+  - **`example/config.example.toml`** was two releases behind while three documents claimed it covered every section: `[shell]`, `[mcp]` / `[[mcp.servers]]`, four of the five `[ui]` keys and `[runtime] commands_dir` were missing, and two provider model ids did not exist anywhere else in the project. The `DEFAULT_CONFIG` template gained `[tools.websearch]` and `[runtime] group` for the same reason.
+  - **The REPL's `/help`** now covers `!<command>`, `Tab` completion, the mouse-wheel scrollback and what `Esc` means, instead of listing commands alone; one line of it was printed without the raw-mode carriage return and stair-stepped.
+  - `doc/architecture.md`'s module tree was missing `theme.rs`, `scroll.rs`, `shell.rs` and `tools/spawn.rs`; `doc/config.md` advertised a `[provider.opencode-go]` table the code does not model; both READMEs' key tables omitted `Enter`, the arrows, `Backspace`/`Delete` and `Tab`, and still described the command hint as inline when it is a row above the prompt.
+  - `CONTRIBUTING.md`'s documentation rules now name every file a feature PR must touch — including `README_ja.md`, `doc/architecture.md`, both config templates and `/help` — and say to correct stale statements rather than only adding new ones, which is how each of the defects above arose.
+
+### Added
+
+- Child-agent management — an agent can now see and stop the agents it created, and autonomous creation is bounded.
+  - Two new tools, both **enabled by default**: `list_agents` reports the agents this one created (id, name, provider/model, group, depth, and whether each is a direct child or a deeper descendant), and `stop_agent` shuts one down through the same graceful path as `agent-cli stop`.
+  - An agent reaches **only its own tree**. A sibling, the agent that created it, itself, and anything from another session are refused with a reason — so an agent can undo what it did and nothing more. That is what makes stopping safe to enable by default; `spawn` stays opt-in. `agent-cli list` / `stop` / `groups` remain the unrestricted view for a person.
+  - New `[spawn]` section bounding the **`spawn` tool**: `max_children` (default 4) live direct children per agent and `max_depth` (default 2) generations of tool-spawned agents. At either limit the tool returns an error naming the limit, its configured value and the current count, and creates nothing; stopping a child frees a slot immediately, and `0` for either disables autonomous creation. The limits exist because a detached peer runs headless — it auto-approves its own tool calls — and inherits the same config file, so a `spawn`-enabled agent produced `spawn`-enabled children with nothing counting the result.
+  - `agent-cli spawn`, `/spawn`, `list`, `stop`, `groups` and every IPC message behave exactly as they did — verified against a v0.15.0 binary. The limits bind the autonomous path only: a peer a person starts is the root of its own tree.
+  - Registry entries now carry `ancestors`, the chain of agents that created them (root first). The whole chain rather than just the parent, so that when an agent in the middle exits its children are still attributable to the tree that created them. Entries written by earlier versions load as roots, and an agent a person started serialises exactly as before.
+  - Internally: a new `swarm.rs` holds the policy as one pure function; lineage travels to a new peer through the environment, never the command line.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/tools.md`, `doc/config.md`, `doc/usage.md`, `doc/architecture.md`, `doc/troubleshooting.md`, and both config templates.
+
 ## [0.15.0]
 
 ### Added

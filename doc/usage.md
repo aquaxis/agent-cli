@@ -76,6 +76,35 @@ agent-cli stop worker                    # ask it to shut down cleanly
 From inside a REPL the same is available as `/spawn [name] [provider]` and
 `/stop <peer>`.
 
+### An agent managing its own peers
+
+The agent can do all of this itself, through tools: `spawn` creates a peer,
+`send_to` talks to it, `list_agents` shows the peers it created, and
+`stop_agent` shuts one down. The two management tools are enabled by default;
+`spawn` is opt-in (add it to `[tools] enabled`), because creating processes is
+the impactful half.
+
+Each agent sees and stops **only its own tree** — the peers it spawned, and the
+peers those spawned. A sibling, the agent that created it, and anything from
+another session are refused with a reason. `agent-cli list` / `stop` are the
+unrestricted view for a person; the tools are the agent's own, narrower one.
+
+Autonomous creation is bounded by `[spawn]` (see [`config.md`](config.md)):
+`max_children` live children per agent (default 4) and `max_depth` generations
+(default 2). At either limit the `spawn` tool returns an error naming the limit
+and the count, and creates nothing:
+
+```
+child limit reached: 4 live child agent(s) and [spawn] max_children is 4. Stop one
+with stop_agent before creating another, or reuse an existing child with send_to.
+```
+
+The bound exists because a detached peer runs headless — it auto-approves its
+own tool calls — and inherits the same config file, so a `spawn`-enabled agent
+produces `spawn`-enabled children. `agent-cli spawn` and `/spawn` are a person
+deciding and are **not** bounded; an agent started that way is the root of its
+own tree.
+
 ## Groups
 
 A **group** is an identifier shared by agents that were launched together — a
@@ -239,8 +268,8 @@ When stdin is a terminal, the prompt runs in raw mode and supports in-place line
 | `Ctrl+A` / `Home` | Move to the start of the line |
 | `Ctrl+E` / `End` | Move to the end of the line |
 | `Backspace` / `Delete` | Delete the character before / at the cursor |
-| `Esc` | While the agent is working, stop the turn and return to the prompt at once; at an idle prompt, leave history browsing or clear the line |
-| `Ctrl+C` | While the agent is working, same as `Esc`; at an idle prompt, clear the line, and on an empty line, exit |
+| `Esc` | While the agent is working, stop the turn and return to the prompt at once; while a `!` command is running, stop it; while the log is scrolled, return to the live view (the next press does the above); at the approval prompt, deny the pending tool; at an idle prompt, leave history browsing or clear the line |
+| `Ctrl+C` | While the agent is working, same as `Esc`; at an idle prompt, clear the line, and on an empty line, exit — **including at the approval prompt**, where it keeps that exit meaning rather than denying the tool |
 | `Ctrl+D` | Exit on an empty line; ignored otherwise |
 | `Tab` | Complete the slash command being typed (see below) |
 
@@ -249,7 +278,7 @@ Notes:
 - **Draft preservation**: the line you were typing is saved when you first press `↑`, and restored when you press `↓` past the newest history entry.
 - **Command candidates**: while the line starts with `/` and contains no space, the matching command names are listed on the line **above** the prompt, so the line you are typing stays put instead of being pushed around. Keep typing to narrow the list, or press `Enter` — prefix resolution is described under "Custom Slash Commands".
 - **Tab completion**: `Tab` completes the command name from that same candidate list. One match completes it and adds a space, ready for an argument (`/sen` → `/send `). Several matches extend the line as far as the candidates agree (`/rel` → `/reload-`), leaving the list on screen to choose from. When there is nothing to add — no match, an already-settled name, or an argument already started — `Tab` does nothing. Built-in and custom commands complete alike.
-- **Stopping a turn**: while the agent is streaming a response, running a tool, or waiting for tool approval, `Esc` (or `Ctrl+C`) prints `[cancelled]` and hands the prompt straight back — it does not wait for the model or the tool. The remaining output of that turn is discarded, a tool call cut short is recorded as `cancelled by user`, and the next prompt continues the same conversation. At the approval prompt, `Esc` also denies the pending tool. See "Cancelling a running turn" in [`doc/troubleshooting.md`](troubleshooting.md) for what cancelling does *not* stop.
+- **Stopping a turn**: while the agent is streaming a response or running a tool, `Esc` (or `Ctrl+C`) prints `[cancelled]` and hands the prompt straight back — it does not wait for the model or the tool. The remaining output of that turn is discarded, a tool call cut short is recorded as `cancelled by user`, and the next prompt continues the same conversation. At the **approval prompt**, `Esc` denies the pending tool and stops the turn the same way — but `Ctrl+C` keeps its ordinary meaning there and **exits agent-cli** on an empty line, so use `Esc` (or answer `n`). See "Cancelling a running turn" in [`doc/troubleshooting.md`](troubleshooting.md) for what cancelling does *not* stop.
 - **Display width**: full-width characters (CJK) are counted as two columns, so cursor positioning stays correct in mixed-width lines.
 - **TTY requirement**: raw mode is only enabled when stdin is a terminal. With piped or redirected input the REPL falls back to line-buffered reading, where the editing keys, the candidate list, and `Tab` completion are unavailable — everything else (tools, custom commands, peer messaging) works unchanged. See "Non-interactive / Scripted Use".
 
@@ -273,7 +302,7 @@ On an interactive terminal, the REPL shows what it is doing while a turn runs:
 - The indicator pauses while a tool-approval prompt is on screen and resumes once you answer.
 - **Reasoning (`thinking`) is shown live below the spinner**, the last 10 rows at a time, with a `… +N more (click to expand)` marker when there is more. **Click the block** with the mouse to switch to as much of the reasoning as the screen can hold, and click again to go back to 10 rows; the choice is remembered for the following turns. The view belongs to the running turn — it is cleared when the turn ends, and the full reasoning is still written to the conversation log.
 - **Tool results are cut to 5 rows** while the indicator is on, ending in `… +N more lines`, so a large `bash` output cannot push the spinner down the screen. The full result is in the conversation log (`[runtime] log_dir`), and the model always receives it in full — only the on-screen copy is shortened.
-- Mouse reporting is switched on only while a turn is running, and only when reasoning is actually shown (`[ui] show_thinking` other than `"hidden"`). While it is on, selecting text with the mouse needs the terminal's usual override — hold **Shift** while dragging in most terminals.
+- Mouse reporting is on for the whole session while the wheel scrollback is enabled (`[ui] mouse_scroll`, on by default), which is what makes both the wheel and this click work. While it is on, selecting text with the mouse needs the terminal's usual override — hold **Shift** while dragging in most terminals. With `[ui] mouse_scroll = false` the reporting is limited to a running turn, and only when reasoning is actually shown (`[ui] show_thinking` other than `"hidden"`); with `show_thinking = "hidden"` as well, it is never enabled and there is nothing to click.
 - While an answer is streaming the spinner is not drawn: the text itself flows down the screen, which shows the turn is alive.
 
 It is drawn only when both stdin and stderr are terminals, so piped or redirected output is unaffected, and it can be turned off with `[ui] show_progress = false` (see [`doc/config.md`](config.md)). With it off, tool calls are printed in full again exactly as before.
@@ -323,13 +352,14 @@ While the line you are typing starts with `!`, the prompt is drawn in yellow, so
 - **The model is given the command and its output afterwards**, without a turn being started — nothing is sent to the provider until you ask something. So `!git diff` followed by "why did this break?" works without pasting anything. Set `[shell] context = false` to keep commands entirely to yourself.
 - **`Esc` (or `Ctrl+C`) cancels** a running command: the whole job is stopped and the prompt comes straight back. A command that outlives `[shell] timeout_ms` (two minutes by default) is stopped the same way.
 - **A non-zero exit is reported** as `[shell] exit <code>`; a successful command shows nothing but its own output.
+- **While a command runs the prompt is busy**: every key except `Esc` / `Ctrl+C` is ignored until it ends, so a line typed meanwhile is not lost in the output. A bare `!` with nothing after it prints `usage: !<command>` and changes nothing, and leading spaces before the `!` are fine.
 - **Only a line you typed here can run a command.** A prompt that arrives from a peer agent — or anything the model produces — is text, never a command: it does not pass through this part of the REPL at all. The model's own shell access is the `bash` tool, which still asks for approval.
 
 What `!` is not for: it has no terminal of its own, so interactive and full-screen programs (`vim`, `less`, `top`, `ssh`) will not work — use a separate terminal for those. Each command is its own `bash -lc`, so `!cd ..` does not carry over to the next one (`!cd build && make` does what you want). Its stdin is closed, so a command that waits for input gets EOF instead of your keystrokes.
 
 ### Scrolling Back Through the Session
 
-Turn the mouse wheel up and the session log scrolls behind the prompt: the prompt line stays exactly where it is, still showing what you had typed and where the cursor was, and stays editable while you read. Turn the wheel back down to return; reaching the bottom puts the live view back, and so does pressing `Esc`. Submitting a line with `Enter` also returns to the live view and then sends the line as usual.
+Turn the mouse wheel up and the session log scrolls behind the prompt: the prompt line stays exactly where it is, still showing what you had typed and where the cursor was, and stays editable while you read. Turn the wheel back down to return; reaching the bottom puts the live view back, and so does pressing `Esc`. `Enter` returns to the live view and then sends the line as usual, and `Ctrl+C` / `Ctrl+D` return to it and then mean what they always mean.
 
 - **The keyboard is unchanged.** `↑` / `↓` still move through the input history, the arrows still move within the line you are typing, and `Esc` / `Ctrl+C` still cancel a running turn once the view is back at the bottom. Only the wheel scrolls.
 - **It works during a turn.** While the agent is streaming an answer or running a tool you can scroll back over what it has already written; output arriving meanwhile is kept but does not move the view, and the spinner with its elapsed time is pinned at the bottom of the screen so you can see the turn is still going. Everything appears in place when you return to the live view.

@@ -88,6 +88,10 @@ fn raw_eprint(raw: bool, msg: &str) {
 
 /// Shared state referenced by REPL command handlers.
 pub(crate) struct ReplState {
+    /// This session's own agent id and ancestor chain, so a peer it spawns
+    /// joins this agent's tree at the right level.
+    id: AgentId,
+    ancestors: Vec<AgentId>,
     registry_dir: PathBuf,
     agents_dir: PathBuf,
     persona_file_setting: String,
@@ -233,6 +237,11 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         .take_rx()
         .expect("IpcServer rx should be available immediately after bind");
 
+    // The chain of agents that created this one, set by the launcher on this
+    // process' environment. Empty means a human started it: depth 0, and this
+    // agent is the root of its own tree.
+    let ancestors = crate::ipc::registry::ancestors_from_env();
+
     let entry = RegistryEntry {
         id: id.clone(),
         name: name.clone(),
@@ -243,6 +252,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         model: provider.model().to_string(),
         socket: socket_path.clone(),
         persona: Some(resolution.persona.summary()),
+        ancestors: ancestors.clone(),
     };
     let registry_handle = RegistryHandle::register(&registry_dir, &entry).await?;
     let registry_handle = Arc::new(registry_handle);
@@ -316,6 +326,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         config: config.clone(),
         config_source: source.clone(),
         registry_dir: registry_dir.clone(),
+        ancestors: ancestors.clone(),
         log: Some(log),
         auto_approve: auto_approve.clone(),
         cancel: cancel.clone(),
@@ -328,6 +339,8 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let commands_dir = custom_commands::resolve_dir(&config.runtime.commands_dir);
     let initial_commands = custom_commands::discover(&commands_dir);
     let state = Arc::new(ReplState {
+        id: id.clone(),
+        ancestors: ancestors.clone(),
         registry_dir: registry_dir.clone(),
         agents_dir: agents_dir.clone(),
         persona_file_setting: config.runtime.persona_file.clone(),
@@ -616,6 +629,11 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         .take_rx()
         .expect("IpcServer rx should be available immediately after bind");
 
+    // The chain of agents that created this one, set by the launcher on this
+    // process' environment. Empty means a human started it: depth 0, and this
+    // agent is the root of its own tree.
+    let ancestors = crate::ipc::registry::ancestors_from_env();
+
     let entry = RegistryEntry {
         id: id.clone(),
         name: name.clone(),
@@ -626,6 +644,7 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         model: provider.model().to_string(),
         socket: socket_path.clone(),
         persona: Some(resolution.persona.summary()),
+        ancestors: ancestors.clone(),
     };
     let registry_handle = RegistryHandle::register(&registry_dir, &entry).await?;
     let registry_handle = Arc::new(registry_handle);
@@ -653,6 +672,7 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         config: config.clone(),
         config_source: source.clone(),
         registry_dir: registry_dir.clone(),
+        ancestors: ancestors.clone(),
         log: Some(log),
         auto_approve,
         // Headless: no console, so nothing ever raises this token.
@@ -3337,9 +3357,7 @@ async fn handle_repl_command(
         "help" => {
             raw_println(raw_mode, "Commands:");
             raw_println(raw_mode, "  /list                       List currently running peers (id / name / provider / model / role).");
-            println!(
-                "  /send <peer> <text>         Send a one-shot prompt to a peer (id or name)."
-            );
+            raw_println(raw_mode, "  /send <peer> <text>         Send a one-shot prompt to a peer (id or name).");
             raw_println(raw_mode, "  /tools                      List tools enabled for this agent.");
             raw_println(raw_mode, "  /persona                    Show this agent's persona (role / skills / source path).");
             raw_println(raw_mode, "  /reload-persona             Re-resolve and reload the persona; system prompt is replaced, history kept.");
@@ -3354,6 +3372,16 @@ async fn handle_repl_command(
             raw_println(raw_mode, "  /reload-commands            Re-scan the custom commands directory.");
             raw_println(raw_mode, "  /help                       Show this help.");
             raw_println(raw_mode, "  /quit, /exit                Terminate (full aliases). Ctrl+D, Ctrl+C, SIGTERM also exit cleanly.");
+            raw_println(raw_mode, "");
+            raw_println(raw_mode, "At the prompt:");
+            raw_println(raw_mode, "  !<command>                  Run a shell command right away (no approval); its output");
+            raw_println(raw_mode, "                              is shown and handed to the model as context. Esc stops it.");
+            raw_println(raw_mode, "  Tab                         Complete the slash command being typed, from the list");
+            raw_println(raw_mode, "                              shown on the row above the prompt.");
+            raw_println(raw_mode, "  Mouse wheel                 Scroll back through this session's log with the prompt");
+            raw_println(raw_mode, "                              line pinned; Esc or scrolling to the bottom returns.");
+            raw_println(raw_mode, "  Esc                         Stop a running turn or shell command; at the tool-approval");
+            raw_println(raw_mode, "                              prompt, deny the pending tool.");
             raw_println(raw_mode, "");
             raw_println(raw_mode, "Tool approval can be skipped via:");
             raw_println(raw_mode, "  - REPL command  : /auto on  (toggleable at runtime)");
@@ -3539,7 +3567,11 @@ async fn spawn_peer(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
         persona: None,
         auto_approve_tools: false,
     };
-    match crate::commands::spawn_detached(&state.config_source.path, &state.registry_dir, &run_args).await {
+    // A peer the REPL spawns belongs to this session's tree.
+    // The child's chain is this session's chain plus this session itself.
+    let mut chain = state.ancestors.clone();
+    chain.push(state.id.clone());
+    match crate::commands::spawn_detached(&state.config_source.path, &state.registry_dir, &run_args, &chain).await {
         Ok(entry) => raw_println(
             raw_mode,
             &format!(
@@ -3868,6 +3900,8 @@ mod tests {
 
     fn build_state(dir: &Path) -> Arc<ReplState> {
         Arc::new(ReplState {
+            id: AgentId::new(),
+            ancestors: Vec::new(),
             registry_dir: dir.to_path_buf(),
             agents_dir: dir.to_path_buf(),
             persona_file_setting: String::new(),
