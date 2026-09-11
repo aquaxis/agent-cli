@@ -261,25 +261,58 @@ On `ok=true`, returns `replaced <N> occurrence(s) in <path>`. On `ok=false`, ret
 
 ## `send_to`
 
-Sends a prompt to an agent in another process (a peer). Unchanged.
+Sends a message to an agent in another process (a peer). The sender chooses how
+it is delivered — and what it costs the peer.
 
 ### Arguments
 
 | Key | Type | Required | Default | Description |
 |-----|------|----------|---------|-------------|
 | `peer` | string | Yes | -- | Destination agent-id or display name |
-| `text` | string | Yes | -- | Prompt to send |
-| `wait_reply` | bool | -- | `false` | If `true`, wait for the peer's AI response and return it as the tool output |
+| `text` | string | Yes | -- | Message body |
+| `delivery` | string | -- | `"prompt"` | `"prompt"` / `"report"` / `"ask"` — see below |
+| `wait_reply` | bool | -- | `false` | Deprecated alias for `delivery="ask"`; still honoured |
+
+| `delivery` | What the peer does | What comes back here |
+|---|---|---|
+| `"prompt"` (default) | Runs a turn and answers in its own session | `delivered to <id> as a prompt` |
+| `"report"` | **Adds it to its conversation and runs no turn** | `reported to <id> (…it runs no turn and sends no answer)` |
+| `"ask"` | Runs a turn and sends the answer back | the peer's answer text |
+
+Pick by what the message *is*: `"ask"` when you need an answer, `"report"` when
+you are handing over a finished result, `"prompt"` when the peer should act on it
+in its own session. A result sent as a prompt makes the peer spend a turn
+composing an answer nobody reads.
 
 ### Return Value
 
-On success with `wait_reply=false`, returns `delivered to <agent-id>` in `content`. With `wait_reply=true`, returns the peer's response text. On failure, returns an error message (e.g., `peer not found by id or name: ...`).
+The delivery used, or the peer's answer for `"ask"`. On failure, an error message
+(e.g. `peer not found by id or name: ...`). An unknown `delivery` value is an
+error naming the three valid ones rather than a guess.
 
 ### Notes
 
 - Destination resolution scans `<agent-id>.json` files under `registry_dir`.
-- With `wait_reply=false` it is asynchronous (it does not wait for a response); success is acknowledged upon receipt of the Ack.
-- On the receiving agent side, the prompt is prefixed with `[peer prompt from <agent-id>]` and passed to the AI as user input.
+- `"prompt"` and `"report"` are asynchronous: success means the peer acknowledged receipt, not that it has finished with it.
+- On the receiving side, a prompt is prefixed with `[peer prompt from <agent-id>]` and a report with `[peer report from <agent-id>]`, so an agent that receives several can tell them apart.
+- `"report"` against an agent-cli older than this feature is delivered **as a prompt instead**, and the tool result says so: the text still arrives, but that peer will answer it rather than only record it.
+
+### Distributing work to child agents
+
+The three deliveries make the fan-out pattern cheap. It needs `spawn`, which is
+opt-in (see above):
+
+1. `spawn` a child per task, passing its task as the tool's `prompt` argument — the children then work **in parallel**, and each one already knows the id of the agent that created it (it is in the header of that first message).
+2. Tell each child, in that prompt, to report its result back with
+   `send_to` using `delivery="report"`.
+3. Each result arrives in the parent as one line — `[info] peer report from … : N characters added to the conversation` — and is added to its conversation **without costing it a turn**.
+4. Ask the parent once to combine them. It answers from a conversation that already holds every report.
+
+Without step 2's `"report"`, every result would arrive as a prompt and the parent
+would run a turn per result, answering messages that have no recipient. Note that
+tool calls within one turn run sequentially, so collecting with
+`delivery="ask"` waits for one child at a time; reporting avoids the wait
+entirely.
 
 ## `monitor`
 

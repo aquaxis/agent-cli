@@ -48,6 +48,21 @@ pub enum IpcMessage {
     Ping,
     /// Connectivity check (response).
     Pong,
+    /// Text to add to the receiving agent's conversation **without starting a
+    /// turn**: a result a peer is reporting, which expects no answer. The
+    /// receiver appends it and goes on waiting, so a fan-out of children
+    /// reporting back costs the parent no provider calls.
+    ///
+    /// Field names match `Prompt`'s, so the two read alike on the wire and in
+    /// the history they produce.
+    Context {
+        /// Sender AgentId.
+        from: AgentId,
+        /// Sender display name (optional).
+        from_name: Option<String>,
+        /// Message body.
+        text: String,
+    },
     /// Request the receiving agent to shut down gracefully. The receiver Acks
     /// this and then converges on its normal shutdown/cleanup sequence. Used to
     /// stop a headless (detached `serve`) agent that has no controlling TTY.
@@ -91,6 +106,76 @@ mod tests {
         assert_eq!(json, r#"{"kind":"shutdown"}"#);
         let back: IpcMessage = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, IpcMessage::Shutdown));
+    }
+
+    /// The context delivery's wire shape, and the guarantee the fallback rests
+    /// on: an agent that does not know this kind answers with a parse error
+    /// rather than failing, so the sender can resend as a prompt.
+    #[test]
+    fn context_serializes_and_roundtrips() {
+        let msg = IpcMessage::Context {
+            from: AgentId::new(),
+            from_name: Some("reviewer".into()),
+            text: "the result".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""kind":"context""#), "{json}");
+        match serde_json::from_str::<IpcMessage>(&json).unwrap() {
+            IpcMessage::Context {
+                from_name, text, ..
+            } => {
+                assert_eq!(from_name.as_deref(), Some("reviewer"));
+                assert_eq!(text, "the result");
+            }
+            other => panic!("expected Context, got {other:?}"),
+        }
+    }
+
+    /// Adding a variant must not move any existing one: these are the bytes
+    /// v0.16.0 wrote, and a peer of either version has to keep reading them.
+    #[test]
+    fn the_existing_variants_keep_their_wire_shape() {
+        let id: AgentId = "agent-01ABC".parse().unwrap();
+        let cases = [
+            (
+                IpcMessage::Prompt {
+                    from: id.clone(),
+                    from_name: Some("a".into()),
+                    text: "t".into(),
+                    reply_to: None,
+                },
+                r#"{"kind":"prompt","from":"agent-01ABC","from_name":"a","text":"t","reply_to":null}"#,
+            ),
+            (
+                IpcMessage::PromptReply {
+                    from: id.clone(),
+                    text: "r".into(),
+                },
+                r#"{"kind":"prompt_reply","from":"agent-01ABC","text":"r"}"#,
+            ),
+            (IpcMessage::Ack { id: 0 }, r#"{"kind":"ack","id":0}"#),
+            (
+                IpcMessage::Error {
+                    message: "m".into(),
+                },
+                r#"{"kind":"error","message":"m"}"#,
+            ),
+            (IpcMessage::Ping, r#"{"kind":"ping"}"#),
+            (IpcMessage::Pong, r#"{"kind":"pong"}"#),
+            (IpcMessage::Shutdown, r#"{"kind":"shutdown"}"#),
+        ];
+        for (msg, expected) in cases {
+            assert_eq!(serde_json::to_string(&msg).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn an_unknown_kind_is_a_parse_error_not_a_panic() {
+        let err = serde_json::from_str::<IpcMessage>(r#"{"kind":"from_the_future","text":"x"}"#);
+        assert!(
+            err.is_err(),
+            "an unknown kind must fail to parse so the receiver can answer with an error"
+        );
     }
 
     #[test]

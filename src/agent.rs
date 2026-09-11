@@ -116,6 +116,23 @@ pub enum AgentInput {
 pub enum ContextSource {
     /// A `!<command>` run at the REPL prompt.
     Shell { command: String, status: String },
+    /// A result another agent reported with the context delivery of `send_to`.
+    /// Unlike a peer *prompt*, it costs this agent no turn.
+    Peer {
+        from: AgentId,
+        from_name: Option<String>,
+    },
+}
+
+/// The text a reported result is appended as: the same header shape a peer
+/// prompt already carries, so a model reading its own history sees the two
+/// alike and can tell which child reported what.
+pub fn peer_context_text(from: &AgentId, from_name: Option<&str>, text: &str) -> String {
+    let header = match from_name {
+        Some(n) => format!("[peer report from {} ({})]", n, from.as_str()),
+        None => format!("[peer report from {}]", from.as_str()),
+    };
+    format!("{header}\n{text}")
 }
 
 #[derive(Debug, Clone)]
@@ -291,18 +308,44 @@ impl Agent {
                 }
                 AgentInput::Context { text, source } => {
                     // Context only: the conversation grows by one message and
-                    // nothing else happens — no request to the provider, no
-                    // event, so the display stays quiet and the REPL is not
-                    // waiting on anything.
-                    if let Some(log) = log.as_ref() {
-                        let ContextSource::Shell { command, status } = &source;
-                        let _ = log
-                            .write(crate::log::LogEvent::Shell {
-                                command,
-                                status,
-                                output: &text,
-                            })
-                            .await;
+                    // no turn is run — no request to the provider, no answer.
+                    // A `!` command stays silent; a peer's report announces
+                    // itself in one line, since a result that produced nothing
+                    // on screen is indistinguishable from a lost one.
+                    match &source {
+                        ContextSource::Shell { command, status } => {
+                            if let Some(log) = log.as_ref() {
+                                let _ = log
+                                    .write(crate::log::LogEvent::Shell {
+                                        command,
+                                        status,
+                                        output: &text,
+                                    })
+                                    .await;
+                            }
+                        }
+                        ContextSource::Peer { from, from_name } => {
+                            if let Some(log) = log.as_ref() {
+                                let _ = log
+                                    .write(crate::log::LogEvent::PeerContext {
+                                        from: from.as_str(),
+                                        text: &text,
+                                    })
+                                    .await;
+                            }
+                            let who = match from_name {
+                                Some(n) => format!("{} ({})", n, from.as_str()),
+                                None => from.as_str().to_string(),
+                            };
+                            let _ = event_tx
+                                .send(AgentEvent::Info {
+                                    message: format!(
+                                        "peer report from {who}: {} characters added to the conversation",
+                                        text.chars().count()
+                                    ),
+                                })
+                                .await;
+                        }
                     }
                     self.history.push(Message::User { content: text });
                 }

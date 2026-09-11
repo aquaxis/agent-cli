@@ -211,9 +211,11 @@ max_tool_iterations = 48   # Multi-step orchestrator use case
 
 | Key | Type | Default | Description |
 |------|----|------|------|
-| `enabled` | string[] | `["bash","read","write","send_to","monitor","edit","glob","grep","websearch","webfetch"]` | Tools to enable |
+| `enabled` | string[] | `["bash","read","write","send_to","list_agents","stop_agent","monitor","edit","glob","grep","websearch","webfetch"]` | Tools to enable |
 
 If the persona has `allowed_tools` / `denied_tools`, the **intersection / difference** with this list determines the final tool set.
+
+**`spawn` is opt-in.** It is the one built-in absent from the default list: it creates detached agent-cli peers, and creating processes is more impactful than the rest. Add `"spawn"` to `enabled` to offer it; `[spawn]` below then bounds how many and how deep. `list_agents` and `stop_agent` are enabled by default — listing is read-only and stopping cannot reach outside the agent's own tree — so an agent that can create peers can also see and stop them. See [`doc/tools.md`](tools.md).
 
 **Legacy tool names.** The pre-rename names `shell`, `fs_read`, and `fs_write`
 are still accepted in `enabled` (and in persona `allowed_tools` / `denied_tools`)
@@ -284,7 +286,7 @@ The defaults for `timeout_ms` and `max_output_kb` match `[tools.bash]`, so a com
 
 ### `[spawn]`
 
-How far an agent may go in creating agents of its own with the `spawn` tool (see [`doc/tools.md`](tools.md)). These bound the **tool** — the path the model takes on its own. The `agent-cli spawn` subcommand and the REPL's `/spawn` are a person deciding and are not bounded.
+How far an agent may go in creating agents of its own with the `spawn` tool (see [`doc/tools.md`](tools.md)). These bound the **tool** — the path the model takes on its own. The `agent-cli spawn` subcommand and the REPL's `/spawn` are a person deciding and are not bounded, and these keys have no effect until `"spawn"` is in `[tools] enabled` (it is opt-in).
 
 | Key | Type | Default | Description |
 |------|----|------|------|

@@ -416,6 +416,25 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
                                     break;
                                 }
                             }
+                            // A peer reporting a result: added to the
+                            // conversation, no turn run, no answer produced.
+                            Some(IpcMessage::Context { from, from_name, text }) => {
+                                let text = crate::agent::peer_context_text(
+                                    &from,
+                                    from_name.as_deref(),
+                                    &text,
+                                );
+                                if input_tx_for_ipc
+                                    .send(AgentInput::Context {
+                                        text,
+                                        source: crate::agent::ContextSource::Peer { from, from_name },
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
                             // A peer requested we shut down (e.g. `agent-cli stop` / `/stop`).
                             Some(IpcMessage::Shutdown) => {
                                 let _ = shutdown_tx.send(true);
@@ -727,6 +746,25 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
                             Some(IpcMessage::Prompt { from, from_name, text, reply_to }) => {
                                 if input_tx_for_ipc
                                     .send(AgentInput::PeerPrompt { from, from_name, text, reply_to })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                            // A peer reporting a result: added to the
+                            // conversation, no turn run, no answer produced.
+                            Some(IpcMessage::Context { from, from_name, text }) => {
+                                let text = crate::agent::peer_context_text(
+                                    &from,
+                                    from_name.as_deref(),
+                                    &text,
+                                );
+                                if input_tx_for_ipc
+                                    .send(AgentInput::Context {
+                                        text,
+                                        source: crate::agent::ContextSource::Peer { from, from_name },
+                                    })
                                     .await
                                     .is_err()
                                 {
@@ -3972,8 +4010,12 @@ mod tests {
                 assert!(text.contains("$ echo from-the-shell"), "{text}");
                 assert!(text.contains("from-the-shell"), "{text}");
                 assert!(text.contains("exit status: 0"), "{text}");
-                let crate::agent::ContextSource::Shell { command, .. } = source;
-                assert_eq!(command, "echo from-the-shell");
+                match source {
+                    crate::agent::ContextSource::Shell { command, .. } => {
+                        assert_eq!(command, "echo from-the-shell")
+                    }
+                    other => panic!("a `!` line is shell context, not {other:?}"),
+                }
             }
             other => panic!("a `!` line must not become a prompt: {other:?}"),
         }

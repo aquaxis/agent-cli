@@ -38,6 +38,12 @@ pub enum LogEvent<'a> {
     System {
         message: &'a str,
     },
+    /// A result another agent reported with the context delivery: added to the
+    /// conversation without a turn.
+    PeerContext {
+        from: &'a str,
+        text: &'a str,
+    },
     /// A shell command the user ran at the prompt with `!`, and the text that
     /// was handed to the model because of it.
     Shell {
