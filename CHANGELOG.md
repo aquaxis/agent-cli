@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.17.0]
+
 ### Fixed
 
 - The configuration templates never mentioned the `spawn` tool. It has been opt-in since v0.4.0, but `example/config.example.toml` and the template `agent-cli` writes on first run listed only the default tools, so there was no way to learn from them that an agent can create peers of its own — or that `[spawn]`'s limits do nothing until it is enabled. Both now say so, and `doc/config.md`'s `[tools] enabled` default was two releases stale (missing `list_agents` and `stop_agent`).
@@ -263,7 +265,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/aquaxis/agent-cli/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/aquaxis/agent-cli/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/aquaxis/agent-cli/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/aquaxis/agent-cli/compare/v0.13.0...v0.14.0
