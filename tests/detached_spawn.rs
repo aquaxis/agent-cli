@@ -74,6 +74,90 @@ enabled = []
     (cfg_path, registry_dir)
 }
 
+/// A real child reports a result to a real parent with the context delivery:
+/// the parent records it and runs **no turn** for it (FR-01 – FR-04, AC-01).
+///
+/// Both agents point at an unreachable provider, so any turn the parent ran
+/// would fail visibly in its conversation log. The log is therefore the
+/// evidence: a `peer_context` entry and no assistant turn.
+#[test]
+fn a_reported_result_is_recorded_without_a_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (cfg_path, registry_dir) = write_config(tmp.path());
+
+    let spawn = |name: &str| {
+        let out = Command::new(bin())
+            .arg("--config")
+            .arg(&cfg_path)
+            .arg("spawn")
+            .arg("--name")
+            .arg(name)
+            .output()
+            .expect("run spawn");
+        assert!(out.status.success(), "spawn {name} failed");
+        find_entry(&registry_dir, name).expect("registered")
+    };
+
+    let parent = spawn("ctx-parent");
+    let parent_id = parent.get("id").and_then(|i| i.as_str()).unwrap().to_string();
+    let parent_socket = parent.get("socket").and_then(|s| s.as_str()).unwrap().to_string();
+
+    // The report, sent the way a child's `send_to` would send it.
+    let payload = format!(
+        r#"{{"kind":"context","from":"{parent_id}","from_name":"worker","text":"REPORTED-FINDINGS-8842"}}"#
+    );
+    let out = Command::new("bash")
+        .arg("-lc")
+        .arg(format!(
+            "printf '%s\\n' '{payload}' | timeout 10 nc -U -q1 {parent_socket}"
+        ))
+        .output()
+        .expect("send over the socket");
+    let reply = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        reply.contains(r#""kind":"ack""#),
+        "the report should be acknowledged, got: {reply} / {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Give the agent a moment to append it, then read its conversation log.
+    std::thread::sleep(Duration::from_millis(800));
+    let log_dir = tmp.path().join("log").join(&parent_id);
+    let mut entries = String::new();
+    if let Ok(rd) = std::fs::read_dir(&log_dir) {
+        for f in rd.flatten() {
+            if let Ok(text) = std::fs::read_to_string(f.path()) {
+                entries.push_str(&text);
+            }
+        }
+    }
+
+    let stop = Command::new(bin())
+        .arg("--config")
+        .arg(&cfg_path)
+        .arg("stop")
+        .arg("ctx-parent")
+        .output()
+        .expect("run stop");
+    assert!(stop.status.success());
+    let pid = parent.get("pid").and_then(|p| p.as_u64()).unwrap();
+    wait_until_gone(pid);
+    assert!(!proc_alive(pid), "the agent must not survive the test");
+
+    assert!(
+        entries.contains("peer_context"),
+        "the report should be logged as context: {entries}"
+    );
+    assert!(
+        entries.contains("REPORTED-FINDINGS-8842"),
+        "the reported text should be in the log: {entries}"
+    );
+    assert!(
+        !entries.contains(r#""kind":"assistant""#),
+        "a report must not make the agent run a turn: {entries}"
+    );
+}
+
 /// Build a real two-level tree and verify that lineage is recorded, that the
 /// listing tool sees exactly the caller's own subtree with the right depths and
 /// distances, that the stopping tool refuses anything outside it, and that a

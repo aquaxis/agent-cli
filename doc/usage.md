@@ -76,6 +76,50 @@ agent-cli stop worker                    # ask it to shut down cleanly
 From inside a REPL the same is available as `/spawn [name] [provider]` and
 `/stop <peer>`.
 
+### Distributing work to child agents
+
+The pattern the tools are shaped for. It needs the `spawn` tool, which is
+**opt-in**: add `"spawn"` to `[tools] enabled` (`list_agents` and `stop_agent`
+are already on). `/tools` in the REPL shows what the running agent has.
+
+```
+1. spawn one child per task, each with its task as the spawn tool's `prompt`
+   → the children work in parallel; each already knows the id of the agent
+     that created it (it is in the header of that first message)
+2. tell each child, in that prompt, to report its result back with
+   send_to  delivery="report"
+3. each result arrives as one line:
+   [info] peer report from worker (agent-01J…): 4213 characters added to the conversation
+   and is added to the parent's conversation **without costing it a turn**
+4. ask the parent once to combine them
+```
+
+`delivery="report"` is what makes this cheap. A result sent as an ordinary
+prompt makes the parent run a turn and compose an answer that has no recipient —
+with four children, four wasted inferences. A report is recorded and nothing
+else happens.
+
+The alternative, `delivery="ask"`, waits for the peer's answer and returns it to
+the caller; it is for questions, not results. Tool calls within one turn run
+sequentially, so asking four children takes four waits one after another (each
+bounded by a 120-second timeout), and a child still busy with its first task
+will not answer in time. Reporting avoids the wait entirely.
+
+A prompt that produces it, in one go:
+
+> 2体のサブエージェントを spawn で起動して調査を分担させて下さい。各サブエージェント
+> への初回プロンプトには、必ず次の指示を含めて下さい:「調査が終わったら send_to
+> ツールで peer に私の agent-id を指定し delivery="report" を指定して結果を報告する
+> こと」。テーマは (1) … (2) …。配布が終わったら、待たずにその旨だけ報告して下さい。
+
+The last clause matters: without it the agent tends to collect with
+`delivery="ask"`, which waits for one child at a time. What you should see is one
+`[info] peer report from …` line per result and **no answer between them**; ask
+for the summary once they have arrived.
+
+See [`tools.md`](tools.md) for `send_to`'s arguments and
+[`architecture.md`](architecture.md) for how a report reaches the conversation.
+
 ### An agent managing its own peers
 
 The agent can do all of this itself, through tools: `spawn` creates a peer,

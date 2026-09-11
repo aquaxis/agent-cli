@@ -108,6 +108,13 @@ commands_dir       = ".agent-cli/commands"
 # Tool set is aligned with Claude Code:
 #   bash, read, write, send_to, list_agents, stop_agent, monitor, edit, glob,
 #   grep, websearch, webfetch
+#
+# One built-in is deliberately left out of the list below: `spawn`, which lets
+# the agent create detached agent-cli peers of its own. Creating processes is
+# more impactful than the rest, so it is opt-in — add "spawn" to `enabled` to
+# offer it, and see the [spawn] section for the limits that bound it. The agent
+# can already see and stop what it created (`list_agents` / `stop_agent`), and
+# hand work to peers with `send_to`.
 # ─────────────────────────────────────────────────────────────────────────────
 [tools]
 enabled = [
@@ -123,6 +130,7 @@ enabled = [
   "grep",
   "websearch",
   "webfetch",
+  # "spawn",        # opt-in: let the agent create detached peers of its own
 ]
 # Backward compatibility: the pre-rename names ("shell", "fs_read", "fs_write")
 # are still accepted in `enabled` and map to bash / read / write respectively.
@@ -160,7 +168,8 @@ scrollback_lines = 2000
 # ─────────────────────────────────────────────────────────────────────────────
 # Spawn: how far an agent may go in creating agents of its own. These bound the
 # `spawn` *tool* (the path the model takes on its own); `agent-cli spawn` and
-# the REPL's /spawn are a person deciding and are not bounded.
+# the REPL's /spawn are a person deciding and are not bounded. They have no
+# effect until "spawn" is in [tools] enabled above.
 # ─────────────────────────────────────────────────────────────────────────────
 [spawn]
 max_children = 4          # live direct children per agent (0 disables spawning)

@@ -4,6 +4,23 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.17.0]
+
+### Fixed
+
+- The configuration templates never mentioned the `spawn` tool. It has been opt-in since v0.4.0, but `example/config.example.toml` and the template `agent-cli` writes on first run listed only the default tools, so there was no way to learn from them that an agent can create peers of its own — or that `[spawn]`'s limits do nothing until it is enabled. Both now say so, and `doc/config.md`'s `[tools] enabled` default was two releases stale (missing `list_agents` and `stop_agent`).
+
+### Added
+
+- Peer results as context — a child can report a finished result to another agent **without costing it a turn**.
+  - `send_to` gains `delivery`: `"prompt"` (the default, unchanged — the peer answers it in its own session), `"report"` (added to the peer's conversation, **no turn, no answer**) and `"ask"` (wait for the peer's answer, what `wait_reply: true` has always done). `wait_reply` keeps working as an alias, so existing calls and personas are unaffected.
+  - Until now every peer message was a prompt, and a prompt runs a turn: a result delivered with no `reply_to` made the receiver call the provider and compose an answer that had no recipient. With four children reporting in, that was four wasted inferences. A report is recorded and nothing else happens.
+  - The arrival is visible without being noisy: one line — `[info] peer report from worker (agent-01J…): 4213 characters added to the conversation` — while the text goes into the conversation, where the model can use it, and into the conversation log in full.
+  - A report is attributed with the same header shape a peer prompt has (`[peer report from <name> (<id>)]`), so an agent that receives several can tell which child sent what.
+  - New `IpcMessage::Context { from, from_name, text }`. The seven existing messages keep their exact wire shape — a byte-level test pins each one — and an agent-cli that predates this message answers with a parse error and stays up, which the tool uses as the signal to resend the text **as a prompt** and say so, rather than failing the sender's turn. Verified against a v0.16.0 binary.
+  - This makes the fan-out pattern practical: `spawn` a child per task with its task as the initial prompt, tell each to report back, and ask the parent once to combine the results. Tool calls within a turn still run sequentially, so this removes the need to wait rather than making waiting concurrent.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/tools.md`, `doc/usage.md`, `doc/architecture.md`, `doc/troubleshooting.md`.
+
 ## [0.16.0]
 
 ### Fixed
@@ -248,7 +265,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 - `cargo test` all 74 tests pass (Provider parsers, Agent loop E2E, IPC, personas, doc consistency, CLI consistency, Ollama thinking, `max_tool_iterations` boundary values)
 - `cargo doc --no-deps` with zero warnings
 
-[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/aquaxis/agent-cli/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/aquaxis/agent-cli/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/aquaxis/agent-cli/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/aquaxis/agent-cli/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/aquaxis/agent-cli/compare/v0.13.0...v0.14.0

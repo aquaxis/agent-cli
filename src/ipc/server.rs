@@ -90,6 +90,7 @@ async fn handle_conn(stream: tokio::net::UnixStream, tx: mpsc::Sender<IpcMessage
                 let response = match &msg {
                     IpcMessage::Prompt { .. }
                     | IpcMessage::PromptReply { .. }
+                    | IpcMessage::Context { .. }
                     | IpcMessage::Shutdown => Some(IpcMessage::Ack { id: 0 }),
                     IpcMessage::Ping => Some(IpcMessage::Pong),
                     _ => None,

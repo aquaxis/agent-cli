@@ -284,6 +284,19 @@ While a turn runs, an interactive REPL shows the line being executed and, beneat
 | A tool result ends in `… +N more lines` | Expected while the indicator is on: the on-screen copy is cut to five rows so it cannot push the spinner off the screen. The model still receives the whole result, and the full text is in the conversation log (`[runtime] log_dir`). `[ui] show_progress = false` prints it in full |
 | Reasoning disappears when the turn ends | Expected: the block belongs to the running turn. The full reasoning is written to the conversation log; set `[ui] show_progress = false` to get the old inline `[thinking]` output in the scrollback instead |
 
+### A child's report did not arrive, or arrived as an answer
+
+A child hands a result back with `send_to` and `delivery="report"` (see [`doc/tools.md`](tools.md)).
+
+| Symptom | Cause / remedy |
+|------|------|
+| The parent shows `[info] peer report from … : N characters` and nothing else | Working as intended: a report is added to the conversation and costs no turn. Ask the parent about it and the answer uses it |
+| The parent answered the report instead of only recording it | It was sent as a prompt. Either `delivery` was omitted (the default is `"prompt"`), or the peer is an older agent-cli — in that case the tool result says `does not support report delivery`, and the text was delivered as a prompt so that it still arrived |
+| `unknown delivery "…"` | Use `"prompt"`, `"report"` or `"ask"`. The difference is whether the peer spends a turn, so an unrecognised value is refused rather than guessed |
+| A child never reported | Nothing makes a child report automatically — the parent's prompt has to ask for it. Check with `agent-cli list` that the child is still running, and remember it processes one message at a time, so it will not report until its current task ends |
+| `timed out waiting for reply after 120s` | That is `delivery="ask"`, which waits for an answer. A child busy with a long first task cannot answer in time; hand out work fire-and-forget and have it report back instead |
+| The parent's conversation grew and it is not obvious why | Every report is one `[info]` line on screen and a `peer_context` entry in the conversation log (`[runtime] log_dir`), which keeps the full text |
+
 ### An agent cannot create, see or stop another agent
 
 An agent manages its own peers with the `spawn`, `list_agents` and `stop_agent` tools (see [`doc/tools.md`](tools.md)).

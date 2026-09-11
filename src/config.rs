@@ -100,6 +100,9 @@ commands_dir       = ".agent-cli/commands"   # custom slash commands (*.md)
 # group             = ""
 
 [tools]
+# `spawn` (create detached peers of your own) is the one built-in left out: it
+# is opt-in because creating processes is more impactful than the rest. Add it
+# here to offer it, and see [spawn] below for the limits that bound it.
 enabled = ["bash", "read", "write", "send_to", "list_agents", "stop_agent", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
 [tools.bash]
@@ -126,7 +129,8 @@ scrollback_lines = 2000
 
 [spawn]
 # How many live children the `spawn` *tool* may give one agent (0 disables it).
-# `agent-cli spawn` and the REPL's /spawn are not bounded by these.
+# `agent-cli spawn` and the REPL's /spawn are not bounded by these, and these
+# have no effect until "spawn" is in [tools] enabled.
 max_children = 4
 # How deep a chain of tool-spawned agents may go.
 max_depth    = 2
