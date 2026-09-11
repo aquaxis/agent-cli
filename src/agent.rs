@@ -164,6 +164,10 @@ pub struct Agent {
     /// spawned peer inherits the same config (hence the same registry_dir).
     pub config_source: ConfigSource,
     pub registry_dir: std::path::PathBuf,
+    /// The agents that created this one, root first. Forwarded to the `spawn`
+    /// tool so a peer it creates records the whole chain, and so the depth
+    /// limit can be applied.
+    pub ancestors: Vec<crate::id::AgentId>,
     pub log: Option<ConversationLog>,
     /// Shared via `Arc<AtomicBool>` for runtime toggle via `/auto` REPL command (FR-04-2).
     pub auto_approve: Arc<AtomicBool>,
@@ -472,6 +476,8 @@ impl Agent {
                 registry_dir: self.registry_dir.clone(),
                 config_source: self.config_source.clone(),
                 event_tx: Some(event_tx.clone()),
+                ancestors: self.ancestors.clone(),
+                spawn_limits: crate::swarm::SpawnLimits::from(&self.config.spawn),
             };
             // Index-based so a cancellation can hand the calls that were never
             // executed to `finish_cancelled`.
@@ -1014,6 +1020,7 @@ mod tests {
             persona: Persona::builtin_default(),
             provider: Box::new(MockProvider::new(scripts)),
             tools,
+            ancestors: Vec::new(),
             config: cfg,
             config_source: crate::config::ConfigSource::default(),
             registry_dir: PathBuf::from("/tmp/agent-cli-tests"),

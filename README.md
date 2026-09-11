@@ -17,7 +17,8 @@
 - Custom slash commands — drop a Markdown file into `.agent-cli/commands/` and it becomes `/<name>`, with `$ARGUMENTS` / `$1`…`$N` / `@file` expansion and prefix auto-execution.
 - Line editing at the prompt — `↑` / `↓` history browsing, `Ctrl+A` / `Ctrl+E`, `Esc` to clear, live command candidates shown above the prompt, and `Tab` completion for `/` commands.
 - Stop a running turn with `Esc` — pressing it while the agent is streaming, running a tool, or asking for approval hands the prompt straight back, without waiting for the model or the tool, and the conversation stays usable.
-- Live turn progress — what is being executed is shown on a single line (cut with `…` when it does not fit), with a spinner and the elapsed time on the line beneath it, which turns into `✔ <elapsed>` when the turn finishes. Tool results are cut to five rows on screen (`… +N more lines`), and the model's reasoning streams live under the spinner, the last 10 rows at a time; click the block to expand it to everything the screen can hold, and click again to collapse.
+- Live turn progress — what is being executed is shown on a single line (cut with `…` when it does not fit), with a spinner and the elapsed time on the line beneath it, which turns into `✔ <elapsed>` when the turn finishes. Tool results are cut to five rows on screen (`… +N more lines`) — screen only, the model and the conversation log still get the full text — and the model's reasoning streams live under the spinner, the last 10 rows at a time with a `… +N more` marker for the rest; click the block to expand it to everything the screen can hold, and click again to collapse.
+- Agents that manage their own agents — an agent can create a detached peer (`spawn`), talk to it (`send_to`), see the peers it created (`list_agents`) and shut one down (`stop_agent`), all as tools. Each agent sees and stops **only its own tree**; anything else is refused. Autonomous creation is bounded by `[spawn]` — live children per agent and depth of the chain — so a delegating agent cannot grow a tree nobody asked for. `agent-cli spawn` / `list` / `stop` / `groups` remain the unrestricted view for a person.
 - Shell commands from the prompt — type `!<command>` (as in Claude Code) and it runs in the shell straight away, with no approval prompt and no round trip through the model. The output streams into the session as it is produced, `Esc` cancels a long one, and the command and its output are handed to the model as context, so the next question can refer to what you just saw. `[shell]` configures the timeout, the context cap, and turns it off.
 - Mouse-wheel scrollback — turning the wheel scrolls the session log while the **prompt line stays where it is**, still showing what you typed and still editable; the wheel works during a turn too, with the spinner pinned at the bottom. Scroll back to the bottom or press `Esc` to return to the live view. The keyboard is unchanged: `↑` / `↓` stay on the input history. `[ui] mouse_scroll` and `[ui] scrollback_lines` control it.
 - Colour-coded output — the prompt and tool names in cyan, arguments in grey, tool results and the spinner's elapsed time in dark yellow, the answer marker and the startup banner in magenta, `✔` in green, `✗` and errors in red, the approval prompt in yellow. The answer body itself is left uncoloured. Colour is written only to streams that are terminals, honours `NO_COLOR`, and can be forced or disabled with `[ui] color`.
@@ -491,13 +492,18 @@ With a terminal attached, the prompt supports in-place editing and history brows
 
 | Key | Action |
 |-----|--------|
+| `Enter` | Submit the line |
 | `↑` / `↓` | Browse history (the in-progress draft is restored when you come back past the newest entry) |
+| `←` / `→` | Move the cursor one character |
 | `Ctrl+A` / `Home`, `Ctrl+E` / `End` | Jump to start / end of the line |
-| `Esc` | While the agent is working, stop the turn and return to the prompt immediately; at an idle prompt, leave history browsing or clear the line |
-| `Ctrl+C` | While the agent is working, same as `Esc`; at an idle prompt, clear the line, and exit when the line is empty |
+| `Backspace` / `Delete` | Delete the character before / at the cursor |
+| `Tab` | Complete the slash command being typed |
+| `Esc` | While the agent is working, stop the turn and return to the prompt immediately; while a `!` command runs, stop it; while the log is scrolled, return to the live view; at the approval prompt, deny the pending tool; at an idle prompt, leave history browsing or clear the line |
+| `Ctrl+C` | While the agent is working, same as `Esc`; at an idle prompt, clear the line, and exit when the line is empty — it keeps that exit meaning at the approval prompt, so deny with `Esc` there |
 | `Ctrl+D` | Exit on an empty line |
+| Mouse wheel | Scroll the session log with the prompt line pinned (`[ui] mouse_scroll`) |
 
-While the line starts with `/` and has no space, the best-matching command is suggested inline. Raw mode needs a TTY; with piped input the REPL falls back to plain line reading — tools, custom commands, and peer messaging all keep working.
+While the line starts with `/` and has no space, the matching command names are listed on the row **above** the prompt, and `Tab` completes from that list. A line starting with `!` is run in the shell instead of being sent to the model. Raw mode needs a TTY; with piped input the REPL falls back to plain line reading — tools, custom commands, and peer messaging all keep working.
 
 ### Suppressing `[thinking]` output
 
@@ -516,7 +522,7 @@ show_thinking = "hidden"     # suppress entirely
 | `"collapsed"` (default) | Each thinking delta is truncated to "first 80 chars + `...`"; if multi-line, only the first line is shown |
 | `"expanded"` | Full text printed verbatim |
 
-Changes take effect on next `agent-cli` start. See [`doc/config.md`](doc/config.md) "UI display modes" for details.
+Changes take effect on next `agent-cli` start. See [`doc/config.md`](doc/config.md) "UI Display Mode" for details.
 
 ### `[info] max tool-use iterations reached`
 

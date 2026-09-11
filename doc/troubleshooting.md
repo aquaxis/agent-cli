@@ -253,7 +253,7 @@ User-side workarounds (in recommended order):
 
 ### Cancelling a running turn
 
-Press `Esc` (or `Ctrl+C`) while the agent is streaming a response, running a tool, or waiting for tool approval: `[cancelled]` is printed and the prompt comes back immediately. `/cancel` sends the same signal, which is the way to stop a turn that a peer prompt started while your prompt is idle.
+Press `Esc` (or `Ctrl+C`) while the agent is streaming a response or running a tool: `[cancelled]` is printed and the prompt comes back immediately. At the **tool-approval prompt** press `Esc`, which denies the pending tool and stops the turn — `Ctrl+C` keeps its ordinary exit meaning there and quits agent-cli on an empty line. `/cancel` sends the same signal, which is the way to stop a turn that a peer prompt started while your prompt is idle.
 
 What cancelling does — and does not — do:
 
@@ -279,10 +279,25 @@ While a turn runs, an interactive REPL shows the line being executed and, beneat
 | `[tool-call]` lines look truncated | Also expected while the indicator is on: the call is cut to one terminal row with `…` so the spinner stays directly beneath it. Set `[ui] show_progress = false` to get the full arguments back |
 | The spinner or `✔` shows as `?` / boxes | The terminal font has no braille or check-mark glyphs. The layout is unaffected; set `[ui] show_progress = false` if the substitutes are distracting |
 | A stray row is left behind after resizing | Resizing mid-turn can leave one row of a previously drawn indicator on screen. It is cosmetic and disappears with the next full turn |
-| Dragging to select text does nothing during a turn | Mouse reporting is on while a turn runs so the reasoning block can be clicked. Hold **Shift** while dragging (the usual terminal override), or set `[ui] show_thinking = "hidden"` / `[ui] show_progress = false`, either of which leaves mouse reporting off |
+| Dragging to select text does nothing | Mouse reporting is on so the wheel scrollback and the clickable reasoning block work. Hold **Shift** while dragging (the usual terminal override), or set `[ui] mouse_scroll = false` — see "The mouse wheel does not scroll, or the mouse behaves oddly" below. With the wheel scrollback off, reporting is limited to a running turn, and `[ui] show_thinking = "hidden"` / `[ui] show_progress = false` then leave it off entirely |
 | Clicking the reasoning block does not expand it | The click must land on the block itself (the spinner row or the reasoning rows below it). If the terminal does not answer cursor-position queries, the click is taken at face value instead, so it may toggle from anywhere |
 | A tool result ends in `… +N more lines` | Expected while the indicator is on: the on-screen copy is cut to five rows so it cannot push the spinner off the screen. The model still receives the whole result, and the full text is in the conversation log (`[runtime] log_dir`). `[ui] show_progress = false` prints it in full |
 | Reasoning disappears when the turn ends | Expected: the block belongs to the running turn. The full reasoning is written to the conversation log; set `[ui] show_progress = false` to get the old inline `[thinking]` output in the scrollback instead |
+
+### An agent cannot create, see or stop another agent
+
+An agent manages its own peers with the `spawn`, `list_agents` and `stop_agent` tools (see [`doc/tools.md`](tools.md)).
+
+| Symptom | Cause / remedy |
+|------|------|
+| `child limit reached: N live child agent(s) …` | Working as intended: `[spawn] max_children` (default 4) bounds how many live children one agent may have. Stop one with `stop_agent` to free a slot, reuse an existing child with `send_to`, or raise the limit |
+| `spawn depth limit reached: this agent is at depth D …` | `[spawn] max_depth` (default 2) bounds how deep a chain of tool-spawned agents may go. Agents that deep must do the work themselves. Note that an agent started with `agent-cli spawn` is a root at depth 0, so each tree is bounded separately |
+| `spawning is disabled: [spawn] max_children is 0` | Autonomous creation is switched off by configuration. `agent-cli spawn` and `/spawn` still work — the limits bind the tool only |
+| The model says it has no way to create an agent | `spawn` is **not** in the default `[tools] enabled`; add it. `list_agents` and `stop_agent` are enabled by default |
+| `"<name>" is not in your tree: you did not create it` | An agent may only stop agents it spawned (and their descendants). Use `agent-cli stop <peer>` or `/stop <peer>` to stop anything else |
+| `list_agents` says `no agents below this one` but `agent-cli list` shows peers | Those peers belong to another agent — usually a previous session, since each REPL run is a new agent id. They are still visible and stoppable from the command line |
+| A peer keeps running after the agent that created it exited | Expected: peers are detached by design. They remain in the tree by id, and `list_agents` marks a descendant whose intermediate agent is gone as `no longer running`; stop them with `stop_agent`, `agent-cli stop`, or `agent-cli groups` + `stop` for a whole cohort |
+| A registry entry written by an older version | Loads unchanged and counts as a root (no ancestors, depth 0), so it is listed and stopped from the command line as before; it is nobody's child, so no agent's tools will touch it |
 
 ### `!` does not run my command, or the command misbehaves
 

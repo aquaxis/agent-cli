@@ -11,7 +11,7 @@ Describes the argument schemas, return values, limitations, and approval flow fo
 
 ### Which backends see these tools
 
-The ten tools below are `agent-cli`'s own registry. They are offered to the
+The twelve tools below are `agent-cli`'s own registry. They are offered to the
 model by the HTTP backends (`claude`, `codex`, `ollama`, `opencode`,
 `opencode-go`, `llama.cpp`), which return `tool_use` requests that `agent-cli`
 executes through the approval flow described below.
@@ -53,7 +53,7 @@ In the implementation, `auto_approve` is shared between the agent and REPL as `A
 
 Creates a detached agent-cli peer that runs headless in its own session and does
 not depend on the current process. It is registered in the tool set but, unlike
-the ten tools above, is **not** in the default `[tools] enabled`, because
+the other tools, is **not** in the default `[tools] enabled`, because
 autonomous process creation is more impactful than peer messaging; add `spawn`
 to `[tools] enabled` (or a persona's `allowed_tools`) to offer it to the model.
 It is the tool-level equivalent of the `agent-cli spawn` subcommand /
@@ -74,10 +74,89 @@ It is the tool-level equivalent of the `agent-cli spawn` subcommand /
 
 `ok` with the new agent's `id` / `name` / `provider` / `model` / `socket`. The
 new agent shares this agent's config file (hence the same `registry_dir`), so it
-is immediately reachable with `send_to`. It runs headless and therefore
-auto-approves its own tool execution. When `group` is omitted the new agent
-inherits this agent's group, so a model spawning a fleet keeps the whole cohort
-under one recognizable group id.
+is immediately reachable with `send_to`, visible to `list_agents` and stoppable
+with `stop_agent`. It runs headless and therefore auto-approves its own tool
+execution. When `group` is omitted the new agent inherits this agent's group, so
+a model spawning a fleet keeps the whole cohort under one recognizable group id.
+
+### Limits
+
+Autonomous creation is bounded by `[spawn]` (see [`config.md`](config.md)):
+`max_children` live direct children per agent (default 4) and `max_depth`
+generations of tool-spawned agents (default 2). When either is reached the tool
+returns an **error** naming the limit, its configured value and the current
+count — no process is created and the turn continues:
+
+```
+child limit reached: 4 live child agent(s) and [spawn] max_children is 4. Stop one
+with stop_agent before creating another, or reuse an existing child with send_to.
+```
+
+Stopping a child frees its slot immediately. Either limit set to `0` disables
+autonomous creation entirely. The limits bind **this tool only**: the
+`agent-cli spawn` subcommand and the REPL's `/spawn` are a person deciding and
+are not bounded.
+
+## `list_agents`
+
+Lists the agents this agent created — the peers it spawned, and the peers those
+spawned. Read-only: one registry scan, with agents that have exited already
+pruned. It is enabled by default.
+
+Only this agent's **own tree** is shown. Peers created by someone else — a
+sibling, the agent that created this one, an unrelated session — are not this
+agent's to manage and do not appear. Use `agent-cli list` for the whole machine.
+
+### Arguments
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `scope` | string | No | `"children"` for direct children only; `"subtree"` (default) for every agent below this one |
+
+### Return
+
+`ok` with one line per agent — id, name, provider/model, group, depth, and
+whether it is a direct `child` or a deeper `descendant (via <name>)`:
+
+```
+agent-01M27QQ4BX…  name=worker  provider=ollama model=glm-5.1:cloud  group=-  depth=1  child
+```
+
+An empty tree returns `ok` with `no agents below this one` — nothing to manage
+is an answer, not a failure. A descendant whose intermediate agent has exited is
+still listed, marked `no longer running`, because it is still this agent's to
+stop.
+
+## `stop_agent`
+
+Stops an agent this agent created, shutting it down gracefully (the same path
+the `agent-cli stop` subcommand uses). Enabled by default.
+
+It reaches **only the caller's own subtree**. A sibling, the agent that created
+the caller, the caller itself and any unrelated peer are refused with a reason,
+so an agent can undo what it did and nothing more:
+
+```
+"reviewer" is not in your tree: you did not create it. You can only stop agents
+you spawned; list_agents shows them.
+```
+
+This is a guard against the model's mistakes, not a security boundary: anyone
+who can write to the registry directory can already start processes. A person
+keeps the unrestricted `agent-cli stop` and the REPL's `/stop`.
+
+### Arguments
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `agent` | string | Yes | Agent id or display name, as shown by `list_agents` |
+
+### Return
+
+`ok` with the stopped agent's id and name, or an error naming why it was
+refused (not in this agent's tree, no such agent, or the caller itself).
+Stopping an agent that has children of its own leaves those running; they stay
+in the caller's subtree and can be stopped next.
 
 ## `bash`
 
@@ -318,4 +397,4 @@ the rename therefore keep working, but new files should use the canonical names.
 
 ## Default enabled set
 
-The default `[tools] enabled` list registers all ten tools: `bash`, `read`, `write`, `send_to`, `monitor`, `edit`, `glob`, `grep`, `websearch`, `webfetch`. `websearch` degrades to a clear configuration error when `[tools.websearch]` is not set.
+The default `[tools] enabled` list registers twelve tools: `bash`, `read`, `write`, `send_to`, `list_agents`, `stop_agent`, `monitor`, `edit`, `glob`, `grep`, `websearch`, `webfetch`. `spawn` is the one built-in left out, because creating processes is more impactful than the rest; `list_agents` and `stop_agent` are in, because listing is read-only and stopping cannot reach outside the caller's own tree — together they are what makes enabling `spawn` reasonable. `websearch` degrades to a clear configuration error when `[tools.websearch]` is not set.

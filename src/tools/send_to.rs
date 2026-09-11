@@ -133,6 +133,8 @@ mod tests {
             registry_dir: registry_dir.clone(),
             config_source: Default::default(),
             event_tx: None,
+            ancestors: Vec::new(),
+            spawn_limits: crate::swarm::SpawnLimits::default(),
         }
     }
 
@@ -188,6 +190,7 @@ mod tests {
             model: "mock".into(),
             socket: socket_path,
             persona: None,
+            ancestors: Vec::new(),
         };
         write_registry_entry(registry_dir, &entry);
         entry
@@ -221,6 +224,7 @@ mod tests {
             model: "mock".into(),
             socket: socket_path,
             persona: None,
+            ancestors: Vec::new(),
         };
         write_registry_entry(registry_dir, &entry);
         entry

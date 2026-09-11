@@ -52,7 +52,7 @@ thinking    = true
 
 # --- Ollama (local or cloud tag, OpenAI-compatible /api/chat) ---
 # [provider.ollama]
-# model    = "glm-5.2:cloud"
+# model    = "glm-5.1:cloud"
 # base_url = "http://127.0.0.1:11434"
 
 # --- OpenCode (local `opencode serve` or OpenCode Zen / Go cloud) ---
@@ -63,7 +63,7 @@ thinking    = true
 # # Cloud mode (OpenCode Zen / Go): a resolved api_key_env selects cloud mode.
 # base_url    = "https://opencode.ai/zen/go/v1"
 # api_key_env = "OPENCODE_API_KEY"
-# model       = "glm-5.2"
+# model       = "claude-sonnet-4-5"
 # # Wire format: "openai" (default, /chat/completions) or "anthropic" (/messages).
 # api = "openai"
 # # Opt-in (local mode only): reuse one server session across turns.
@@ -95,6 +95,9 @@ persona_file       = ""                   # empty => built-in default persona
 # Max tool-use iterations per turn (one iteration = LLM call -> tool calls + results).
 # Default 24; raise for design-then-debug orchestrators that iterate on lint feedback.
 max_tool_iterations = 24
+# Directory scanned for custom `.md` slash commands (relative paths resolve
+# against the current working directory).
+commands_dir       = ".agent-cli/commands"
 # group           = ""                    # default group id for agents this config launches;
                                           # --group overrides it, detached children inherit it.
                                           # Filter with `agent-cli list --group <id>`; discover
@@ -103,7 +106,8 @@ max_tool_iterations = 24
 # ─────────────────────────────────────────────────────────────────────────────
 # Tools: which built-in tools the agent can call, and per-tool tuning.
 # Tool set is aligned with Claude Code:
-#   bash, read, write, send_to, monitor, edit, glob, grep, websearch, webfetch
+#   bash, read, write, send_to, list_agents, stop_agent, monitor, edit, glob,
+#   grep, websearch, webfetch
 # ─────────────────────────────────────────────────────────────────────────────
 [tools]
 enabled = [
@@ -111,6 +115,8 @@ enabled = [
   "read",
   "write",
   "send_to",
+  "list_agents",
+  "stop_agent",
   "monitor",
   "edit",
   "glob",
@@ -135,11 +141,41 @@ max_output_kb = 256      # truncate stdout/stderr beyond this (KB)
 # provider    = "tavily"            # supported: "tavily"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UI: display volume of thinking blocks.
-#   "collapsed" (default) | "expanded" | "hidden"
+# UI: what the REPL draws.
 # ─────────────────────────────────────────────────────────────────────────────
 [ui]
-show_thinking = "collapsed"
+# Volume of thinking blocks: "collapsed" (default) | "expanded" | "hidden".
+show_thinking    = "collapsed"
+# Activity line + spinner/elapsed while a turn runs (interactive terminals only).
+show_progress    = true
+# Colour the output: "auto" (terminals only, honours NO_COLOR) / "always" / "never".
+color            = "auto"
+# Scroll the session log with the mouse wheel, keeping the prompt line pinned.
+# While this is on the terminal reports mouse events to agent-cli, so selecting
+# text needs the usual Shift override.
+mouse_scroll     = true
+# Lines of output kept for scrolling back (0 disables the wheel scrollback).
+scrollback_lines = 2000
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spawn: how far an agent may go in creating agents of its own. These bound the
+# `spawn` *tool* (the path the model takes on its own); `agent-cli spawn` and
+# the REPL's /spawn are a person deciding and are not bounded.
+# ─────────────────────────────────────────────────────────────────────────────
+[spawn]
+max_children = 4          # live direct children per agent (0 disables spawning)
+max_depth    = 2          # depth of the spawn chain (0 disables spawning)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shell: running `!<command>` typed at the prompt. This is your own command,
+# not a tool call the model asked for, so it is not subject to the approval
+# gate or to [tools] enabled.
+# ─────────────────────────────────────────────────────────────────────────────
+[shell]
+enabled       = true      # false => a `!` line is sent to the model as a prompt
+timeout_ms    = 120000    # kill the whole job after this long
+max_output_kb = 256       # how much of the output the model is given (screen shows all)
+context       = true      # hand the command and its output to the model as context
 
 # ─────────────────────────────────────────────────────────────────────────────
 # History: opt-in hybrid context-window management.
@@ -149,3 +185,28 @@ show_thinking = "collapsed"
 enabled            = false
 max_context_tokens = 24000
 keep_recent_turns  = 6
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MCP: external Model Context Protocol servers. Every discovered tool is
+# registered as `mcp__<server>__<tool>` and passes the normal approval gate.
+# A server that fails to start or handshake is logged and skipped.
+# ─────────────────────────────────────────────────────────────────────────────
+# [mcp]
+# init_timeout_ms = 15000          # handshake + tools/list timeout per server
+
+# --- stdio server (a local process) ---
+# [[mcp.servers]]
+# name    = "filesystem"
+# command = "npx"
+# args    = ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
+# env     = { NODE_ENV = "production" }
+# cwd     = "/srv/data"
+# enabled = true
+
+# --- HTTP (Streamable HTTP) server ---
+# [[mcp.servers]]
+# name        = "remote"
+# transport   = "http"
+# url         = "https://mcp.example.com/mcp"
+# headers     = { X-Tenant = "acme" }
+# api_key_env = "MCP_API_KEY"       # sent as `Authorization: Bearer <value>`

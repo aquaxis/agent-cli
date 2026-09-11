@@ -64,6 +64,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 
 [ui]                        # Display mode
 [shell]                     # `!<command>` typed at the prompt
+[spawn]                     # limits on agents the `spawn` tool may create
 [history]                   # Opt-in history-window management
 [mcp]                       # MCP client: global options
 [[mcp.servers]]             # MCP client: one external server per entry
@@ -77,7 +78,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 |------|----|------|------|------|
 | `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"claude-code"` / `"codex"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
 
-### `[provider.claude]` / `[provider.codex]` / `[provider.ollama]` / `[provider.opencode]` / `[provider.opencode-go]` / `[provider."llama.cpp"]`
+### `[provider.claude]` / `[provider.codex]` / `[provider.ollama]` / `[provider.opencode]` / `[provider."llama.cpp"]`
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
@@ -281,6 +282,25 @@ context       = true
 
 The defaults for `timeout_ms` and `max_output_kb` match `[tools.bash]`, so a command you run and a command the model runs behave the same way until you change one.
 
+### `[spawn]`
+
+How far an agent may go in creating agents of its own with the `spawn` tool (see [`doc/tools.md`](tools.md)). These bound the **tool** — the path the model takes on its own. The `agent-cli spawn` subcommand and the REPL's `/spawn` are a person deciding and are not bounded.
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `max_children` | integer | `4` | Live direct children one agent may have. A child that has exited frees its slot. `0` disables autonomous spawning |
+| `max_depth` | integer | `2` | Generations of tool-spawned agents: with `2`, a root spawns a child and that child spawns a grandchild, which may not spawn further. `0` disables autonomous spawning |
+
+```toml
+[spawn]
+max_children = 4
+max_depth    = 2
+```
+
+When either limit is reached the `spawn` tool returns an error naming the limit and the current count; no process is created. An agent frees a slot with `stop_agent`.
+
+The limits matter because a spawned peer runs headless — it auto-approves its own tool calls — and inherits this agent's config file, so a `spawn`-enabled agent produces `spawn`-enabled children. Note that an agent started with `agent-cli spawn` is the root of its own tree at depth 0, so `max_depth` bounds each tree rather than the machine.
+
 ### `[history]`
 
 Opt-in hybrid history-window management. When `enabled = false` (default), the
@@ -402,7 +422,7 @@ auto_approve_tools = false
 log_dir            = "~/.local/share/agent-cli/logs"
 
 [tools]
-enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
+enabled = ["bash", "read", "write", "send_to", "list_agents", "stop_agent", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
 [tools.bash]
 timeout_ms    = 120000
@@ -420,6 +440,10 @@ enabled       = true
 timeout_ms    = 120000
 max_output_kb = 256
 context       = true
+
+[spawn]
+max_children = 4
+max_depth    = 2
 ```
 
 ### 4.3 Full-featured Configuration
@@ -457,7 +481,7 @@ max_tool_iterations = 48                            # Multi-step orchestrator as
 commands_dir        = ".agent-cli/commands"         # Custom slash commands (*.md)
 
 [tools]
-enabled = ["bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
+enabled = ["bash", "read", "write", "send_to", "list_agents", "stop_agent", "monitor", "edit", "glob", "grep", "websearch", "webfetch"]
 
 [tools.bash]
 timeout_ms    = 120000
@@ -469,7 +493,35 @@ endpoint    = "https://api.tavily.com/search"
 provider    = "tavily"
 
 [ui]
-show_thinking = "expanded"
+show_thinking    = "expanded"
+show_progress    = true
+color            = "auto"
+mouse_scroll     = true
+scrollback_lines = 2000
+
+[shell]
+enabled       = true
+timeout_ms    = 120000
+max_output_kb = 256
+context       = true
+
+[spawn]
+max_children = 4
+max_depth    = 2
+
+[history]
+enabled            = true
+max_context_tokens = 24000
+keep_recent_turns  = 6
+
+[mcp]
+init_timeout_ms = 15000
+
+[[mcp.servers]]
+name    = "filesystem"
+command = "npx"
+args    = ["-y", "@modelcontextprotocol/server-filesystem", "/srv/data"]
+enabled = true
 ```
 
 ## 5. API Key and Secret Management
@@ -581,7 +633,7 @@ Notes:
 | `true` (default) | The indicator is drawn, the `[tool-call]` line is shortened to a single row and a `[tool-result]` to five rows (`… +N more lines`) so the spinner stays close to them, and reasoning is shown live under the spinner instead of being streamed into the scrollback |
 | `false` | Nothing is drawn; `[tool-call]` lines keep their full arguments and `[tool-result]` its full output |
 
-`show_thinking` decides what the live reasoning block contains: with `"hidden"` there is none (and no mouse reporting is enabled), otherwise the last 10 rows are shown and a mouse click expands the block to as much as the screen can hold. Because the block replaces the inline `[thinking]` output, reasoning is no longer kept in the scrollback while the indicator is on — it is still written to the conversation log.
+`show_thinking` decides what the live reasoning block contains: with `"hidden"` there is none, otherwise the last 10 rows are shown and a mouse click expands the block to as much as the screen can hold. (Mouse reporting itself is governed by `ui.mouse_scroll` below, which is on by default and enables it for the whole session; only with `mouse_scroll = false` does reporting depend on this setting and on a turn being in progress.) Because the block replaces the inline `[thinking]` output, reasoning is no longer kept in the scrollback while the indicator is on — it is still written to the conversation log.
 
 Shortening affects the screen only: the model receives every tool result in full, and the conversation log keeps the complete text.
 

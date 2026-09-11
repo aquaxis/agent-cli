@@ -50,13 +50,20 @@ ANTHROPIC_API_KEY=sk-ant-... \
 PRs that add, change, or deprecate features must update the relevant documents **within the same PR**:
 
 - `README.md` (quick start, main commands, configuration, backend table)
-- `doc/usage.md` (commands, REPL specification)
-- `doc/config.md` (config key additions / changes)
+- `README_ja.md` (the maintained translation — it is kept **structurally identical** to `README.md`: same headings in the same order, same highlight bullets, same defaults and examples)
+- `doc/usage.md` (commands, REPL specification, key bindings)
+- `doc/config.md` (config key additions / changes — the key table, the layout map in §2 and the sample configurations in §4)
+- `doc/architecture.md` (new modules belong in the §2 module tree, new subsystems in §3.1)
 - `doc/providers/<kind>.md` (backend-specific behavior)
 - `doc/tools.md` (tool specifications)
+- `doc/personas.md` (persona format / resolution changes)
 - `doc/troubleshooting.md` (known failures and fixes)
-- `CHANGELOG.md` (`[Unreleased]` section with Added / Changed / Fixed / Removed)
+- `example/config.example.toml` **and** the `DEFAULT_CONFIG` template in `src/config.rs` (both claim to cover every section; a new config key belongs in both)
+- The REPL's own `/help` text in `src/app.rs` (it is the only documentation a user sees inside the session — new commands *and* new prompt behaviours belong there)
+- `CHANGELOG.md` (`[Unreleased]` section with Added / Changed / Fixed / Removed; list the documents you touched in the entry's "Docs updated:" line)
 - `rustdoc` (public APIs require `///`)
+
+When a change alters behaviour that an existing document already describes, **remove or correct the old statement** rather than only adding the new one — most documentation defects in this project have been a stale sentence left next to a correct one.
 
 ## Specification Files
 

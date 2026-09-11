@@ -18,6 +18,7 @@ mod mcp;
 mod persona;
 mod scroll;
 mod shell;
+mod swarm;
 mod theme;
 mod tools;
 mod update;
