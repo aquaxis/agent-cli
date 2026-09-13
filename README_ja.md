@@ -55,13 +55,16 @@
   ワイヤ形式は `[provider.opencode] api` で選択できます: `"openai"`（デフォルト）→
   `POST {base_url}/chat/completions`（SSE, `[DONE]`）、`"anthropic"` →
   `POST {base_url}/messages`（Anthropic SSE）。対応する `base_url`（例: "go" エンドポイント
-`https://opencode.ai/zen/go/v1`）と組み合わせてください。
+`https://opencode.ai/zen/go/v1`）と組み合わせてください。クラウドのリクエストには
+  安定した `x-opencode-session` ID が付与されます（Go エンドポイントでは必須）。
    [`doc/providers/opencode.md`](doc/providers/opencode.md) を参照。
 
 **`opencode-go`** は、Go 固有のデフォルト値が自動設定される OpenCode の便利なエイリアスです。
 `kind = "opencode-go"` と `api_key_env` だけを設定すれば、`base_url`
-（`https://opencode.ai/zen/go/v1`）、`api`（`"anthropic"`）、`model`
-（`claude-sonnet-4-5`）が自動的に埋められます。`[provider.opencode]`
+（`https://opencode.ai/zen/go/v1`）、`api`（`"openai"`）、`model`
+（`qwen3.8-max`）が自動的に埋められます。Go エンドポイントはオープンウェイトの
+モデルのみを提供します（`claude-*` は `.../zen/v1` 側）。提供中の ID は
+`GET {base_url}/models` で確認できます。`[provider.opencode]`
 で個別に上書きすることもできます。下記の設定例を参照してください。
 
 **`claude-code`** は、マシンにインストール済みの Claude Code CLI を子プロセスとして

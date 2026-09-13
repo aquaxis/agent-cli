@@ -67,6 +67,36 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
 
 ## OpenCode Issues
 
+### OpenCode Go: `HTTP 400` + `MissingSessionID`
+
+```
+FAIL: provider error (opencode): HTTP 400 Bad Request
+    detail : {"type":"error","error":{"type":"MissingSessionID","message":
+              "Error from provider (Console Go): Request is missing
+               x-opencode-session and cannot be routed efficiently."}}
+```
+
+- The OpenCode Go endpoints require every request to carry a **stable
+  `x-opencode-session`** header, so the gateway can route it and reuse its
+  prompt cache. agent-cli builds that predate this requirement sent no such
+  header, so *every* Go request failed — on both wire formats, for every model,
+  with a perfectly good API key. **Upgrade agent-cli**; current builds generate
+  one id per agent and send it automatically.
+- Nothing about your key or subscription is wrong here. To confirm that, and to
+  tell this apart from a key problem, send the same request twice:
+
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' https://opencode.ai/zen/go/v1/chat/completions \
+    -H "Authorization: Bearer $OPENCODE_API_KEY" -H 'content-type: application/json' \
+    -d '{"model":"qwen3.8-max","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
+  # 400 without, 200 with:
+  #   -H 'x-opencode-session: ses_probe_0001'
+  ```
+
+- To pin one id instead of the generated one, set `[provider.opencode]
+  session_id`. This is unrelated to `persistent_session` (a local-mode server
+  session); local requests send no session header.
+
 ### Unexpectedly hitting the cloud (Zen) instead of the local server
 
 - `opencode` mode is selected by **API-key presence**: if the env var named by
@@ -90,9 +120,13 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
 
 - `{"error":{"type":"ModelError","message":"Model X not supported"}}` means
   the `model` id is not served by that endpoint (auth was fine — the request
-  reached the gateway). Pick a valid id from `{base_url}/models`. Note the
-  `hint:` line may misleadingly say "API key invalid" on a 401; the `detail:`
-  body is authoritative.
+  reached the gateway). Pick a valid id from `{base_url}/models`. This arrives
+  with HTTP 401, so older builds printed a misleading "API key invalid" hint —
+  the `detail:` body is authoritative, and current builds hint at the catalogue
+  instead.
+- **The Go endpoint serves open-weight models only.** `claude-*` ids are served
+  by `https://opencode.ai/zen/v1`, not `https://opencode.ai/zen/go/v1`; asking
+  Go for one is the most common cause of this error.
 - Choose the wire format with `[provider.opencode] api` and pair it with the
   matching `base_url`: `api = "openai"` → `{base_url}/chat/completions`;
   `api = "anthropic"` → `{base_url}/messages`. For the "go" endpoints use

@@ -297,6 +297,26 @@ pub fn derive_hint(status: Option<u16>, body: &str) -> Option<String> {
                 .to_string(),
         );
     }
+    // Before the 401 rule: OpenCode Go rejects a request without a stable
+    // session id, and a model it does not serve comes back as 401 — neither is
+    // a key problem, and the key rule below would claim it is.
+    if lower.contains("missingsessionid") || lower.contains("x-opencode-session") {
+        return Some(
+            "The OpenCode endpoint requires a stable session id header \
+             (`x-opencode-session`), which older agent-cli builds did not send. \
+             Upgrade agent-cli, or pin one with `[provider.opencode] session_id`."
+                .to_string(),
+        );
+    }
+    if lower.contains("model") && lower.contains("is not supported") {
+        return Some(
+            "The endpoint does not serve this model. List the ids it does serve \
+             with `GET {base_url}/models` and set `model` to one of them. \
+             (OpenCode Go serves open-weight models only; `claude-*` is on \
+             https://opencode.ai/zen/v1, not .../zen/go/v1.)"
+                .to_string(),
+        );
+    }
     if status == Some(401)
         || lower.contains("invalid_api_key")
         || lower.contains("authentication_error")
@@ -388,6 +408,28 @@ mod diagnostics_tests {
         let body = r#"{"error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
         let hint = derive_hint(Some(401), body).expect("hint");
         assert!(hint.contains("API key"));
+    }
+
+    #[test]
+    fn hint_for_missing_opencode_session() {
+        // The real body OpenCode Go returns when `x-opencode-session` is absent.
+        let body = r#"{"type":"error","error":{"type":"MissingSessionID","message":"Error from provider (Console Go): Request is missing x-opencode-session and cannot be routed efficiently."}}"#;
+        let hint = derive_hint(Some(400), body).expect("hint");
+        assert!(hint.contains("x-opencode-session"));
+        assert!(hint.contains("session_id"));
+    }
+
+    #[test]
+    fn hint_for_unsupported_model_does_not_blame_the_api_key() {
+        // OpenCode Go returns this with HTTP 401, which would otherwise hit the
+        // key rule and send the user off to reissue a perfectly good key.
+        let body = r#"{"type":"error","error":{"type":"ModelError","message":"Model claude-sonnet-4-5 is not supported"}}"#;
+        let hint = derive_hint(Some(401), body).expect("hint");
+        assert!(hint.contains("/models"), "hint should point at the catalogue: {hint}");
+        assert!(
+            !hint.contains("revoked"),
+            "a model error must not be reported as a key problem: {hint}"
+        );
     }
 
     #[test]

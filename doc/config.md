@@ -89,6 +89,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 | `prompt_cache` | bool | `false` (**claude only**) | No | Opt-in Anthropic prompt caching (`cache_control` on system / tools / conversation tail). See §11 |
 | `persistent_session` | bool | `false` (**opencode local only**) | No | Opt-in: reuse one OpenCode server session across turns. See §11 |
 | `api` | string | `"openai"` (**opencode cloud only**) | No | Cloud wire format: `"openai"` → `{base}/chat/completions`; `"anthropic"` → `{base}/messages`. Pair with the matching `base_url` (e.g. `https://opencode.ai/zen/go/v1`) |
+| `session_id` | string | generated per process (**opencode cloud only**) | No | The `x-opencode-session` id sent with every cloud request. OpenCode Go rejects requests without one; agent-cli generates a stable `ses_<ulid>` per agent, so set this only to pin one id across restarts |
 | `request_timeout_secs` | int | `900` | No | Total HTTP timeout incl. streaming |
 | `temperature` | float | Backend default | No | Sampling temperature. When omitted, the field is left out of the request entirely and the backend's own default applies. A persona's `temperature` overrides this for the agent that loads it |
 | `max_retries` | int | `3` (**ollama only**) | No | Retry count for transient failures (retryable HTTP status, timeout, connection error). Other backends do not retry |
@@ -117,7 +118,7 @@ Per-backend defaults:
 | codex | `gpt-4.1` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | ollama | `glm-5.1:cloud` | `http://127.0.0.1:11434` | (not needed) |
 | opencode | `claude-sonnet-4-5` | `http://127.0.0.1:4096` (local) / `https://opencode.ai/zen/v1` (when key set) | (none = local; set = cloud, e.g. `OPENCODE_API_KEY`) |
-| opencode-go | `claude-sonnet-4-5` | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
+| opencode-go | `qwen3.8-max` (also defaults `api = "openai"`) | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
 | llama.cpp | `default` | `http://127.0.0.1:8080` | (optional) |
 
 ### `[provider.claude-code]`
@@ -158,7 +159,7 @@ Two consequences worth knowing before choosing a mode:
   Control permissions with `permission_mode` / `tools` / `allowed_tools` /
   `disallowed_tools`.
 
-`opencode` runs in two modes selected by **API-key presence**: no resolved key → **local** mode against a running `opencode serve` (native session API); key resolved → **cloud** mode against OpenCode Zen (OpenAI-compatible). `opencode-go` is a convenience alias that sets `base_url` to the Go endpoint, `api` to `"anthropic"`, and `api_key_env` to `"OPENCODE_API_KEY"`. It still uses `[provider.opencode]` for overrides. See [`doc/providers/opencode.md`](providers/opencode.md).
+`opencode` runs in two modes selected by **API-key presence**: no resolved key → **local** mode against a running `opencode serve` (native session API); key resolved → **cloud** mode against OpenCode Zen (OpenAI-compatible). `opencode-go` is a convenience alias that sets `base_url` to the Go endpoint, `api` to `"openai"`, `model` to one the Go endpoint serves, and `api_key_env` to `"OPENCODE_API_KEY"`. It still uses `[provider.opencode]` for overrides. See [`doc/providers/opencode.md`](providers/opencode.md).
 
 ### `[runtime]`
 

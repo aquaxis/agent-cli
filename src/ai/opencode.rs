@@ -6,9 +6,11 @@
 //!   selected by `[provider.opencode] api`: `"openai"` (default) →
 //!   `POST {base_url}/chat/completions` (`[DONE]` SSE); `"anthropic"` →
 //!   `POST {base_url}/messages` (Anthropic SSE, reuses the Claude parser).
-//!   `Authorization: Bearer <key>` either way. Default cloud `base_url` is
-//!   `https://opencode.ai/zen/v1` (use `https://opencode.ai/zen/go/v1` for
-//!   the "go" endpoints).
+//!   `Authorization: Bearer <key>` either way, plus a stable
+//!   `x-opencode-session` (required by the Go endpoints, which otherwise answer
+//!   HTTP 400 `MissingSessionID`) and a `User-Agent: agent-cli/<version>`.
+//!   Default cloud `base_url` is `https://opencode.ai/zen/v1` (use
+//!   `https://opencode.ai/zen/go/v1` for the "go" endpoints).
 //! * **Local (`opencode serve`)** — when no API key is resolved. Performs the
 //!   native session handshake: `POST /session` then `POST /session/:id/message`
 //!   which returns a synchronous JSON body `{ info, parts }`. No auth header.
@@ -61,6 +63,24 @@ impl CloudApi {
     }
 }
 
+/// A cloud request, fully built and ready to be handed to `reqwest`.
+pub(crate) struct CloudRequest {
+    pub url: String,
+    pub headers: Vec<(&'static str, String)>,
+    pub body: Value,
+}
+
+#[cfg(test)]
+impl CloudRequest {
+    /// Look up a header value by (lowercase) name.
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
 /// Cloud endpoint URL for `base` under the selected API style.
 fn cloud_url(base: &str, api: CloudApi) -> String {
     format!("{}{}", base.trim_end_matches('/'), api.path())
@@ -87,6 +107,13 @@ pub struct OpenCodeProvider {
     pub persistent_session: bool,
     /// Cloud wire format (OpenAI vs Anthropic compatible). Local mode ignores.
     pub(crate) cloud_api: CloudApi,
+    /// Stable conversation id sent as `x-opencode-session` on **cloud**
+    /// requests. OpenCode Go rejects a request without it (HTTP 400
+    /// `MissingSessionID`); the rest of Zen uses it for routing and
+    /// prompt-cache affinity. Unrelated to `PersistState::id`, which is an
+    /// OpenCode **server** session created by the local handshake and never
+    /// sent to a gateway.
+    pub(crate) session_id: String,
     pub client: reqwest::Client,
     pub context: ProviderContext,
     /// Persistent-session bookkeeping. `tokio::sync::Mutex` because it is
@@ -118,6 +145,14 @@ impl OpenCodeProvider {
             .model
             .clone()
             .unwrap_or_else(|| "claude-sonnet-4-5".to_string());
+        // One id per provider, i.e. per agent process: stable across the turns
+        // of a conversation, distinct between agents. Not reset by `/clear` —
+        // it is a routing key, not conversation state, and re-minting it would
+        // discard the gateway's prompt cache for no gain.
+        let session_id = entry
+            .session_id
+            .clone()
+            .unwrap_or_else(|| format!("ses_{}", ulid::Ulid::new().to_string().to_lowercase()));
         // See ollama.rs — default 900s for streaming reasoning models.
         let client_timeout = entry.request_timeout_secs.unwrap_or(900);
         let client = reqwest::Client::builder()
@@ -130,6 +165,7 @@ impl OpenCodeProvider {
             temperature: entry.temperature,
             persistent_session: entry.persistent_session.unwrap_or(false),
             cloud_api: CloudApi::parse(entry.api.as_deref()),
+            session_id,
             client,
             context,
             session: tokio::sync::Mutex::new(PersistState::default()),
@@ -148,6 +184,77 @@ impl OpenCodeProvider {
             .with_context(&self.context)
             .detect_hint()
             .into_app_error()
+    }
+
+    /// Everything about a cloud request that does not need the network: URL,
+    /// headers and JSON body. Extracted from the two `complete_stream_cloud_*`
+    /// methods so the wire — in particular `x-opencode-session` — can be
+    /// asserted by a test instead of read off the code.
+    pub(crate) fn build_cloud_request(
+        &self,
+        api: CloudApi,
+        messages: &[Message],
+        tools: &[ToolSpec],
+    ) -> CloudRequest {
+        let mut headers: Vec<(&'static str, String)> =
+            vec![("content-type", "application/json".to_string())];
+        let body = match api {
+            CloudApi::OpenAi => {
+                let mut body = json!({
+                    "model": self.model,
+                    "stream": true,
+                    "messages": to_openai_messages(messages),
+                });
+                if !tools.is_empty() {
+                    body["tools"] = Value::Array(to_openai_tools(tools));
+                }
+                body
+            }
+            CloudApi::Anthropic => {
+                let (system, msgs) = to_anthropic_messages(messages);
+                let mut body = json!({
+                    "model": self.model,
+                    "max_tokens": 1024,
+                    "stream": true,
+                    "messages": msgs,
+                });
+                if let Some(sys) = system {
+                    body["system"] = Value::String(sys);
+                }
+                if !tools.is_empty() {
+                    body["tools"] = Value::Array(to_anthropic_tools(tools));
+                }
+                headers.push(("anthropic-version", "2023-06-01".to_string()));
+                body
+            }
+        };
+        let mut body = body;
+        if let Some(t) = self.temperature {
+            body["temperature"] = json!(t);
+        }
+        if let Some(key) = &self.api_key {
+            headers.push(("authorization", format!("Bearer {key}")));
+            // Native Anthropic auth as well, for gateway compatibility.
+            if api == CloudApi::Anthropic {
+                headers.push(("x-api-key", key.clone()));
+            }
+        }
+        // Required by OpenCode Go, which answers HTTP 400 `MissingSessionID`
+        // without it. Sent on every cloud request rather than only on a URL
+        // that looks like a Go endpoint: a Go host behind a proxy would defeat
+        // sniffing, and a stable id is what the rest of Zen wants too.
+        headers.push(("x-opencode-session", self.session_id.clone()));
+        // OpenCode asks clients to identify themselves rather than arrive under
+        // an HTTP library's default agent string.
+        headers.push((
+            "user-agent",
+            format!("agent-cli/{}", env!("CARGO_PKG_VERSION")),
+        ));
+        CloudRequest {
+            url: cloud_url(&self.base_url, api),
+            headers,
+            body,
+        }
     }
 
     /// Cloud (OpenCode Zen) dispatcher — picks the OpenAI- or
@@ -170,25 +277,10 @@ impl OpenCodeProvider {
         messages: &[Message],
         tools: &[ToolSpec],
     ) -> Result<EventStream<'_>> {
-        let mut body = json!({
-            "model": self.model,
-            "stream": true,
-            "messages": to_openai_messages(messages),
-        });
-        if !tools.is_empty() {
-            body["tools"] = Value::Array(to_openai_tools(tools));
-        }
-        if let Some(t) = self.temperature {
-            body["temperature"] = json!(t);
-        }
-        let url = cloud_url(&self.base_url, CloudApi::OpenAi);
-        let mut req = self
-            .client
-            .post(url)
-            .header("content-type", "application/json")
-            .json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
+        let request = self.build_cloud_request(CloudApi::OpenAi, messages, tools);
+        let mut req = self.client.post(&request.url).json(&request.body);
+        for (name, value) in &request.headers {
+            req = req.header(*name, value);
         }
         let resp = req.send().await?;
         if !resp.status().is_success() {
@@ -239,31 +331,10 @@ impl OpenCodeProvider {
         messages: &[Message],
         tools: &[ToolSpec],
     ) -> Result<EventStream<'_>> {
-        let (system, msgs) = to_anthropic_messages(messages);
-        let mut body = json!({
-            "model": self.model,
-            "max_tokens": 1024,
-            "stream": true,
-            "messages": msgs,
-        });
-        if let Some(sys) = system {
-            body["system"] = Value::String(sys);
-        }
-        if !tools.is_empty() {
-            body["tools"] = Value::Array(to_anthropic_tools(tools));
-        }
-        if let Some(t) = self.temperature {
-            body["temperature"] = json!(t);
-        }
-        let url = cloud_url(&self.base_url, CloudApi::Anthropic);
-        let mut req = self
-            .client
-            .post(url)
-            .header("content-type", "application/json")
-            .header("anthropic-version", "2023-06-01")
-            .json(&body);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key).header("x-api-key", key);
+        let request = self.build_cloud_request(CloudApi::Anthropic, messages, tools);
+        let mut req = self.client.post(&request.url).json(&request.body);
+        for (name, value) in &request.headers {
+            req = req.header(*name, value);
         }
         let resp = req.send().await?;
         if !resp.status().is_success() {
@@ -818,6 +889,188 @@ impl Provider for OpenCodeProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Provider built from a TOML fragment, without touching the environment.
+    /// `api_key` is set directly so cloud-mode requests can be asserted without
+    /// depending on a process-wide variable.
+    fn provider(toml_src: &str) -> OpenCodeProvider {
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        OpenCodeProvider::from_config(&cfg, &ConfigSource::default()).unwrap()
+    }
+
+    fn cloud_provider(toml_src: &str) -> OpenCodeProvider {
+        let mut p = provider(toml_src);
+        p.api_key = Some("test-key".to_string());
+        p
+    }
+
+    const GO_CONFIG: &str = r#"
+[provider]
+kind = "opencode"
+
+[provider.opencode]
+base_url = "https://opencode.ai/zen/go/v1"
+model    = "qwen3.8-max"
+"#;
+
+    fn user_msg(text: &str) -> Message {
+        Message::User {
+            content: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn cloud_openai_request_carries_session_and_user_agent() {
+        let p = cloud_provider(GO_CONFIG);
+        let req = p.build_cloud_request(CloudApi::OpenAi, &[user_msg("hi")], &[]);
+        assert_eq!(req.url, "https://opencode.ai/zen/go/v1/chat/completions");
+        assert_eq!(req.header("x-opencode-session"), Some(p.session_id.as_str()));
+        assert_eq!(
+            req.header("user-agent"),
+            Some(format!("agent-cli/{}", env!("CARGO_PKG_VERSION")).as_str())
+        );
+        // Unchanged from before the session header was added.
+        assert_eq!(req.header("content-type"), Some("application/json"));
+        assert_eq!(req.header("authorization"), Some("Bearer test-key"));
+        assert_eq!(req.header("x-api-key"), None);
+        assert_eq!(req.header("anthropic-version"), None);
+        assert_eq!(req.body["model"], json!("qwen3.8-max"));
+        assert_eq!(req.body["stream"], json!(true));
+    }
+
+    #[test]
+    fn cloud_anthropic_request_carries_session_and_user_agent() {
+        let p = cloud_provider(GO_CONFIG);
+        let req = p.build_cloud_request(CloudApi::Anthropic, &[user_msg("hi")], &[]);
+        assert_eq!(req.url, "https://opencode.ai/zen/go/v1/messages");
+        assert_eq!(req.header("x-opencode-session"), Some(p.session_id.as_str()));
+        assert_eq!(
+            req.header("user-agent"),
+            Some(format!("agent-cli/{}", env!("CARGO_PKG_VERSION")).as_str())
+        );
+        // Unchanged: both auth headers and the version, for gateway compatibility.
+        assert_eq!(req.header("authorization"), Some("Bearer test-key"));
+        assert_eq!(req.header("x-api-key"), Some("test-key"));
+        assert_eq!(req.header("anthropic-version"), Some("2023-06-01"));
+        assert_eq!(req.body["max_tokens"], json!(1024));
+    }
+
+    #[test]
+    fn session_id_is_stable_across_requests_and_unique_per_provider() {
+        let p = cloud_provider(GO_CONFIG);
+        let a = p.build_cloud_request(CloudApi::OpenAi, &[user_msg("one")], &[]);
+        let b = p.build_cloud_request(CloudApi::Anthropic, &[user_msg("two")], &[]);
+        assert_eq!(a.header("x-opencode-session"), b.header("x-opencode-session"));
+
+        let other = cloud_provider(GO_CONFIG);
+        assert_ne!(
+            p.session_id, other.session_id,
+            "two agents must not share a session id"
+        );
+        assert!(p.session_id.starts_with("ses_"));
+    }
+
+    #[test]
+    fn configured_session_id_is_used_verbatim() {
+        let p = cloud_provider(
+            r#"
+[provider]
+kind = "opencode"
+
+[provider.opencode]
+base_url   = "https://opencode.ai/zen/go/v1"
+session_id = "ses_pinned_by_user"
+"#,
+        );
+        let req = p.build_cloud_request(CloudApi::OpenAi, &[user_msg("hi")], &[]);
+        assert_eq!(req.header("x-opencode-session"), Some("ses_pinned_by_user"));
+    }
+
+    #[test]
+    fn keyless_provider_sends_no_authorization() {
+        // No `api_key_env` => local mode; the cloud builder is never reached,
+        // but if it were it must not invent an auth header.
+        let p = provider("[provider]\nkind = \"opencode\"\n\n[provider.opencode]\n");
+        let req = p.build_cloud_request(CloudApi::OpenAi, &[user_msg("hi")], &[]);
+        assert_eq!(req.header("authorization"), None);
+        assert!(p.api_key.is_none(), "no api_key_env resolves to local mode");
+    }
+
+    /// Accept one HTTP request on an ephemeral port, return its header block,
+    /// and answer with an empty JSON body. Used to observe what actually goes
+    /// on the wire, which is the only way to prove a *negative* about the local
+    /// handshake (it must send neither new header).
+    fn capture_one_request(listener: std::net::TcpListener) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{}",
+            );
+            let _ = stream.flush();
+            raw
+        })
+    }
+
+    #[tokio::test]
+    async fn local_request_sends_neither_session_header_nor_agent_cli_user_agent() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let captured = capture_one_request(listener);
+
+        let p = provider(&format!(
+            "[provider]\nkind = \"opencode\"\n\n[provider.opencode]\nbase_url = \"http://127.0.0.1:{port}\"\n"
+        ));
+        // Local handshake: `POST /session` is the first request. The canned
+        // reply is not a valid session, so the call fails afterwards — the
+        // headers of that first request are what this test is about.
+        let _ = p.complete_stream(&[user_msg("hi")], &[]).await;
+
+        let raw = captured.join().unwrap().to_ascii_lowercase();
+        assert!(raw.starts_with("post /session"), "unexpected request: {raw}");
+        assert!(
+            !raw.contains("x-opencode-session"),
+            "local mode must not send the gateway session header: {raw}"
+        );
+        assert!(
+            !raw.contains("agent-cli/"),
+            "local mode keeps the default user agent: {raw}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cloud_request_puts_the_session_header_on_the_wire() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let captured = capture_one_request(listener);
+
+        let p = cloud_provider(&format!(
+            "[provider]\nkind = \"opencode\"\n\n[provider.opencode]\nbase_url = \"http://127.0.0.1:{port}/v1\"\n"
+        ));
+        let expected = p.session_id.clone();
+        let _ = p.complete_stream(&[user_msg("hi")], &[]).await;
+
+        let raw = captured.join().unwrap();
+        let lower = raw.to_ascii_lowercase();
+        assert!(
+            lower.starts_with("post /v1/chat/completions"),
+            "unexpected request: {raw}"
+        );
+        assert!(
+            lower.contains(&format!("x-opencode-session: {expected}")),
+            "session header missing from the wire: {raw}"
+        );
+        assert!(
+            lower.contains(&format!(
+                "user-agent: agent-cli/{}",
+                env!("CARGO_PKG_VERSION")
+            )),
+            "user agent missing from the wire: {raw}"
+        );
+    }
 
     fn collect_cloud(frames: &[&str]) -> Vec<ProviderEvent> {
         let mut state = OpenCodeParseState::default();

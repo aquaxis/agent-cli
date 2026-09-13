@@ -10,6 +10,11 @@ selected automatically by **API-key presence**:
   endpoint `POST {base_url}/chat/completions` (SSE, `[DONE]`,
   `Authorization: Bearer`). Default cloud `base_url` `https://opencode.ai/zen/v1`.
 
+Cloud requests also carry a stable **`x-opencode-session`** id and a
+`User-Agent: agent-cli/<version>`. The Go endpoints **require** the session
+header — without it they answer `HTTP 400 MissingSessionID` and never reach a
+model. See [Session id](#session-id-x-opencode-session) below.
+
 ## Prerequisites
 
 - **Local:** install OpenCode and run `opencode serve` (listens on
@@ -41,14 +46,45 @@ kind = "opencode"
 
 [provider.opencode]
 base_url    = "https://opencode.ai/zen/go/v1"
-api         = "anthropic"
+api         = "openai"
 api_key_env = "OPENCODE_API_KEY"
-model       = "claude-sonnet-4-5"
+model       = "qwen3.8-max"
 ```
 
 You can still override individual defaults by setting them explicitly in
 `[provider.opencode]`. Using `kind = "opencode-go"` also works with
 `--provider opencode-go` on the command line.
+
+**The Go catalogue is open-weight models only.** No `claude-*` id is served on
+`https://opencode.ai/zen/go/v1` — those live on `https://opencode.ai/zen/v1`.
+List what an endpoint actually serves with `GET {base_url}/models`; an id it
+does not serve comes back as `ModelError`. The default above was served at the
+time of writing, but the catalogue is the vendor's and changes.
+
+### Session id (`x-opencode-session`)
+
+OpenCode asks clients to send a **stable session id per conversation** so it can
+route requests and reuse its prompt cache, and the Go endpoints enforce it:
+
+```
+HTTP 400
+{"type":"error","error":{"type":"MissingSessionID","message":"Error from
+provider (Console Go): Request is missing x-opencode-session and cannot be
+routed efficiently."}}
+```
+
+`agent-cli` generates one `ses_<ulid>` per agent process and sends it on every
+cloud request — stable across the turns of a conversation, distinct between
+agents, and not reset by `/clear` (it is a routing key, not conversation
+state). Nothing needs configuring. To pin one id across restarts:
+
+```toml
+[provider.opencode]
+session_id = "ses_my_stable_id"
+```
+
+This is unrelated to `persistent_session`, which is a session on a **local**
+`opencode serve` (see below); local-mode requests carry no session header.
 
 ### Local mode:
 
@@ -90,7 +126,7 @@ endpoint:
 base_url    = "https://opencode.ai/zen/go/v1"   # → POST .../zen/go/v1/messages
 api         = "anthropic"
 api_key_env = "OPENCODE_API_KEY"
-model       = "claude-sonnet-4-5"               # a model the endpoint serves
+model       = "qwen3.8-max"                     # a model the endpoint serves
 ```
 
 OpenAI-compatible "go" endpoint: same but `api = "openai"` (or omit) →
@@ -154,6 +190,8 @@ means the backend is healthy.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
+| `HTTP 400 MissingSessionID` | The endpoint requires `x-opencode-session`, which older agent-cli builds did not send | Upgrade agent-cli. A pinned id can be set with `session_id` |
+| `ModelError: Model ... is not supported` (arrives as 401) | The id is not in that endpoint's catalogue — e.g. a `claude-*` model on the Go endpoint | Pick an id from `GET {base_url}/models`. Ignore any "API key invalid" hint on this one; the `detail:` body is authoritative |
 | Connection refused (local) | `opencode serve` not running | Start the server; verify `base_url` / port |
 | `HTTP 401` (cloud) | Key missing/expired | Set/refresh the `api_key_env` variable |
 | Unexpectedly using cloud | `api_key_env` resolves to a value | Unset it (or omit) for local mode |

@@ -56,14 +56,17 @@
   `[provider.opencode] api`: `"openai"` (default) →
   `POST {base_url}/chat/completions` (SSE, `[DONE]`); `"anthropic"` →
   `POST {base_url}/messages` (Anthropic SSE). Pair with the matching
-  `base_url`, e.g. the "go" endpoints `https://opencode.ai/zen/go/v1`. See
-  [`doc/providers/opencode.md`](doc/providers/opencode.md).
+  `base_url`, e.g. the "go" endpoints `https://opencode.ai/zen/go/v1`. Cloud
+  requests carry a stable `x-opencode-session` id, which the Go endpoints
+  require. See [`doc/providers/opencode.md`](doc/providers/opencode.md).
 
 **`opencode-go`** is a convenience alias for OpenCode with Go-specific defaults
 already filled in. Set `kind = "opencode-go"` and `api_key_env` only — the
-`base_url` (`https://opencode.ai/zen/go/v1`), `api` (`"anthropic"`), and
-`model` (`claude-sonnet-4-5`) are auto-populated. You can still override any
-field in `[provider.opencode]`. See the configuration example below.
+`base_url` (`https://opencode.ai/zen/go/v1`), `api` (`"openai"`), and
+`model` (`qwen3.8-max`) are auto-populated. The Go endpoint serves open-weight
+models only (`claude-*` is on `.../zen/v1`); list what it serves with
+`GET {base_url}/models`. You can still override any field in
+`[provider.opencode]`. See the configuration example below.
 
 **`claude-code`** runs the Claude Code CLI installed on the machine and adapts
 it to the provider interface, so `agent-cli` wraps it with personas, peer IPC,
