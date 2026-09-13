@@ -131,6 +131,12 @@ color            = "auto"
 mouse_scroll     = true
 # Lines of output kept for scrolling back (0 disables the wheel scrollback).
 scrollback_lines = 2000
+# Drag over the log to select it; releasing copies the selection as plain text.
+# Shift-drag still gives the terminal its own selection.
+mouse_select     = true
+# Where a copied selection goes. Empty = the terminal's own clipboard via OSC 52
+# (works over SSH); set a command to pipe it instead, e.g. "wl-copy".
+copy_command     = ""
 
 [spawn]
 # How many live children the `spawn` *tool* may give one agent (0 disables it).
@@ -565,15 +571,27 @@ pub struct UiConfig {
     #[serde(default = "default_color")]
     pub color: String,
     /// Scroll the session log with the mouse wheel, keeping the prompt line
-    /// pinned where it is. While this is on the terminal reports wheel and
-    /// click events to agent-cli, so its own scrollback and text selection
-    /// need the usual `Shift` override; turning it off restores them.
+    /// pinned where it is. While this is on the terminal reports wheel, click
+    /// and drag events to agent-cli: the wheel scrolls, dragging selects the
+    /// log (`mouse_select`), and the terminal's own scrollback and selection
+    /// stay available under its usual `Shift` override. Turning it off hands
+    /// the mouse back to the terminal entirely.
     #[serde(default = "default_mouse_scroll")]
     pub mouse_scroll: bool,
     /// Lines of session output kept for scrolling back. `0` keeps none, which
     /// also disables the wheel scrollback.
     #[serde(default = "default_scrollback_lines")]
     pub scrollback_lines: usize,
+    /// Select a range of the session log by dragging with the left mouse
+    /// button, and copy it on release. Only has an effect while `mouse_scroll`
+    /// is on — that is what puts the mouse in agent-cli's hands.
+    #[serde(default = "default_mouse_select")]
+    pub mouse_select: bool,
+    /// Command the selected text is piped to instead of being written to the
+    /// terminal as OSC 52 — e.g. `"wl-copy"` or `"xclip -selection clipboard"`.
+    /// Empty (the default) uses OSC 52, which also works over SSH.
+    #[serde(default)]
+    pub copy_command: String,
 }
 
 impl Default for UiConfig {
@@ -584,6 +602,8 @@ impl Default for UiConfig {
             color: default_color(),
             mouse_scroll: default_mouse_scroll(),
             scrollback_lines: default_scrollback_lines(),
+            mouse_select: default_mouse_select(),
+            copy_command: String::new(),
         }
     }
 }
@@ -598,6 +618,10 @@ fn default_show_progress() -> bool {
 
 fn default_color() -> String {
     "auto".to_string()
+}
+
+fn default_mouse_select() -> bool {
+    true
 }
 
 fn default_mouse_scroll() -> bool {
@@ -973,6 +997,28 @@ pub(crate) fn tests_default_config() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_selection_keys_default_to_on_and_the_terminals_own_clipboard() {
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert!(cfg.ui.mouse_select, "selecting the log is on by default");
+        assert_eq!(cfg.ui.copy_command, "", "OSC 52 unless a command is named");
+        // Absent from an older config file: the defaults still apply.
+        let bare: Config =
+            toml::from_str("[provider]\nkind = \"claude\"\n\n[ui]\nmouse_scroll = true\n").unwrap();
+        assert!(bare.ui.mouse_select);
+        assert_eq!(bare.ui.copy_command, "");
+    }
+
+    #[test]
+    fn ui_selection_keys_parse() {
+        let cfg: Config = toml::from_str(
+            "[provider]\nkind = \"claude\"\n\n[ui]\nmouse_select = false\ncopy_command = \"wl-copy\"\n",
+        )
+        .unwrap();
+        assert!(!cfg.ui.mouse_select);
+        assert_eq!(cfg.ui.copy_command, "wl-copy");
+    }
 
     #[test]
     fn local_path_in_found_only_when_file_exists() {

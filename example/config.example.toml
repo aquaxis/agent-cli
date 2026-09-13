@@ -164,11 +164,21 @@ show_progress    = true
 # Colour the output: "auto" (terminals only, honours NO_COLOR) / "always" / "never".
 color            = "auto"
 # Scroll the session log with the mouse wheel, keeping the prompt line pinned.
-# While this is on the terminal reports mouse events to agent-cli, so selecting
-# text needs the usual Shift override.
+# While this is on the terminal reports mouse events to agent-cli: the wheel
+# scrolls, dragging selects (mouse_select below), and the terminal's own
+# selection is still there under its usual Shift override.
 mouse_scroll     = true
 # Lines of output kept for scrolling back (0 disables the wheel scrollback).
 scrollback_lines = 2000
+# Drag over the log to select a range; releasing copies it as plain text, with
+# colours stripped and the terminal's wrapping undone.
+mouse_select     = true
+# Where a copied selection goes. Empty = written to the terminal as OSC 52, so
+# it lands on the clipboard of the machine you are looking at, SSH included.
+# Set a command to pipe the text to instead:
+# copy_command = "wl-copy"                       # Wayland
+# copy_command = "xclip -selection clipboard"    # X11
+copy_command     = ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Spawn: how far an agent may go in creating agents of its own. These bound the

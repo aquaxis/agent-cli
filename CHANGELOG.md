@@ -4,6 +4,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.19.0]
+
+### Added
+
+- Select a range of the session log with the mouse and **copy it to the clipboard**.
+  - Press the left button over the log and drag: the range is highlighted as you go, and releasing copies it. It works in the live view and while scrolled back, and the prompt keeps its text, its cursor and its editability throughout.
+  - What lands on the clipboard is **plain text**: the colours are stripped and the terminal's wrapping is undone, so a line that took three rows on screen pastes as the one line it was. Several lines paste as several lines.
+  - The text travels by **OSC 52**, so it reaches the clipboard of the machine you are *looking at* — over SSH and from inside a container, where a clipboard helper on the far end would be useless. Inside tmux the sequence is wrapped in tmux's passthrough automatically. `[ui] copy_command` pipes the text to a command (`wl-copy`, `xclip -selection clipboard`) instead, for terminals that refuse OSC 52.
+  - One line reports the outcome — `[clip] copied 3 lines (214 bytes) to the clipboard via osc52` — never the text itself. A click copies nothing and says so. A selection over ~74 KB is **refused with its limit named** rather than truncated: OSC 52 is fire-and-forget, so a half-copy would be indistinguishable from a whole one, and a failing `copy_command` is reported rather than silently retried through the terminal.
+  - `[ui] mouse_select = false` keeps the wheel scrollback and leaves dragging to the terminal; `[ui] mouse_scroll = false` still turns off all of it. `Shift`-drag is untouched and still gives the terminal's own selection.
+  - This is what mouse reporting had taken away: it has been on for the whole session since v0.14.0 so the wheel could scroll, which meant a drag never reached the terminal. Four documents told the user to hold `Shift` and left it there; they now describe the selection agent-cli makes itself, with `Shift` as the terminal's override rather than the only way.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/usage.md`, `doc/config.md`, `doc/architecture.md`, `doc/troubleshooting.md`, `example/config.example.toml`, the `DEFAULT_CONFIG` template and the REPL's `/help`.
+
 ## [0.18.0]
 
 ### Fixed
