@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.18.0]
+
 ### Fixed
 
 - OpenCode Go was unreachable. The Go endpoints now require every request to carry a stable `x-opencode-session` header so the gateway can route it and reuse its prompt cache; agent-cli sent none, so *every* Go request came back `HTTP 400 MissingSessionID` before a model was reached — both wire formats, every model, with a valid key. Cloud requests now carry a `ses_<ulid>` minted per agent process (stable across a conversation, distinct between agents, pinnable with `[provider.opencode] session_id`), plus the `User-Agent: agent-cli/<version>` OpenCode asks clients to identify themselves with. Local mode is unchanged and sends neither.
