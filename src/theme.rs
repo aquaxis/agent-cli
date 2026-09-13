@@ -55,6 +55,10 @@ pub enum Role {
     Failure,
     /// `[info]` and `[auto]` notices.
     Info,
+    /// The span of the session log currently under a mouse selection. Reverse
+    /// video rather than a colour, so it reads as "selected" on top of whatever
+    /// colour the selected text already has.
+    Selection,
     /// Anything asking the user to answer: `[tool approval]` and `approve?`.
     Confirm,
     /// `[cancelled]`.
@@ -81,6 +85,7 @@ pub enum Role {
 fn sgr(role: Role) -> (Option<u8>, &'static [u8]) {
     const BOLD: &[u8] = &[1];
     const DIM: &[u8] = &[2];
+    const REVERSE: &[u8] = &[7];
     const NONE: &[u8] = &[];
 
     const RED: u8 = 31;
@@ -104,6 +109,7 @@ fn sgr(role: Role) -> (Option<u8>, &'static [u8]) {
         Role::Success => (Some(GREEN), BOLD),
         Role::Failure => (Some(RED), BOLD),
         Role::Info => (Some(BLUE), NONE),
+        Role::Selection => (None, REVERSE),
         Role::Confirm => (Some(YELLOW), BOLD),
         Role::Cancelled => (Some(BRIGHT_BLACK), DIM),
         Role::Hint => (Some(YELLOW), NONE),
@@ -260,9 +266,11 @@ impl Default for Theme {
 }
 
 /// Remove every SGR (colour/attribute) sequence, leaving the printable text and
-/// any other escape sequence — cursor moves and erases — in place. Test-only:
-/// it lets an assertion separate "what was drawn" from "how it was coloured".
-#[cfg(test)]
+/// any other escape sequence — cursor moves and erases — in place.
+///
+/// Two callers: a test assertion separating "what was drawn" from "how it was
+/// coloured", and [`crate::select`], which must not put an escape sequence on
+/// the clipboard.
 pub(crate) fn strip_sgr(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;

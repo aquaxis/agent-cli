@@ -134,6 +134,13 @@ pub(crate) struct ReplState {
     /// is recorded, whether mouse reporting is enabled at the prompt, and
     /// whether the wheel does anything.
     scroll: bool,
+    /// `[ui] mouse_select`: whether dragging the left button over the log
+    /// selects it and copies on release. Only reachable while `scroll` is on,
+    /// which is what makes the terminal report the drag to us at all.
+    mouse_select: bool,
+    /// `[ui] copy_command`: where a copied selection is sent. Empty means the
+    /// terminal's own clipboard, through OSC 52.
+    copy_command: String,
 }
 
 const HISTORY_LIMIT: usize = 200;
@@ -361,6 +368,8 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         theme,
         shell: config.shell.clone(),
         scroll: scroll_enabled,
+        mouse_select: config.ui.mouse_select,
+        copy_command: config.ui.copy_command.clone(),
     });
 
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
@@ -1146,6 +1155,10 @@ struct ScrollOverlay {
     view: crate::scroll::ScrollView,
     /// The alternate screen is currently ours.
     active: bool,
+    /// The drag in progress, if any. It lives here because the overlay is what
+    /// draws the body rows, so the highlight costs no change to any signature
+    /// between the input loop and `draw_scroll_overlay`.
+    selection: Option<crate::select::Selection>,
     /// When the screen was last drawn, so a running turn's pinned spinner can
     /// be refreshed without repainting on every 50ms poll.
     last_draw: std::time::Instant,
@@ -1165,6 +1178,7 @@ impl ScrollOverlay {
         Self {
             view: crate::scroll::ScrollView::default(),
             active: false,
+            selection: None,
             last_draw: std::time::Instant::now(),
         }
     }
@@ -1177,6 +1191,35 @@ impl ScrollOverlay {
     /// Whether the view has moved off the bottom of the log.
     fn view_active(&self) -> bool {
         self.view.is_active()
+    }
+
+    /// Whether a drag is in progress. The overlay owns the screen while one is,
+    /// even at the bottom of the log, because the live screen cannot be
+    /// repainted with a highlight on it.
+    fn has_selection(&self) -> bool {
+        self.selection.is_some()
+    }
+
+    /// Start a drag at `at`, on whatever the view is showing now.
+    fn begin_selection(&mut self, at: crate::select::Point) {
+        self.selection = Some(crate::select::Selection::begin(at, self.view.offset()));
+    }
+
+    /// Move the loose end of the drag. Returns whether anything moved, so a
+    /// burst of drag reports costs one repaint.
+    fn extend_selection(&mut self, to: crate::select::Point) -> bool {
+        match self.selection.as_mut() {
+            Some(sel) if sel.cursor != to => {
+                sel.extend(to);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// End the drag and hand back what was selected.
+    fn take_selection(&mut self) -> Option<crate::select::Selection> {
+        self.selection.take()
     }
 
     /// A wheel report: move the view by one notch. Returns whether the screen
@@ -1208,6 +1251,7 @@ impl ScrollOverlay {
     /// call it without checking first.
     fn leave(&mut self, stdout: &mut std::io::Stdout) {
         self.view.reset();
+        self.selection = None;
         if !self.active {
             return;
         }
@@ -1236,6 +1280,51 @@ enum ScrollBottom<'a> {
         suggestion: Option<&'a str>,
     },
     Status(String),
+}
+
+/// Rows the pinned bottom block occupies: the spinner's single row while a turn
+/// runs, the prompt block otherwise. The suggestion row is not counted — it
+/// only shifts the clamp by one row.
+fn bottom_block_rows(prompt_state: &PromptState, input_state: &InputState, width: usize) -> u16 {
+    if prompt_state.is_pending() {
+        return 1;
+    }
+    let p = if prompt_state.is_awaiting_approval() {
+        APPROVAL_PROMPT
+    } else {
+        PROMPT
+    };
+    let prompt_cols = crate::editor::str_display_width(p);
+    prompt_block_rows(
+        prompt_cols,
+        input_state.display_cursor(),
+        prompt_cols + input_state.display_width(),
+        0,
+        width,
+    )
+}
+
+/// The body rows a screen of `body` rows shows at `offset`, padded at the top
+/// so that index *i* is screen row *i*.
+///
+/// A log shorter than the screen sits against the bottom block, where it would
+/// be on a terminal that has not scrolled yet; the padding rows are empty, so a
+/// selection over them contributes nothing. Drawing and copying share this so
+/// the highlight and the clipboard can never disagree about which row is which.
+fn body_slice_at(width: usize, body: usize, offset: usize) -> Vec<crate::scroll::Row> {
+    let rows = crate::scroll::with(|t| crate::scroll::marked_rows(t, width, body, offset))
+        .unwrap_or_default();
+    let top = body.saturating_sub(rows.len());
+    let mut out = Vec::with_capacity(body);
+    out.resize(
+        top,
+        crate::scroll::Row {
+            text: String::new(),
+            continues: false,
+        },
+    );
+    out.extend(rows);
+    out
 }
 
 /// Draw the scrolled screen: the transcript slice for the current offset, one
@@ -1273,21 +1362,27 @@ fn draw_scroll_overlay(
         ScrollBottom::Status(_) => 1,
     };
     let body = crate::scroll::body_rows(height, bottom_rows);
-    let rows = crate::scroll::with(|t| {
-        crate::scroll::visible_rows(t, width, body, overlay.view.offset())
-    })
-    .unwrap_or_default();
-    // A log shorter than the screen sits against the bottom block, where it
-    // would be on a terminal that has not scrolled yet.
-    let top = body.saturating_sub(rows.len());
+    let rows = body_slice_at(width, body, overlay.view.offset());
+    // A drag made on a different offset describes rows that are no longer
+    // there, so it is not drawn over the ones that are.
+    let selection = overlay
+        .selection
+        .filter(|sel| sel.offset == overlay.view.offset());
     for r in 0..body {
         let _ = crossterm::queue!(
             stdout,
             MoveTo(0, r as u16),
             terminal::Clear(ClearType::UntilNewLine)
         );
-        if let Some(line) = r.checked_sub(top).and_then(|i| rows.get(i)) {
-            let _ = crossterm::queue!(stdout, Print(line));
+        if let Some(row) = rows.get(r) {
+            let painted = match selection.as_ref().and_then(|sel| {
+                let w = crate::editor::str_display_width(&crate::theme::strip_sgr(&row.text));
+                crate::select::row_span(sel, r, w)
+            }) {
+                Some(span) => std::borrow::Cow::Owned(crate::select::highlight(&row.text, span)),
+                None => std::borrow::Cow::Borrowed(row.text.as_str()),
+            };
+            let _ = crossterm::queue!(stdout, Print(painted));
         }
     }
     let _ = crossterm::queue!(stdout, MoveTo(0, body as u16));
@@ -1741,6 +1836,9 @@ async fn run_input_loop_raw(
                 // Set by a wheel report that moved the view, so a burst of
                 // notches is drawn once, after the whole drain.
                 let mut scroll_dirty = false;
+                // Set by a finished drag, reported once the screen is back the
+                // way the user expects it.
+                let mut copied: Option<crate::clip::Outcome> = None;
                 while event::poll(Duration::from_millis(0)).unwrap_or(false) {
                     let ct_event = event::read();
                     if let Ok(CtEvent::Mouse(mouse_event)) = &ct_event {
@@ -1760,26 +1858,8 @@ async fn run_input_loop_raw(
                                 crossterm::event::MouseEventKind::ScrollUp
                             );
                             let width = PromptRenderer::terminal_width();
-                            // The rows left for the log once the bottom block
-                            // is pinned. The suggestion row is not counted: it
-                            // only shifts the clamp by one row.
-                            let bottom_rows = if prompt_state.is_pending() {
-                                1
-                            } else {
-                                let p = if prompt_state.is_awaiting_approval() {
-                                    APPROVAL_PROMPT
-                                } else {
-                                    PROMPT
-                                };
-                                let prompt_cols = crate::editor::str_display_width(p);
-                                prompt_block_rows(
-                                    prompt_cols,
-                                    input_state.display_cursor(),
-                                    prompt_cols + input_state.display_width(),
-                                    0,
-                                    width,
-                                )
-                            };
+                            let bottom_rows =
+                                bottom_block_rows(&prompt_state, &input_state, width);
                             let body = crate::scroll::body_rows(terminal_height(), bottom_rows);
                             if overlay.wheel(up, width, body) {
                                 scroll_dirty = true;
@@ -1811,6 +1891,77 @@ async fn run_input_loop_raw(
                             };
                             if hit {
                                 lock_indicator(&state.indicator).toggle_expanded();
+                                continue;
+                            }
+                            // Not the indicator: fall through, so a drag that
+                            // starts on the log during a turn still selects.
+                        }
+                        // Dragging the left button over the log selects it and
+                        // copies on release. `Shift` is left to the terminal:
+                        // its own selection is the override users already know,
+                        // and a terminal that reports a shifted drag must not
+                        // have it taken away here.
+                        if state.scroll
+                            && state.mouse_select
+                            && !mouse_event
+                                .modifiers
+                                .contains(KeyModifiers::SHIFT)
+                        {
+                            use crossterm::event::{MouseButton, MouseEventKind};
+                            let width = PromptRenderer::terminal_width();
+                            let bottom_rows = bottom_block_rows(
+                                &prompt_state,
+                                &input_state,
+                                width,
+                            );
+                            let body =
+                                crate::scroll::body_rows(terminal_height(), bottom_rows);
+                            let row = mouse_event.row as usize;
+                            let col = mouse_event.column as usize;
+                            match mouse_event.kind {
+                                MouseEventKind::Down(MouseButton::Left) if row < body => {
+                                    // A press on the log starts a drag; one on
+                                    // the pinned prompt block starts nothing.
+                                    overlay.begin_selection(crate::select::Point::new(row, col));
+                                    scroll_dirty = true;
+                                    continue;
+                                }
+                                MouseEventKind::Drag(MouseButton::Left)
+                                    if overlay.has_selection() =>
+                                {
+                                    // Clamped so dragging past the edge of the
+                                    // log selects to the edge rather than into
+                                    // the prompt.
+                                    let at = crate::select::Point::new(
+                                        row.min(body.saturating_sub(1)),
+                                        col.min(width),
+                                    );
+                                    if overlay.extend_selection(at) {
+                                        scroll_dirty = true;
+                                    }
+                                    continue;
+                                }
+                                MouseEventKind::Up(MouseButton::Left)
+                                    if overlay.has_selection() =>
+                                {
+                                    if let Some(sel) = overlay.take_selection() {
+                                        let rows = body_slice_at(width, body, sel.offset);
+                                        let text = crate::select::selected_text(&rows, &sel);
+                                        copied = Some(crate::clip::copy(
+                                            &text,
+                                            &state.copy_command,
+                                            |seq| {
+                                                use std::io::Write as _;
+                                                let mut err = std::io::stderr();
+                                                err.write_all(seq.as_bytes())?;
+                                                err.flush()
+                                            },
+                                        ));
+                                    }
+                                    scroll_dirty = true;
+                                    continue;
+                                }
+                                _ => {}
                             }
                         }
                         continue;
@@ -2052,7 +2203,7 @@ async fn run_input_loop_raw(
                 // as it is), redraw, or give it back once the view is at the
                 // bottom again.
                 if scroll_dirty {
-                    if overlay.view_active() {
+                    if overlay.view_active() || overlay.has_selection() {
                         if !overlay.is_active() {
                             lock_indicator(&state.indicator).suspend();
                             renderer.clear_block(&mut stdout);
@@ -2093,6 +2244,32 @@ async fn run_input_loop_raw(
                         &input_state,
                     )
                     .await;
+                }
+                // What a finished drag copied. Reported after the screen has
+                // been restored, so the line lands in the log rather than on a
+                // screen that is about to be redrawn over it.
+                if let Some(outcome) = copied {
+                    let role = if outcome.is_failure() {
+                        Role::Failure
+                    } else {
+                        Role::Info
+                    };
+                    let msg = format!("[clip] {}", outcome.message());
+                    renderer.clear_block(&mut stdout);
+                    raw_eprintln(true, &state.theme.err(role, &msg));
+                    if !prompt_state.is_pending() {
+                        renderer.reset();
+                        render_prompt(
+                            &mut overlay,
+                            &mut renderer,
+                            &mut stdout,
+                            if prompt_state.is_awaiting_approval() { Role::Confirm } else { Role::PromptSymbol },
+                            if prompt_state.is_awaiting_approval() { APPROVAL_PROMPT } else { PROMPT },
+                            &state,
+                            &input_state,
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -3418,6 +3595,9 @@ async fn handle_repl_command(
             raw_println(raw_mode, "                              shown on the row above the prompt.");
             raw_println(raw_mode, "  Mouse wheel                 Scroll back through this session's log with the prompt");
             raw_println(raw_mode, "                              line pinned; Esc or scrolling to the bottom returns.");
+            raw_println(raw_mode, "  Mouse drag                  Select a range of the log; releasing copies it to the");
+            raw_println(raw_mode, "                              clipboard as plain text. Shift-drag selects with the");
+            raw_println(raw_mode, "                              terminal instead ([ui] mouse_select, copy_command).");
             raw_println(raw_mode, "  Esc                         Stop a running turn or shell command; at the tool-approval");
             raw_println(raw_mode, "                              prompt, deny the pending tool.");
             raw_println(raw_mode, "");
@@ -3963,6 +4143,8 @@ mod tests {
             theme: Theme::plain(),
             shell: crate::config::ShellConfig::default(),
             scroll: false,
+            mouse_select: true,
+            copy_command: String::new(),
         })
     }
 
@@ -4751,6 +4933,72 @@ mod tests {
             "already at the bottom: nothing to redraw"
         );
         crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn the_body_slice_puts_screen_row_and_slice_index_on_the_same_number() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        crate::scroll::record_line("first");
+        crate::scroll::record_line("second");
+
+        // A log shorter than the body sits against the bottom block, so the
+        // rows above it are empty padding — and index 8 is screen row 8.
+        let rows = body_slice_at(80, 10, 0);
+        assert_eq!(rows.len(), 10);
+        assert!(rows[..8].iter().all(|r| r.text.is_empty()), "padded at the top");
+        assert_eq!(rows[8].text, "first");
+        assert_eq!(rows[9].text, "second");
+
+        // Selecting over the padding copies nothing; selecting the two real
+        // rows copies exactly them.
+        let mut sel = crate::select::Selection::begin(crate::select::Point::new(0, 0), 0);
+        sel.extend(crate::select::Point::new(7, 40));
+        assert_eq!(crate::select::selected_text(&rows, &sel), "");
+        sel.extend(crate::select::Point::new(9, 6));
+        assert_eq!(crate::select::selected_text(&rows, &sel), "first\nsecond");
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn a_selection_copies_the_line_the_terminal_wrapped_as_one_line() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        crate::scroll::record_line("abcdefghij");
+
+        // At ten columns the line is one row; at four it is three, and the
+        // selection has to put it back together.
+        let wide = body_slice_at(10, 1, 0);
+        let mut all = crate::select::Selection::begin(crate::select::Point::new(0, 0), 0);
+        all.extend(crate::select::Point::new(0, 10));
+        assert_eq!(crate::select::selected_text(&wide, &all), "abcdefghij");
+
+        let narrow = body_slice_at(4, 3, 0);
+        assert_eq!(narrow.len(), 3);
+        assert!(narrow[1].continues && narrow[2].continues, "wrapped rows");
+        let mut over_all = crate::select::Selection::begin(crate::select::Point::new(0, 0), 0);
+        over_all.extend(crate::select::Point::new(2, 4));
+        assert_eq!(
+            crate::select::selected_text(&narrow, &over_all),
+            "abcdefghij",
+            "the wrap is undone"
+        );
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn the_overlay_owns_the_screen_while_a_drag_is_live_even_at_the_bottom() {
+        let mut overlay = ScrollOverlay::new();
+        assert!(!overlay.has_selection());
+        overlay.begin_selection(crate::select::Point::new(2, 3));
+        assert!(overlay.has_selection());
+        assert!(!overlay.view_active(), "a drag does not move the view");
+        // A drag report that does not move costs no repaint.
+        assert!(overlay.extend_selection(crate::select::Point::new(4, 5)));
+        assert!(!overlay.extend_selection(crate::select::Point::new(4, 5)));
+        let sel = overlay.take_selection().expect("the finished drag");
+        assert_eq!(sel.normalised().1, crate::select::Point::new(4, 5));
+        assert!(!overlay.has_selection(), "taken once");
     }
 
     #[test]

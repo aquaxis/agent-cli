@@ -228,6 +228,45 @@ Behaviour below was observed with Claude Code `2.1.233`.
 
 ## REPL Issues
 
+### Nothing is pasted after selecting the log with the mouse
+
+- agent-cli copies by writing the **OSC 52** escape sequence to your terminal.
+  Not every terminal accepts it, and several need it enabled first: xterm wants
+  `allowWindowOps` (or `disallowedWindowOps` without `SetSelection`), and a few
+  emulators have a "clipboard write" or "OSC 52" permission setting. The
+  `[clip]` line saying `via osc52` means agent-cli *sent* it — the sequence is
+  fire-and-forget, so a terminal that ignores it looks exactly like a success.
+- **Inside tmux** the sequence is wrapped in tmux's passthrough automatically,
+  but tmux itself must allow it: `set -g allow-passthrough on`, and
+  `set -g set-clipboard on` for it to reach the outer terminal.
+- **The way round it** is to pipe the text to a clipboard command instead:
+
+  ```toml
+  [ui]
+  copy_command = "wl-copy"                      # Wayland
+  # copy_command = "xclip -selection clipboard" # X11
+  ```
+
+  Note that a command copies into the clipboard of the machine agent-cli runs
+  on, which over SSH is not the machine you are looking at — that is exactly
+  the case OSC 52 exists for.
+- `[clip] copy failed via <command>` means the command itself failed; the exit
+  status and its first line of stderr are in the message. agent-cli does not
+  fall back to OSC 52 there, so a broken setting cannot look like a success.
+
+### A selection copied nothing, or less than expected
+
+- `[clip] nothing selected` is a click rather than a drag: press, move, then
+  release.
+- Only what the transcript still holds can be selected — `[ui] scrollback_lines`
+  (2000 by default) — and the prompt line and the running turn's spinner are not
+  part of the log.
+- A selection larger than ~74 KB is **refused**, not truncated: the escape
+  sequence has a size ceiling and a half-copy would be indistinguishable from a
+  whole one. Select less, or set `copy_command`, which has no such limit.
+- Dragging does nothing at all with `[ui] mouse_select = false` or
+  `[ui] mouse_scroll = false`, and when stdin or stderr is not a terminal.
+
 ### `/quit` or `/exit` doesn't terminate
 
 - This was a bug in older versions. The current version (fixed in T-504) reliably exits within 1 second via either `/quit` or `/exit`.

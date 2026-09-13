@@ -92,7 +92,7 @@ impl Transcript {
     }
 
     /// Lines currently held. The display reads the transcript through
-    /// [`visible_rows`], which counts wrapped rows, so the line count is only
+    /// [`marked_rows`], which counts wrapped rows, so the line count is only
     /// ever asked for in tests.
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -113,7 +113,7 @@ impl Transcript {
 /// Only sequences ending in `m` are colours; a cursor move or an erase is part
 /// of the drawing and is left to be treated as text (the transcript never
 /// contains one, since only finished messages are recorded).
-fn sgr_at(s: &str) -> Option<(usize, bool)> {
+pub(crate) fn sgr_at(s: &str) -> Option<(usize, bool)> {
     let body = s.strip_prefix("\u{1b}[")?;
     let end = body.find(|c: char| !c.is_ascii_digit() && c != ';')?;
     if body.as_bytes()[end] != b'm' {
@@ -192,18 +192,34 @@ pub fn max_offset(t: &Transcript, cols: usize, rows: usize) -> usize {
     total_rows(t, cols).saturating_sub(rows)
 }
 
+/// One drawn row, and whether it is the continuation of the row above it.
+///
+/// The screen shows wrapped rows; a selection copied off it has to put the
+/// wrapping back the way it found it, so a row remembers whether the line it
+/// belongs to started here or further up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    pub text: String,
+    /// `true` when this row is the tail of a line that began on an earlier row.
+    pub continues: bool,
+}
+
 /// The last `want` wrapped rows of the transcript, in order. Walks backwards
 /// and stops as soon as it has enough, so a screenful costs a screenful of
 /// wrapping however long the session has been.
-fn tail_rows(t: &Transcript, cols: usize, want: usize) -> Vec<String> {
+fn tail_rows(t: &Transcript, cols: usize, want: usize) -> Vec<Row> {
     if want == 0 || cols == 0 {
         return Vec::new();
     }
-    let mut out: Vec<String> = Vec::with_capacity(want);
+    let mut out: Vec<Row> = Vec::with_capacity(want);
     for line in t.lines().rev() {
-        let mut rows = wrap_styled(line, cols);
-        while let Some(row) = rows.pop() {
-            out.push(row);
+        let rows = wrap_styled(line, cols);
+        // Walking backwards, every row but the first of a line continues it.
+        for (i, row) in rows.into_iter().enumerate().rev() {
+            out.push(Row {
+                text: row,
+                continues: i > 0,
+            });
             if out.len() >= want {
                 out.reverse();
                 return out;
@@ -215,9 +231,10 @@ fn tail_rows(t: &Transcript, cols: usize, want: usize) -> Vec<String> {
 }
 
 /// The transcript rows a screen of `rows` rows shows at `offset` — the slice
-/// ending `offset` wrapped rows above the end of the transcript. Fewer rows are
-/// returned when the transcript is shorter than the screen.
-pub fn visible_rows(t: &Transcript, cols: usize, rows: usize, offset: usize) -> Vec<String> {
+/// ending `offset` wrapped rows above the end of the transcript, each row
+/// carrying whether it continues the line above it. Fewer rows are returned
+/// when the transcript is shorter than the screen.
+pub fn marked_rows(t: &Transcript, cols: usize, rows: usize, offset: usize) -> Vec<Row> {
     if rows == 0 {
         return Vec::new();
     }
@@ -339,6 +356,14 @@ mod tests {
     use super::*;
     use crate::editor::str_display_width;
     use crate::theme::{paint, strip_sgr, Role};
+
+    /// The drawn text of the slice, which is what most assertions are about.
+    fn texts(t: &Transcript, cols: usize, rows: usize, offset: usize) -> Vec<String> {
+        marked_rows(t, cols, rows, offset)
+            .into_iter()
+            .map(|r| r.text)
+            .collect()
+    }
 
     fn transcript(lines: &[&str]) -> Transcript {
         let mut t = Transcript::new(100);
@@ -466,23 +491,23 @@ mod tests {
     }
 
     #[test]
-    fn visible_rows_returns_the_slice_ending_offset_rows_above_the_end() {
+    fn the_visible_slice_ends_offset_rows_above_the_end() {
         let t = transcript(&["a", "b", "c", "d", "e"]);
-        assert_eq!(visible_rows(&t, 80, 3, 0), vec!["c", "d", "e"]);
-        assert_eq!(visible_rows(&t, 80, 3, 1), vec!["b", "c", "d"]);
-        assert_eq!(visible_rows(&t, 80, 3, 2), vec!["a", "b", "c"]);
+        assert_eq!(texts(&t, 80, 3, 0), vec!["c", "d", "e"]);
+        assert_eq!(texts(&t, 80, 3, 1), vec!["b", "c", "d"]);
+        assert_eq!(texts(&t, 80, 3, 2), vec!["a", "b", "c"]);
         // Past the start there is simply less to show.
-        assert_eq!(visible_rows(&t, 80, 3, 4), vec!["a"]);
-        assert!(visible_rows(&t, 80, 0, 0).is_empty());
+        assert_eq!(texts(&t, 80, 3, 4), vec!["a"]);
+        assert!(texts(&t, 80, 0, 0).is_empty());
     }
 
     #[test]
-    fn visible_rows_counts_wrapped_rows_not_lines() {
+    fn the_visible_slice_counts_wrapped_rows_not_lines() {
         let t = transcript(&["abcdef", "gh"]);
         // At 3 columns the first line is two rows: "abc", "def".
         assert_eq!(total_rows(&t, 3), 3);
-        assert_eq!(visible_rows(&t, 3, 2, 0), vec!["def", "gh"]);
-        assert_eq!(visible_rows(&t, 3, 2, 1), vec!["abc", "def"]);
+        assert_eq!(texts(&t, 3, 2, 0), vec!["def", "gh"]);
+        assert_eq!(texts(&t, 3, 2, 1), vec!["abc", "def"]);
     }
 
     #[test]
@@ -547,9 +572,9 @@ mod tests {
     #[test]
     fn a_width_change_reflows_the_view() {
         let t = transcript(&["aaaaaaaaaa"]);
-        assert_eq!(visible_rows(&t, 10, 5, 0), vec!["aaaaaaaaaa"]);
+        assert_eq!(texts(&t, 10, 5, 0), vec!["aaaaaaaaaa"]);
         assert_eq!(
-            visible_rows(&t, 4, 5, 0),
+            texts(&t, 4, 5, 0),
             vec!["aaaa", "aaaa", "aa"],
             "the same line reflows when the terminal narrows"
         );

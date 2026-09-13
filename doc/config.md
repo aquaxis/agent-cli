@@ -263,6 +263,8 @@ provider    = "tavily"
 | `color` | string | `"auto"` | Colour the output: `"auto"` (colour a stream only when it is an interactive terminal and `NO_COLOR` is unset), `"always"`, `"never"`. See "UI Display Mode" below |
 | `mouse_scroll` | bool | `true` | Scroll the session log with the mouse wheel, keeping the prompt line pinned. Only active when stdin and stderr are both terminals; see "UI Display Mode" below |
 | `scrollback_lines` | integer | `2000` | Lines of session output kept for scrolling back. `0` keeps none, which also disables the wheel scrollback |
+| `mouse_select` | bool | `true` | Drag the left button over the log to select it; the selection is copied to the clipboard on release. Only active while `mouse_scroll` is on |
+| `copy_command` | string | `""` | Command a copied selection is piped to (e.g. `"wl-copy"`, `"xclip -selection clipboard"`). Empty writes it to the terminal as OSC 52, which works over SSH |
 
 ### `[shell]`
 
@@ -656,9 +658,11 @@ stdout and stderr are decided independently, so `agent-cli run > answer.txt` sta
 
 | Setting | Behavior |
 |----|------|
-| `mouse_scroll = true` (default) | The terminal reports mouse events to agent-cli for the whole session, the wheel scrolls the log, and a click still expands the reasoning block during a turn. Selecting text with the mouse needs your terminal's override, usually `Shift` |
+| `mouse_scroll = true` (default) | The terminal reports mouse events to agent-cli for the whole session: the wheel scrolls the log, dragging selects it (`mouse_select`), and a click still expands the reasoning block during a turn. Your terminal's own selection stays available under its override, usually `Shift` |
 | `mouse_scroll = false` | No mouse reporting at the prompt and no wheel scrollback; the wheel, selection and the terminal's own scrollback behave exactly as they did before the feature existed |
 | `scrollback_lines` | How many lines of output are kept to scroll back over. `0` keeps none and disables the feature as completely as `mouse_scroll = false` |
+| `mouse_select = true` (default) | Dragging the left button over the log selects it and copies the selection on release. `false` keeps the wheel but leaves dragging to the terminal |
+| `copy_command` | Where a copied selection goes. Empty (the default) writes it to the terminal as OSC 52, which works over SSH; set it to a command — `"wl-copy"`, `"xclip -selection clipboard"` — and the text is piped to that instead |
 
 Like the progress indicator, the scrollback needs stdin **and** stderr to be interactive terminals: with piped or redirected output, and in `agent-cli serve`, no transcript is kept and nothing changes. The keyboard is untouched — `↑` / `↓` stay on the input history and the arrows stay in the line being edited.
 
