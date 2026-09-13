@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.19.0]
+
 ### Added
 
 - Select a range of the session log with the mouse and **copy it to the clipboard**.
