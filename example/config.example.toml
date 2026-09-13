@@ -63,9 +63,14 @@ thinking    = true
 # # Cloud mode (OpenCode Zen / Go): a resolved api_key_env selects cloud mode.
 # base_url    = "https://opencode.ai/zen/go/v1"
 # api_key_env = "OPENCODE_API_KEY"
-# model       = "claude-sonnet-4-5"
+# # Go serves open-weight models only (claude-* is on .../zen/v1, not /zen/go/v1).
+# # List what an endpoint serves with GET {base_url}/models.
+# model       = "qwen3.8-max"
 # # Wire format: "openai" (default, /chat/completions) or "anthropic" (/messages).
 # api = "openai"
+# # Cloud only: the x-opencode-session id sent with every request. Generated per
+# # process when unset — set it only to pin one id across restarts.
+# session_id = "ses_my_stable_id"
 # # Opt-in (local mode only): reuse one server session across turns.
 # persistent_session = true
 

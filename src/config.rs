@@ -60,15 +60,20 @@ base_url = "http://127.0.0.1:4096"
 # api_key_env = "OPENCODE_API_KEY"
 # base_url    = "https://opencode.ai/zen/v1"
 # --- Cloud mode (OpenCode Go) ---
-# Shortcut: set kind = "opencode-go" above — base_url, api, and
+# Shortcut: set kind = "opencode-go" above — base_url, api, model and
 # api_key_env are auto-populated. Or set them manually:
 # api_key_env = "OPENCODE_API_KEY"
 # base_url    = "https://opencode.ai/zen/go/v1"
-# api         = "anthropic"
+# api         = "openai"
+# Go serves open-weight models only; list them with GET {base_url}/models.
+# model       = "qwen3.8-max"
 # Cloud wire format: "openai" (default, /chat/completions) or
 # "anthropic" (/messages). Use the matching base_url (e.g. the "go" endpoints
 # https://opencode.ai/zen/go/v1).
 # api = "anthropic"
+# Cloud only: the x-opencode-session id sent with every request. Generated
+# per process when unset — set it only to pin one id across restarts.
+# session_id = "ses_my_stable_id"
 # Opt-in (local mode only): reuse one server session across turns.
 # persistent_session = true
 
@@ -244,6 +249,12 @@ pub struct ProviderEntry {
     /// `None`/absent => disabled (ephemeral session per turn, unchanged).
     #[serde(default)]
     pub persistent_session: Option<bool>,
+    /// opencode **cloud** mode only: pin the `x-opencode-session` id sent with
+    /// every request. `None`/absent => a stable random `ses_<ulid>` per
+    /// process, which is what the gateway wants (one id per conversation).
+    /// Set it only to keep one id across restarts.
+    #[serde(default)]
+    pub session_id: Option<String>,
     /// opencode **cloud** mode only: wire format / endpoint to use.
     /// `"openai"` (default) → OpenAI-compatible `{base}/chat/completions`;
     /// `"anthropic"` → Anthropic-compatible `{base}/messages`. Ignored in
@@ -927,6 +938,12 @@ impl Config {
     /// the `[provider.opencode]` entry (filling `None` fields) and normalize
     /// the kind to `"opencode"`. When the kind is not `"opencode-go"`, this is
     /// a no-op.
+    ///
+    /// The Go endpoint serves open-weight models only — no `claude-*` id is
+    /// available there (those live on `https://opencode.ai/zen/v1`), and their
+    /// ids are published in OpenAI shape. `model` is one confirmed served by
+    /// `GET https://opencode.ai/zen/go/v1/models` on 2026-09-13; the catalogue
+    /// is the vendor's, so check that endpoint if a model error appears.
     pub fn apply_opencode_go_defaults(&mut self) {
         if self.provider.kind != "opencode-go" {
             return;
@@ -936,10 +953,10 @@ impl Config {
             entry.base_url = Some("https://opencode.ai/zen/go/v1".to_string());
         }
         if entry.api.is_none() {
-            entry.api = Some("anthropic".to_string());
+            entry.api = Some("openai".to_string());
         }
         if entry.model.is_none() {
-            entry.model = Some("claude-sonnet-4-5".to_string());
+            entry.model = Some("qwen3.8-max".to_string());
         }
         if entry.api_key_env.is_none() {
             entry.api_key_env = Some("OPENCODE_API_KEY".to_string());
@@ -1633,8 +1650,8 @@ api_key_env = "OPENCODE_API_KEY"
         assert_eq!(cfg.provider.kind, "opencode");
         let entry = cfg.provider.opencode.as_ref().unwrap();
         assert_eq!(entry.base_url.as_deref(), Some("https://opencode.ai/zen/go/v1"));
-        assert_eq!(entry.api.as_deref(), Some("anthropic"));
-        assert_eq!(entry.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(entry.api.as_deref(), Some("openai"));
+        assert_eq!(entry.model.as_deref(), Some("qwen3.8-max"));
         assert_eq!(entry.api_key_env.as_deref(), Some("OPENCODE_API_KEY"));
     }
 
@@ -1649,9 +1666,41 @@ kind = "opencode-go"
         assert_eq!(cfg.provider.kind, "opencode");
         let entry = cfg.provider.opencode.as_ref().unwrap();
         assert_eq!(entry.base_url.as_deref(), Some("https://opencode.ai/zen/go/v1"));
-        assert_eq!(entry.api.as_deref(), Some("anthropic"));
-        assert_eq!(entry.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(entry.api.as_deref(), Some("openai"));
+        assert_eq!(entry.model.as_deref(), Some("qwen3.8-max"));
         assert_eq!(entry.api_key_env.as_deref(), Some("OPENCODE_API_KEY"));
+    }
+
+    #[test]
+    fn apply_opencode_go_defaults_model_is_served_by_the_go_endpoint() {
+        // The Go endpoint serves open-weight models only; a `claude-*` default
+        // cannot complete a turn there ("Model ... is not supported").
+        let mut cfg: Config = toml::from_str("[provider]\nkind = \"opencode-go\"\n").unwrap();
+        cfg.apply_opencode_go_defaults();
+        let entry = cfg.provider.opencode.as_ref().unwrap();
+        let model = entry.model.as_deref().unwrap();
+        assert!(
+            !model.starts_with("claude-"),
+            "go default model must not be a claude-* id, got {model}"
+        );
+    }
+
+    #[test]
+    fn opencode_session_id_parses_and_defaults_to_none() {
+        let toml_src = r#"
+[provider]
+kind = "opencode"
+
+[provider.opencode]
+session_id = "ses_pinned"
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        assert_eq!(
+            cfg.provider.opencode.as_ref().unwrap().session_id.as_deref(),
+            Some("ses_pinned")
+        );
+        let bare: Config = toml::from_str("[provider]\nkind = \"opencode\"\n\n[provider.opencode]\n").unwrap();
+        assert!(bare.provider.opencode.as_ref().unwrap().session_id.is_none());
     }
 
     #[test]

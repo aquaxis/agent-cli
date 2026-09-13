@@ -4,6 +4,14 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenCode Go was unreachable. The Go endpoints now require every request to carry a stable `x-opencode-session` header so the gateway can route it and reuse its prompt cache; agent-cli sent none, so *every* Go request came back `HTTP 400 MissingSessionID` before a model was reached — both wire formats, every model, with a valid key. Cloud requests now carry a `ses_<ulid>` minted per agent process (stable across a conversation, distinct between agents, pinnable with `[provider.opencode] session_id`), plus the `User-Agent: agent-cli/<version>` OpenCode asks clients to identify themselves with. Local mode is unchanged and sends neither.
+- The `opencode-go` shortcut pointed at a model the Go endpoint does not serve. Go's catalogue is open-weight models only — `claude-*` is on `.../zen/v1`, not `.../zen/go/v1` — so the defaults now resolve to `api = "openai"` and a served model instead of `api = "anthropic"` / `claude-sonnet-4-5`. Configs that set `api` or `model` explicitly are unaffected; those that did not could not complete a turn.
+- A model the endpoint does not serve was reported as a revoked API key. `ModelError` arrives with HTTP 401, which hit the key hint; it now points at `GET {base_url}/models`, and a missing session id explains itself instead of arriving hintless.
+  - Verified against a **v0.17.0** binary as the control: the config that fails there with `400 MissingSessionID` completes a full five-stage `selftest` on both wire formats here, and a bare `kind = "opencode-go"` config works with no edits. Non-Go Zen and local mode produce identical output on both binaries.
+  - Docs updated: `README.md`, `README_ja.md`, `doc/providers/opencode.md`, `doc/config.md`, `doc/troubleshooting.md`, `example/config.example.toml`.
+
 ## [0.17.0]
 
 ### Fixed
