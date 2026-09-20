@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use crate::ipc::{client, registry, IpcMessage};
 /// running in its own session (FR-04 – FR-07).
 pub async fn spawn(cfg: &Config, source: &ConfigSource, args: RunArgs) -> Result<()> {
     // A human started this one, so it is the root of its own tree.
-    let entry = spawn_detached(&source.path, &cfg.registry_dir()?, &args, &[]).await?;
+    let entry = spawn_detached(source.chain(), &cfg.registry_dir()?, &args, &[]).await?;
     println!(
         "spawned detached agent: id={} name={} pid={} socket={}",
         entry.id,
@@ -26,11 +26,18 @@ pub async fn spawn(cfg: &Config, source: &ConfigSource, args: RunArgs) -> Result
     Ok(())
 }
 
-/// Spawn `current_exe() --config <config_path> serve <passthrough run args>`
+/// Spawn `current_exe() --config <layer>… serve <passthrough run args>`
 /// detached from this process and wait (bounded) for it to self-register.
 ///
+/// **Every layer of the parent's config chain is passed, lowest first.** Handing
+/// the child only the top layer would drop the user-level base, and with it any
+/// `[permissions] deny` set machine-wide — a detached agent running under weaker
+/// rules than the agent that spawned it. The paths are absolute, so the child
+/// reconstructs the same configuration regardless of the working directory it
+/// inherits.
+///
 /// The child shares this process's `registry_dir` (it is launched with the same
-/// config file), so it is immediately a discoverable peer. It is launched with a
+/// config files), so it is immediately a discoverable peer. It is launched with a
 /// **double fork**: the intermediate process `setsid`s and `_exit`s, so the real
 /// `serve` process is reparented to init — it survives the launcher's exit,
 /// `Ctrl+C`, and terminal hang-up, and it never lingers as a zombie under a
@@ -41,7 +48,7 @@ pub async fn spawn(cfg: &Config, source: &ConfigSource, args: RunArgs) -> Result
 /// own chain plus the creator itself. Empty means a human started this peer
 /// directly, which makes it the root of its own tree.
 pub async fn spawn_detached(
-    config_path: &Path,
+    config_chain: &[PathBuf],
     registry_dir: &Path,
     args: &RunArgs,
     ancestors: &[crate::id::AgentId],
@@ -57,7 +64,10 @@ pub async fn spawn_detached(
         .collect();
 
     let mut cmd = std::process::Command::new(&exe);
-    cmd.arg("--config").arg(config_path).arg("serve");
+    for layer in config_chain {
+        cmd.arg("--config").arg(layer);
+    }
+    cmd.arg("serve");
     if let Some(name) = &args.name {
         cmd.arg("--name").arg(name);
     }
@@ -460,8 +470,19 @@ pub async fn mcp_list(cfg: &Config) -> Result<()> {
 
 pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
     let mut all_ok = true;
-    println!("[doctor] config path     : {}", source.path.display());
+    // The whole chain, lowest priority first. A value that surprises someone is
+    // usually a value from a layer they forgot they had.
+    for (i, path) in source.chain().iter().enumerate() {
+        let rank = if i + 1 == source.chain().len() {
+            "config path     "
+        } else {
+            "config base     "
+        };
+        let state = if path.exists() { "" } else { "  (absent)" };
+        println!("[doctor] {rank}: {}{state}", path.display());
+    }
     println!("[doctor] config explicit : {}", source.from_explicit);
+    report_permissions(cfg);
 
     // MCP servers check (fail-soft: a bad server is reported here but never
     // aborts startup — see `mcp::connect_all`).
@@ -1106,10 +1127,30 @@ pub fn config_show(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Print the permission rules and every warning they produced.
+///
+/// A rule that does not do what its author expected is the failure mode this
+/// feature has to make diagnosable, so the warnings are reported here as well
+/// as at startup.
+fn report_permissions(cfg: &Config) {
+    let ruleset = crate::permissions::Ruleset::from_config(&cfg.permissions);
+    println!(
+        "[doctor] permissions     : {} deny, {} allow, default_mode = {}",
+        ruleset.deny_len(),
+        ruleset.allow_len(),
+        ruleset.default_mode(),
+    );
+    for warning in ruleset.warnings() {
+        println!("[doctor]   warning: {warning}");
+    }
+}
+
+/// Open the highest-priority layer — the project file when there is one, since
+/// that is the file an edit in this directory is meant to change.
 pub fn config_edit(source: &ConfigSource) -> Result<()> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
     let status = std::process::Command::new(editor)
-        .arg(&source.path)
+        .arg(source.path())
         .status()?;
     if !status.success() {
         return Err(AppError::Other("editor exited with non-zero status".into()));

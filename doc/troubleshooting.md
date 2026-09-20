@@ -44,9 +44,79 @@ When using the Anthropic Claude backend, you may see a multi-line message like t
 
 ### Not sure which config file is being used
 
-- `agent-cli config path` prints the resolved config file path.
-- Resolution order: `--config <path>` → `AGENT_CLI_CONFIG` env var → project-local `./.agent-cli/config.toml` (only if it already exists) → default path (`$XDG_CONFIG_HOME/agent-cli/config.toml`, or `~/.config/agent-cli/config.toml` if unset).
+- `agent-cli config path` prints **every layer**, lowest priority first.
+  Configuration is layered: `$XDG_CONFIG_HOME/agent-cli/config.toml` (or
+  `~/.config/agent-cli/config.toml`) is the base, and `./.agent-cli/config.toml`
+  in the current directory overlays it key by key. `--config <path>` (or
+  `AGENT_CLI_CONFIG`) replaces the chain entirely, and is repeatable.
+- `agent-cli doctor` prints the same chain and marks any layer that is absent.
 - Provider HTTP error messages also include the resolved `config` line, so you can cross-check with `agent-cli config path` output to catch unexpected file usage.
+
+### A config value is not what the file I edited says
+
+Almost always a value coming from the *other* layer.
+
+- Run `agent-cli doctor` and read the chain. The **last** line wins for any key
+  it sets; keys it does not mention fall through to the base.
+- Tables merge recursively, so a project file setting `[provider] kind` leaves
+  your `[ui]` and `[provider.claude]` alone. Arrays are **replaced**, so
+  `[tools] enabled` in a project file is the whole tool set, not an addition.
+- The exception is `[permissions] deny` / `allow`, which **union**: a project
+  file adds to your machine-wide rules and cannot remove them. If a deny rule
+  you cannot find is firing, it is in the base layer — `/permissions` names the
+  rule.
+- If you want one file and nothing else, use `--config <path>`; a single
+  occurrence replaces the chain.
+
+### A tool call was refused with `denied by permission rule`
+
+Working as configured — the message names the rule that refused it.
+
+- `/permissions` in the REPL lists the rules in force and the config layers they
+  came from. Rules are read at startup; a change takes a restart.
+- A `deny` outranks a matching `allow`, `default_mode`, **and**
+  `auto_approve_tools` / `/auto on`. That is deliberate: a deny list a flag can
+  switch off is not a deny list. To let the call through, remove or narrow the
+  deny rule — there is no flag that overrides it.
+- Remember `deny` unions across layers, so removing it from the project file is
+  not enough if the user-level file also has it.
+
+### A permission rule is not firing
+
+- **Check the tool name.** Names are matched case-insensitively and ignoring
+  `_`, so `Bash`, `bash` and `BASH` are the same tool — but a name agent-cli
+  does not have (Claude Code's `MultiEdit`, say) matches nothing. That produces
+  a startup warning; `/permissions` and `agent-cli doctor` repeat it.
+- **Check what the tool is gated on.** Each tool has exactly one argument a
+  pattern is matched against. `glob` and `grep` are gated on `path`, never on
+  their search `pattern`; `webfetch` on the URL's host. `websearch`,
+  `list_agents`, `spawn` and `mcp__*` tools have no gated argument at all, so
+  only a bare `tool` rule applies — a pattern written against one is reported as
+  a warning because it can never match. The table is in
+  [`doc/config.md` §12](config.md#12-permissions-allow-and-deny-rules).
+- **Check the pattern shape.** `bash(git:*)` matches the command's *leading
+  words*, so it matches `git status` but not `github-cli x`. Anything without a
+  `domain:` or other `:` is a glob over the whole argument.
+- **`!<command>` is never gated.** It is your own typing, not a tool call the
+  model asked for. `[permissions] deny = ["bash(rm:*)"]` stops the model and
+  leaves `!rm` alone; use `[shell] enabled = false` to turn `!` off.
+- **The `claude-code` backend in delegation mode is out of reach.** Its tools
+  run inside Claude Code. Use that backend's own `permission_mode` /
+  `allowed_tools` / `disallowed_tools`.
+- **A rule is not a sandbox.** Only the leading words of a command are
+  inspected, so `bash(rm:*)` does not stop `/bin/rm`, `sh -c rm`,
+  `cd x && rm -rf .`, or a script that calls `rm`. If you need a boundary that
+  holds against something actively working around it, use a container.
+
+### A detached agent behaves differently from the one that spawned it
+
+A detached child inherits its parent's **whole** config chain, one `--config`
+per layer, so it should not. If it does:
+
+- Compare `agent-cli doctor` against the child's `/proc/<pid>/cmdline` — every
+  layer the parent resolved should appear there in the same order.
+- A child spawned from a session started with a single `--config` inherits only
+  that file, by design: one `--config` means that file alone.
 
 ## Ollama / llama.cpp Issues
 

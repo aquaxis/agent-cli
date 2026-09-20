@@ -103,6 +103,9 @@ pub(crate) struct ReplState {
     history: RwLock<Vec<String>>,
     /// Shared via `Arc<AtomicBool>` for `/auto on|off|status` runtime toggle (FR-04-2 / design doc 4.3A).
     auto_approve: Arc<AtomicBool>,
+    /// `[permissions]`, compiled once and shared with the agent, so
+    /// `/permissions` shows exactly the rules the agent is deciding with.
+    permissions: Arc<crate::permissions::Ruleset>,
     /// Raised by `Esc` / `Ctrl-C` during a turn and by `/cancel`; the agent task
     /// observes it at every await point and unwinds the turn.
     cancel: Arc<CancelToken>,
@@ -322,6 +325,10 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // Approval channel (FR-04-1 / design doc 4.3A). Route for agent task to request y/N from input loop.
     let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(8);
 
+    // Compiled once: a tool call costs a walk of the rule list, never a parse.
+    let permissions = Arc::new(crate::permissions::Ruleset::from_config(&config.permissions));
+    report_permission_warnings(&permissions, &theme);
+
     let initial_persona = resolution.persona.clone();
     let agent = Agent {
         id: id.clone(),
@@ -336,6 +343,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         ancestors: ancestors.clone(),
         log: Some(log),
         auto_approve: auto_approve.clone(),
+        permissions: permissions.clone(),
         cancel: cancel.clone(),
         approval_tx: Some(approval_tx),
         history,
@@ -358,6 +366,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         history_path,
         history: RwLock::new(initial_history),
         auto_approve: auto_approve.clone(),
+        permissions: permissions.clone(),
         cancel: cancel.clone(),
         suppress: suppress.clone(),
         indicator: indicator.clone(),
@@ -688,7 +697,13 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
     let history = Agent::build_initial_history(&resolution.persona);
     // A headless agent has no console to answer tool-approval prompts, so it
     // must auto-approve and never request confirmation (approval_tx: None).
+    // `[permissions] deny` is therefore the *only* thing that can stop a tool
+    // call here, which is precisely why a deny outranks auto-approval.
     let auto_approve = Arc::new(AtomicBool::new(true));
+    let permissions = Arc::new(crate::permissions::Ruleset::from_config(&config.permissions));
+    for warning in permissions.warnings() {
+        tracing::warn!(target: "permissions", "{warning}");
+    }
 
     let agent = Agent {
         id: id.clone(),
@@ -703,6 +718,7 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         ancestors: ancestors.clone(),
         log: Some(log),
         auto_approve,
+        permissions,
         // Headless: no console, so nothing ever raises this token.
         cancel: Arc::new(CancelToken::default()),
         approval_tx: None,
@@ -2563,6 +2579,68 @@ fn handle_auto_command(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
     }
 }
 
+/// Print, once at startup, everything the `[permissions]` section said that
+/// could not be honoured.
+///
+/// A rule that silently does nothing is the failure this whole feature exists
+/// to end, so these are never swallowed — not even the ones that are merely
+/// inert.
+fn report_permission_warnings(rules: &crate::permissions::Ruleset, theme: &Theme) {
+    for warning in rules.warnings() {
+        eprintln!(
+            "{}",
+            theme.err(Role::Info, &format!("[permissions] {warning}"))
+        );
+        tracing::warn!(target: "permissions", "{warning}");
+    }
+}
+
+/// `/permissions` — what the rules are, where each came from, and what happens
+/// to a call none of them matched.
+fn handle_permissions_command(state: &Arc<ReplState>, raw_mode: bool) {
+    let rules = &state.permissions;
+    let theme = &state.theme;
+    let mut out = String::new();
+
+    for (i, path) in state.config_source.chain().iter().enumerate() {
+        let rank = if i + 1 == state.config_source.chain().len() {
+            "config"
+        } else {
+            "base  "
+        };
+        let state_note = if path.exists() { "" } else { "  (absent)" };
+        out.push_str(&format!("  {rank}: {}{state_note}\n", path.display()));
+    }
+
+    if rules.is_empty() {
+        out.push_str(
+            "  no rules configured — every tool call goes to the y/N prompt\n  \
+             (add a [permissions] section to config.toml)\n",
+        );
+    } else {
+        out.push_str(&format!("  deny ({}):\n", rules.deny_len()));
+        for rule in rules.deny_rules() {
+            out.push_str(&format!("    {}\n", rule.raw));
+        }
+        out.push_str(&format!("  allow ({}):\n", rules.allow_len()));
+        for rule in rules.allow_rules() {
+            out.push_str(&format!("    {}\n", rule.raw));
+        }
+        out.push_str(&format!("  default_mode: {}\n", rules.default_mode()));
+        out.push_str(
+            "  a deny outranks an allow, the default mode, and /auto on\n",
+        );
+    }
+    for warning in rules.warnings() {
+        out.push_str(&format!("  warning: {warning}\n"));
+    }
+
+    raw_println(
+        raw_mode,
+        &theme.out(Role::Info, &format!("[permissions]\n{}", out.trim_end())),
+    );
+}
+
 fn print_prompt() {
     print!("> ");
     let _ = std::io::stdout().flush();
@@ -3285,6 +3363,7 @@ const BUILTIN_COMMANDS: &[&str] = &[
     "exit",
     "help",
     "auto",
+    "permissions",
     "clear",
     "reset",
     "history",
@@ -3583,6 +3662,7 @@ async fn handle_repl_command(
             raw_println(raw_mode, "  /clear, /reset              Clear conversation history (persona / system prompt are kept).");
             raw_println(raw_mode, "  /cancel                     Request cancel of the in-flight AI response or tool call.");
             raw_println(raw_mode, "  /auto [on|off|status]       Toggle tool-approval skip. No arg / 'status' shows current value.");
+            raw_println(raw_mode, "  /permissions                Show the [permissions] rules in force and where they came from.");
             raw_println(raw_mode, "  /commands                   List custom slash commands from .agent-cli/commands.");
             raw_println(raw_mode, "  /reload-commands            Re-scan the custom commands directory.");
             raw_println(raw_mode, "  /help                       Show this help.");
@@ -3605,6 +3685,8 @@ async fn handle_repl_command(
             raw_println(raw_mode, "  - REPL command  : /auto on  (toggleable at runtime)");
             raw_println(raw_mode, "  - CLI flag      : agent-cli run --auto-approve-tools");
             raw_println(raw_mode, "  - Config file   : [runtime] auto_approve_tools = true");
+            raw_println(raw_mode, "  None of these override a [permissions] deny rule: a deny is refused");
+            raw_println(raw_mode, "  even with /auto on. See /permissions.");
             // Custom commands section (FR-12).
             let cmds = state.commands.read().await;
             if !cmds.is_empty() {
@@ -3617,6 +3699,7 @@ async fn handle_repl_command(
             }
         }
         "auto" => handle_auto_command(arg, state, raw_mode),
+        "permissions" => handle_permissions_command(state, raw_mode),
         "clear" | "reset" => {
             // Clear conversation history (keep only system prompt).
             if input_tx.send(AgentInput::ClearHistory).await.is_err() {
@@ -3789,7 +3872,7 @@ async fn spawn_peer(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
     // The child's chain is this session's chain plus this session itself.
     let mut chain = state.ancestors.clone();
     chain.push(state.id.clone());
-    match crate::commands::spawn_detached(&state.config_source.path, &state.registry_dir, &run_args, &chain).await {
+    match crate::commands::spawn_detached(state.config_source.chain(), &state.registry_dir, &run_args, &chain).await {
         Ok(entry) => raw_println(
             raw_mode,
             &format!(
@@ -4130,13 +4213,14 @@ mod tests {
             history_path: dir.join("history.txt"),
             history: RwLock::new(Vec::new()),
             auto_approve: Arc::new(AtomicBool::new(false)),
+            permissions: Arc::new(crate::permissions::Ruleset::default()),
             cancel: Arc::new(CancelToken::default()),
             suppress: Arc::new(AtomicUsize::new(0)),
             indicator: Arc::new(std::sync::Mutex::new(StatusIndicator::disabled())),
             commands_dir: dir.to_path_buf(),
             commands: RwLock::new(Vec::new()),
             config_source: ConfigSource {
-                path: dir.join("config.toml"),
+                layers: vec![dir.join("config.toml")],
                 from_explicit: false,
             },
             group: None,

@@ -146,6 +146,33 @@ max_children = 4
 # How deep a chain of tool-spawned agents may go.
 max_depth    = 2
 
+# [permissions]
+# Per-call rules for tools the model asks to run. Whole section is optional:
+# with no rules and no default_mode, every call falls through to the y/N prompt
+# exactly as it did before this section existed.
+#
+# A rule is `tool` (every call of it) or `tool(pattern)`. Patterns come in three
+# shapes: `bash(git:*)` matches a command whose leading words are `git`;
+# `webfetch(domain:github.com)` matches the URL's host; anything else is a glob
+# over the tool's one gated argument — `command` for bash/monitor, `file_path`
+# for read/write/edit, `path` for glob/grep, `peer` for send_to/stop_agent.
+#
+# `deny` outranks `allow`, outranks `default_mode`, and outranks
+# `auto_approve_tools` / `/auto on`. A deny that a flag can switch off is not a
+# deny. These are a guardrail against mistakes, not a sandbox: `bash(rm:*)`
+# does not stop `/bin/rm`, `sh -c rm`, or `cd x && rm -rf /`.
+#
+# deny = [
+#   "bash(rm -rf ~/**)",    # unrecoverable
+#   "bash(npm publish:*)",  # a mistaken publish cannot be taken back
+#   "read(.env*)",          # secrets would land in the conversation log
+# ]
+# allow = [
+#   "bash(git:*)",
+#   "read(**)",
+# ]
+# default_mode = "ask"      # "ask" (default) | "allow" | "deny"
+
 [shell]
 # Run `!<command>` typed at the prompt (no approval: it is your own command).
 enabled       = true
@@ -201,6 +228,36 @@ pub struct Config {
     pub shell: ShellConfig,
     #[serde(default)]
     pub spawn: SpawnConfig,
+    #[serde(default)]
+    pub permissions: PermissionsConfig,
+}
+
+/// `[permissions]` — what a tool may be asked to do.
+///
+/// This is the second of two gates and the finer one. The first decides *which
+/// tools exist* (`[tools] enabled` intersected with a persona's `allowed_tools`
+/// and minus its `denied_tools`) and works at whole-tool granularity. These
+/// rules decide, per call, whether a tool that does exist may run with the
+/// arguments the model chose.
+///
+/// Empty lists with no `default_mode` leave tool approval exactly as it was
+/// before this section existed: everything falls through to the interactive
+/// y/N prompt, which `[runtime] auto_approve_tools` may still skip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PermissionsConfig {
+    /// Rules that refuse a call outright. A `deny` outranks an `allow`, the
+    /// default mode, **and** `auto_approve_tools` — a deny list that a flag can
+    /// switch off is not a deny list.
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// Rules that run a call without asking.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// What happens to a call no rule matched: `"ask"` (default), `"allow"` or
+    /// `"deny"`. `defaultMode` is accepted as an alias so a rule set
+    /// transcribed from Claude Code loads unedited.
+    #[serde(default, alias = "defaultMode")]
+    pub default_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -783,10 +840,40 @@ impl UiConfig {
     }
 }
 
+/// The ordered chain of config files that make up the effective configuration,
+/// **lowest priority first**. Never empty.
+///
+/// Configuration is layered: the user-level file is the base and a project-local
+/// `.agent-cli/config.toml` is the overlay that wins key by key. Before this was
+/// a chain, a project-local file *replaced* the user-level one outright, so
+/// every key the project did not mention silently reverted to a built-in
+/// default. See [`merge`] for how two layers combine.
 #[derive(Debug, Clone, Default)]
 pub struct ConfigSource {
-    pub path: PathBuf,
+    /// Lowest priority first.
+    pub layers: Vec<PathBuf>,
     pub from_explicit: bool,
+}
+
+impl ConfigSource {
+    /// The highest-priority layer: the file `config edit` opens and the one a
+    /// message means when it says "the config file".
+    ///
+    /// Falls back to the user-level default path for a default-constructed
+    /// `ConfigSource` (tests), which has no layers.
+    pub fn path(&self) -> PathBuf {
+        self.layers
+            .last()
+            .cloned()
+            .or_else(|| default_path().ok())
+            .unwrap_or_default()
+    }
+
+    /// Every layer, lowest priority first — what a detached child must be given
+    /// so it reconstructs the same configuration its parent is running under.
+    pub fn chain(&self) -> &[PathBuf] {
+        &self.layers
+    }
 }
 
 pub fn default_path() -> Result<PathBuf> {
@@ -809,45 +896,129 @@ fn local_path_in(dir: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Resolve which config file to use, in order of precedence:
+/// Resolve the chain of config files to load, lowest priority first.
 ///
-/// 1. an explicit `--config <path>` (highest),
-/// 2. a project-local `.agent-cli/config.toml` in the current directory (used
-///    only when it already exists),
-/// 3. the user-level default `~/.config/agent-cli/config.toml`.
-pub fn resolve_path(explicit: Option<&Path>) -> Result<ConfigSource> {
-    if let Some(p) = explicit {
+/// With no `--config`, the chain is the user-level
+/// `~/.config/agent-cli/config.toml` followed by a project-local
+/// `.agent-cli/config.toml` when one exists — so the project file overlays the
+/// user file rather than hiding it.
+///
+/// `--config <path>` replaces the chain entirely: one occurrence means that
+/// file alone, which is what keeps the flag usable for an isolated run. Several
+/// occurrences layer left to right, which is how a detached child is handed the
+/// chain its parent resolved.
+pub fn resolve_path(explicit: &[PathBuf]) -> Result<ConfigSource> {
+    if !explicit.is_empty() {
+        let mut layers = Vec::with_capacity(explicit.len());
+        for p in explicit {
+            layers.push(expand_path(p.to_string_lossy().as_ref())?);
+        }
         return Ok(ConfigSource {
-            path: expand_path(p.to_string_lossy().as_ref())?,
+            layers,
             from_explicit: true,
         });
     }
+    let mut layers = vec![default_path()?];
     if let Some(path) = local_path() {
-        return Ok(ConfigSource {
-            path,
-            from_explicit: false,
-        });
+        layers.push(path);
     }
     Ok(ConfigSource {
-        path: default_path()?,
+        layers,
         from_explicit: false,
     })
 }
 
-pub fn load(source: &ConfigSource) -> Result<Config> {
-    if !source.path.exists() {
-        if source.from_explicit {
-            return Err(AppError::ConfigNotFound(source.path.clone()));
+/// Merge `overlay` onto `base`, `overlay` winning.
+///
+/// - **Tables merge recursively.** A project file that sets `[provider] kind`
+///   must not discard the user's `[ui]`, `[runtime]` or `[provider.claude]`.
+/// - **Scalars and arrays are replaced.** `[tools] enabled` in a project file
+///   means "this tool set, here"; appending would make it impossible to
+///   *narrow* a tool set locally, which is the more common intent.
+/// - **`permissions.deny` and `permissions.allow` are unioned**, against the
+///   array rule. Under replacement a project file could delete a user's deny
+///   list simply by redefining it, and a project directory is exactly the thing
+///   a user may not have written themselves. An `allow` can never beat a `deny`,
+///   so unioning allow lists cannot widen the boundary either way.
+pub fn merge(base: toml::Value, overlay: toml::Value) -> toml::Value {
+    merge_at(base, overlay, &[])
+}
+
+fn merge_at(base: toml::Value, overlay: toml::Value, path: &[&str]) -> toml::Value {
+    use toml::Value;
+    match (base, overlay) {
+        (Value::Table(mut b), Value::Table(o)) => {
+            for (k, ov) in o {
+                let next: Vec<&str> = path.iter().copied().chain(std::iter::once(k.as_str())).collect();
+                let merged = match b.remove(&k) {
+                    Some(bv) => merge_at(bv, ov, &next),
+                    None => ov,
+                };
+                b.insert(k, merged);
+            }
+            Value::Table(b)
         }
-        // Default path -> auto-generate
-        if let Some(parent) = source.path.parent() {
+        (Value::Array(b), Value::Array(o)) if unions(path) => {
+            let mut out = b;
+            for item in o {
+                if !out.contains(&item) {
+                    out.push(item);
+                }
+            }
+            Value::Array(out)
+        }
+        (_, overlay) => overlay,
+    }
+}
+
+/// The two arrays that union rather than replace when layers combine.
+fn unions(path: &[&str]) -> bool {
+    matches!(path, ["permissions", "deny"] | ["permissions", "allow"])
+}
+
+/// Read and merge every layer of `source`.
+///
+/// The merge happens on `toml::Value`, before `Config` is deserialized, so
+/// every section gets the layering behaviour without its own merge code.
+///
+/// `DEFAULT_CONFIG` is written out **only when no layer exists at all** and none
+/// was explicit. A project-local file must not cause a user-level file to be
+/// created, and a `[permissions]` section must never appear that nobody wrote —
+/// which is why the block `DEFAULT_CONFIG` ships is commented out.
+pub fn load(source: &ConfigSource) -> Result<Config> {
+    let present: Vec<&PathBuf> = source.layers.iter().filter(|p| p.exists()).collect();
+
+    if present.is_empty() {
+        if source.from_explicit {
+            return Err(AppError::ConfigNotFound(source.path()));
+        }
+        let target = source
+            .layers
+            .first()
+            .cloned()
+            .ok_or_else(|| AppError::config("no configuration path to generate"))?;
+        if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&source.path, DEFAULT_CONFIG)?;
-        tracing::info!(path = %source.path.display(), "default config generated");
+        std::fs::write(&target, DEFAULT_CONFIG)?;
+        tracing::info!(path = %target.display(), "default config generated");
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG)?;
+        return Ok(cfg);
     }
-    let raw = std::fs::read_to_string(&source.path)?;
-    let cfg: Config = toml::from_str(&raw)?;
+
+    let mut merged: Option<toml::Value> = None;
+    for path in present {
+        let raw = std::fs::read_to_string(path)?;
+        let value: toml::Value = toml::from_str(&raw).map_err(|e| {
+            AppError::config(format!("{}: {e}", path.display()))
+        })?;
+        merged = Some(match merged {
+            Some(base) => merge(base, value),
+            None => value,
+        });
+    }
+    let merged = merged.expect("at least one layer was present");
+    let cfg: Config = merged.try_into()?;
     Ok(cfg)
 }
 
@@ -1035,12 +1206,245 @@ mod tests {
     }
 
     #[test]
-    fn resolve_path_prefers_explicit_over_local() {
-        // An explicit `--config` always wins and is marked explicit, regardless
-        // of any project-local file in the current directory.
-        let src = resolve_path(Some(Path::new("/etc/agent-cli/custom.toml"))).unwrap();
-        assert_eq!(src.path, PathBuf::from("/etc/agent-cli/custom.toml"));
+    fn one_explicit_config_replaces_the_whole_chain() {
+        // A single `--config` must still mean "that file alone" — it is how an
+        // isolated run is obtained, and layering a user file underneath it
+        // would take that away.
+        let src = resolve_path(&[PathBuf::from("/etc/agent-cli/custom.toml")]).unwrap();
+        assert_eq!(
+            src.chain(),
+            [PathBuf::from("/etc/agent-cli/custom.toml")].as_slice()
+        );
+        assert_eq!(src.path(), PathBuf::from("/etc/agent-cli/custom.toml"));
         assert!(src.from_explicit);
+    }
+
+    #[test]
+    fn repeated_explicit_configs_layer_left_to_right() {
+        // This is how a detached child is handed the chain its parent resolved.
+        let src = resolve_path(&[PathBuf::from("/a/base.toml"), PathBuf::from("/b/over.toml")])
+            .unwrap();
+        assert_eq!(
+            src.chain(),
+            [PathBuf::from("/a/base.toml"), PathBuf::from("/b/over.toml")].as_slice()
+        );
+        assert_eq!(src.path(), PathBuf::from("/b/over.toml"), "the last one wins");
+        assert!(src.from_explicit);
+    }
+
+    #[test]
+    fn the_default_chain_starts_at_the_user_file() {
+        // Without `--config` the user-level file is always the base layer, even
+        // when it does not exist yet; a project file is added on top of it
+        // rather than replacing it.
+        let src = resolve_path(&[]).unwrap();
+        assert!(!src.from_explicit);
+        assert_eq!(src.chain().first(), Some(&default_path().unwrap()));
+        assert!(!src.chain().is_empty());
+    }
+
+    // --- V-3 / V-4: how two layers combine ----------------------------------
+
+    fn merged(base: &str, overlay: &str) -> Config {
+        let b: toml::Value = toml::from_str(base).unwrap();
+        let o: toml::Value = toml::from_str(overlay).unwrap();
+        merge(b, o).try_into().unwrap()
+    }
+
+    #[test]
+    fn a_project_layer_overrides_key_by_key_without_discarding_the_rest() {
+        // The whole point of layering: before it, a project file that set one
+        // key silently reverted every other key to a built-in default.
+        let cfg = merged(
+            r#"
+[provider]
+kind = "claude"
+[provider.claude]
+model = "claude-opus-4-7"
+thinking = true
+[ui]
+color = "always"
+[runtime]
+auto_approve_tools = true
+"#,
+            r#"
+[provider]
+kind = "ollama"
+"#,
+        );
+        assert_eq!(cfg.provider.kind, "ollama", "the overlay wins");
+        assert_eq!(cfg.ui.color, "always", "an untouched section survives");
+        assert!(cfg.runtime.auto_approve_tools, "so does an untouched key");
+        let claude = cfg.provider.claude.expect("nested table survives");
+        assert_eq!(claude.model.as_deref(), Some("claude-opus-4-7"));
+    }
+
+    #[test]
+    fn nested_tables_merge_rather_than_replace() {
+        let cfg = merged(
+            r#"
+[provider]
+kind = "claude"
+[provider.claude]
+model = "claude-opus-4-7"
+base_url = "https://api.anthropic.com"
+"#,
+            r#"
+[provider.claude]
+model = "claude-sonnet-4-5"
+"#,
+        );
+        let claude = cfg.provider.claude.unwrap();
+        assert_eq!(claude.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(
+            claude.base_url.as_deref(),
+            Some("https://api.anthropic.com"),
+            "the key the overlay did not mention is kept"
+        );
+    }
+
+    #[test]
+    fn an_array_is_replaced_by_the_overlay() {
+        // `[tools] enabled` in a project file means "this tool set, here".
+        // Appending would make it impossible to narrow a tool set locally.
+        let cfg = merged(
+            "[provider]\nkind = \"claude\"\n[tools]\nenabled = [\"bash\", \"read\", \"write\"]\n",
+            "[tools]\nenabled = [\"read\"]\n",
+        );
+        assert_eq!(cfg.tools.enabled, vec!["read".to_string()]);
+    }
+
+    #[test]
+    fn permission_lists_union_so_a_project_cannot_delete_a_users_deny() {
+        // The one exception to the array rule, and the reason for it: under
+        // replacement a project directory — which the user may not have written
+        // — could switch off a machine-wide deny just by redefining the list.
+        let cfg = merged(
+            r#"
+[provider]
+kind = "claude"
+[permissions]
+deny = ["bash(rm -rf ~/**)"]
+allow = ["bash(git:*)"]
+"#,
+            r#"
+[permissions]
+deny = ["bash(curl:*)"]
+allow = ["read(**)"]
+"#,
+        );
+        assert!(
+            cfg.permissions.deny.contains(&"bash(rm -rf ~/**)".to_string()),
+            "the user's deny survives the project layer: {:?}",
+            cfg.permissions.deny
+        );
+        assert!(cfg.permissions.deny.contains(&"bash(curl:*)".to_string()));
+        assert_eq!(cfg.permissions.allow.len(), 2);
+    }
+
+    #[test]
+    fn a_union_does_not_duplicate_a_rule_both_layers_wrote() {
+        let cfg = merged(
+            "[provider]\nkind = \"claude\"\n[permissions]\ndeny = [\"read(.env*)\"]\n",
+            "[permissions]\ndeny = [\"read(.env*)\", \"bash(rm:*)\"]\n",
+        );
+        assert_eq!(cfg.permissions.deny.len(), 2, "{:?}", cfg.permissions.deny);
+    }
+
+    #[test]
+    fn the_project_layer_sets_the_default_mode() {
+        let cfg = merged(
+            "[provider]\nkind = \"claude\"\n[permissions]\ndefault_mode = \"ask\"\n",
+            "[permissions]\ndefault_mode = \"deny\"\n",
+        );
+        assert_eq!(cfg.permissions.default_mode.as_deref(), Some("deny"));
+    }
+
+    // --- V-6: nothing is generated that nobody asked for ---------------------
+
+    #[test]
+    fn a_project_file_alone_does_not_create_a_user_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("user").join("config.toml");
+        let project = dir.path().join("project").join("config.toml");
+        std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+        std::fs::write(&project, "[provider]\nkind = \"ollama\"\n").unwrap();
+
+        let source = ConfigSource {
+            layers: vec![user.clone(), project],
+            from_explicit: false,
+        };
+        let cfg = load(&source).unwrap();
+        assert_eq!(cfg.provider.kind, "ollama");
+        assert!(
+            !user.exists(),
+            "a missing base layer must not be conjured into existence"
+        );
+    }
+
+    #[test]
+    fn the_default_config_is_written_only_when_no_layer_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("config.toml");
+        let source = ConfigSource {
+            layers: vec![user.clone()],
+            from_explicit: false,
+        };
+        let cfg = load(&source).unwrap();
+        assert!(user.exists(), "the first run still gets a config file");
+        assert_eq!(cfg.provider.kind, "claude");
+    }
+
+    #[test]
+    fn the_shipped_permissions_block_is_commented_out() {
+        // A permission rule nobody wrote is exactly the mistake this cycle
+        // removed from the repository; the default config must not reintroduce
+        // it by shipping live rules.
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert!(cfg.permissions.deny.is_empty());
+        assert!(cfg.permissions.allow.is_empty());
+        assert!(cfg.permissions.default_mode.is_none());
+        assert!(
+            DEFAULT_CONFIG.contains("# [permissions]"),
+            "the syntax should still be documented by example"
+        );
+    }
+
+    #[test]
+    fn a_missing_explicit_config_is_still_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = ConfigSource {
+            layers: vec![dir.path().join("nope.toml")],
+            from_explicit: true,
+        };
+        assert!(matches!(
+            load(&source),
+            Err(AppError::ConfigNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn a_layer_that_does_not_parse_names_the_file_it_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = dir.path().join("broken.toml");
+        std::fs::write(&bad, "[provider\nkind = ").unwrap();
+        let source = ConfigSource {
+            layers: vec![bad.clone()],
+            from_explicit: true,
+        };
+        let err = load(&source).unwrap_err().to_string();
+        assert!(
+            err.contains("broken.toml"),
+            "the user has to be told which layer is broken: {err}"
+        );
+    }
+
+    #[test]
+    fn permissions_default_to_an_empty_section() {
+        let cfg: Config = toml::from_str("[provider]\nkind = \"claude\"\n").unwrap();
+        assert!(cfg.permissions.deny.is_empty());
+        assert!(cfg.permissions.allow.is_empty());
+        assert!(cfg.permissions.default_mode.is_none());
     }
 
     #[test]

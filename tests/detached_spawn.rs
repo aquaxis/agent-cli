@@ -436,3 +436,147 @@ fn spawn_detached_agent_outlives_launcher_then_stops() {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
+
+/// FR-04 / FR-07 / AC-04: `--config` is repeatable and `config path` prints the
+/// whole chain, lowest priority first.
+#[test]
+fn a_repeated_config_flag_layers_and_the_chain_is_reportable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().join("base.toml");
+    let overlay = tmp.path().join("overlay.toml");
+    std::fs::write(&base, "[provider]\nkind = \"ollama\"\n").unwrap();
+    std::fs::write(&overlay, "[provider]\nkind = \"claude\"\n").unwrap();
+
+    let out = Command::new(bin())
+        .arg("--config")
+        .arg(&base)
+        .arg("--config")
+        .arg(&overlay)
+        .arg("config")
+        .arg("path")
+        .output()
+        .expect("run config path");
+    assert!(out.status.success(), "config path failed");
+    let printed = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines.len(), 2, "both layers should be reported: {printed}");
+    assert!(lines[0].ends_with("base.toml"), "base first: {printed}");
+    assert!(lines[1].ends_with("overlay.toml"), "overlay last: {printed}");
+}
+
+/// FR-05 / AC-05: a detached child runs under the **whole** chain its parent
+/// resolved, not just the top layer.
+///
+/// This is the quietest failure the permissions feature could have: hand the
+/// child only the overlay and it loses the base layer, and with it any
+/// machine-wide `[permissions] deny` — a detached agent running under weaker
+/// rules than the agent that spawned it, with nothing on screen to say so.
+///
+/// The base layer here holds `registry_dir`, and the overlay does not. If the
+/// child were launched with the overlay alone it would register somewhere else
+/// entirely and never be found under this registry, so the child appearing at
+/// all is the evidence that the base layer reached it.
+#[test]
+fn a_detached_child_inherits_every_layer_of_the_parents_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("reg");
+    let log_dir = tmp.path().join("log");
+    let agents_dir = tmp.path().join("agents");
+    for d in [&registry_dir, &log_dir, &agents_dir] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+
+    // Everything that makes the child discoverable lives only in the base.
+    let base = tmp.path().join("base.toml");
+    std::fs::write(
+        &base,
+        format!(
+            r#"[provider]
+kind = "ollama"
+
+[runtime]
+auto_approve_tools = true
+log_dir = {log:?}
+registry_dir = {reg:?}
+agents_dir = {agents:?}
+
+[permissions]
+deny = ["bash(rm:*)"]
+"#,
+            log = log_dir.display().to_string(),
+            reg = registry_dir.display().to_string(),
+            agents = agents_dir.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    // The overlay mentions none of it.
+    let overlay = tmp.path().join("overlay.toml");
+    std::fs::write(
+        &overlay,
+        r#"[provider.ollama]
+model = "test"
+base_url = "http://127.0.0.1:65535"
+
+[tools]
+enabled = []
+"#,
+    )
+    .unwrap();
+
+    let out = Command::new(bin())
+        .arg("--config")
+        .arg(&base)
+        .arg("--config")
+        .arg(&overlay)
+        .arg("spawn")
+        .arg("--name")
+        .arg("layered-child")
+        .output()
+        .expect("run spawn");
+    assert!(
+        out.status.success(),
+        "spawn failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let entry = find_entry(&registry_dir, "layered-child")
+        .expect("the child registered under the base layer's registry_dir");
+    let pid = entry.get("pid").and_then(|p| p.as_u64()).unwrap();
+
+    // Its own view of the configuration is the same chain, in the same order.
+    let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).expect("child cmdline");
+    let args: Vec<&str> = cmdline.split('\0').filter(|s| !s.is_empty()).collect();
+    let passed: Vec<&&str> = args
+        .iter()
+        .zip(args.iter().skip(1))
+        .filter(|(flag, _)| **flag == "--config")
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(
+        passed.len(),
+        2,
+        "the child must be handed both layers, got: {args:?}"
+    );
+    assert!(passed[0].ends_with("base.toml"), "base first: {args:?}");
+    assert!(passed[1].ends_with("overlay.toml"), "overlay last: {args:?}");
+
+    let _ = Command::new(bin())
+        .arg("--config")
+        .arg(&base)
+        .arg("--config")
+        .arg(&overlay)
+        .arg("stop")
+        .arg("layered-child")
+        .output();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while proc_alive(pid) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if proc_alive(pid) {
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}

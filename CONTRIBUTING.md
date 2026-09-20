@@ -89,6 +89,12 @@ When a change alters behaviour that an existing document already describes, **re
 4. Document argument schema, return values, and limitations in `doc/tools.md`
 5. Tests: `tokio::test` for success and error cases
 6. Verify that the tool can be controlled via persona `allowed_tools` / `denied_tools`
+7. Give the tool a **gated argument** in `permissions::subject_of`, or record
+   that it has none. A tool missing from that table can only ever be named by a
+   bare `tool` rule, so `[permissions]` cannot express "this tool, but only for
+   X" about it. The choice is deliberate either way — a tool whose subject is a
+   guess is a tool whose rules cannot be trusted — so document it in
+   `doc/config.md` §12's table along with the rest.
 
 ## Commit Messages
 

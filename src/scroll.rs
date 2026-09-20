@@ -306,9 +306,44 @@ fn with_lock<R>(f: impl FnOnce(&mut Option<Transcript>) -> R) -> R {
     f(&mut guard)
 }
 
+/// Under test, the thread that installed the current transcript.
+///
+/// In a real session one transcript is installed for the life of the process
+/// and several tasks write into it, so there is nothing to gate. Under test the
+/// transcript is process-wide while the tests are not: the `raw_*` writers tee
+/// every REPL message into it, so **any** test that exercises a printing path
+/// appends to whatever transcript another test happens to have installed. The
+/// tests that own one take [`test_lock`], but the ones writing indirectly have
+/// no idea they are writing at all and cannot reasonably be asked to.
+///
+/// Gating on the installing thread closes that gap at the source rather than
+/// chasing every caller.
+#[cfg(test)]
+static OWNER: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
+
+/// Whether the calling thread may write to the installed transcript.
+#[cfg(test)]
+fn may_record() -> bool {
+    let owner = OWNER.lock().unwrap_or_else(|e| e.into_inner());
+    match *owner {
+        Some(id) => id == std::thread::current().id(),
+        None => true,
+    }
+}
+
+#[cfg(not(test))]
+fn may_record() -> bool {
+    true
+}
+
 /// Start recording, keeping at most `limit` lines. A `limit` of 0 records
 /// nothing, which is how `[ui] scrollback_lines = 0` disables the feature.
 pub fn install(limit: usize) {
+    #[cfg(test)]
+    {
+        let mut owner = OWNER.lock().unwrap_or_else(|e| e.into_inner());
+        *owner = Some(std::thread::current().id());
+    }
     with_lock(|slot| *slot = Some(Transcript::new(limit)));
 }
 
@@ -316,11 +351,18 @@ pub fn install(limit: usize) {
 /// the life of the process, so this exists for the tests that share the handle.
 #[cfg(test)]
 pub fn uninstall() {
+    {
+        let mut owner = OWNER.lock().unwrap_or_else(|e| e.into_inner());
+        *owner = None;
+    }
     with_lock(|slot| *slot = None);
 }
 
 /// Record a chunk if a transcript is installed; a no-op otherwise.
 pub fn record(chunk: &str) {
+    if !may_record() {
+        return;
+    }
     with_lock(|slot| {
         if let Some(t) = slot.as_mut() {
             t.record(chunk);
@@ -330,6 +372,9 @@ pub fn record(chunk: &str) {
 
 /// Record one complete line if a transcript is installed.
 pub fn record_line(line: &str) {
+    if !may_record() {
+        return;
+    }
     with_lock(|slot| {
         if let Some(t) = slot.as_mut() {
             t.record_line(line);
@@ -344,7 +389,8 @@ pub fn with<R>(f: impl FnOnce(&Transcript) -> R) -> Option<R> {
 
 /// The process-wide transcript is shared state, and the tests that install one
 /// run in the same process as every other test. They take this lock so they
-/// cannot interleave with each other.
+/// cannot interleave with each other; [`OWNER`] keeps the tests that write
+/// *indirectly*, through the `raw_*` writers, out of their transcript.
 #[cfg(test)]
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());

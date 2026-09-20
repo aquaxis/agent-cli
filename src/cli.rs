@@ -10,9 +10,12 @@ use clap::{Parser, Subcommand};
     long_about = None
 )]
 pub struct Cli {
-    /// Config file path to use. When unspecified, resolves in order: AGENT_CLI_CONFIG -> ~/.config/agent-cli/config.toml.
-    #[arg(long, global = true, env = "AGENT_CLI_CONFIG")]
-    pub config: Option<PathBuf>,
+    /// Config file to use, replacing the default chain. Repeatable: later files
+    /// override earlier ones. When unspecified, resolves in order:
+    /// AGENT_CLI_CONFIG -> ~/.config/agent-cli/config.toml overlaid with
+    /// ./.agent-cli/config.toml.
+    #[arg(long, global = true, env = "AGENT_CLI_CONFIG", value_delimiter = None, num_args = 1)]
+    pub config: Vec<PathBuf>,
 
     /// REPL startup options (available even when subcommand is omitted).
     #[command(flatten)]
@@ -215,7 +218,7 @@ mod tests {
             "--auto-approve-tools",
         ])
         .expect("parse run args");
-        assert!(cli.config.is_some());
+        assert_eq!(cli.config.len(), 1);
         assert!(matches!(cli.command, Some(Command::Run)));
         assert_eq!(cli.run_args.name.as_deref(), Some("alice"));
         assert_eq!(cli.run_args.provider.as_deref(), Some("ollama"));

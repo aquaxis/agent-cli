@@ -16,6 +16,7 @@ mod id;
 mod ipc;
 mod log;
 mod mcp;
+mod permissions;
 mod persona;
 mod scroll;
 mod select;
@@ -56,7 +57,7 @@ fn init_tracing() {
 async fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    let source = config::resolve_path(cli.config.as_deref())?;
+    let source = config::resolve_path(&cli.config)?;
 
     match cli.command.unwrap_or(Command::Run) {
         Command::Run => {
@@ -115,7 +116,11 @@ async fn run() -> Result<()> {
             }
             ConfigAction::Edit => commands::config_edit(&source),
             ConfigAction::Path => {
-                println!("{}", source.path.display());
+                // Every layer, lowest priority first — printing only the top
+                // one would hide the file most keys actually come from.
+                for path in source.chain() {
+                    println!("{}", path.display());
+                }
                 Ok(())
             }
         },
