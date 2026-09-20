@@ -4,6 +4,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.20.0]
+
 ### Added
 
 - **`[permissions]` — per-call allow / deny rules for tool calls.** Two lists of
