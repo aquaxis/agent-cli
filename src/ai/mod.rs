@@ -279,7 +279,7 @@ impl ProviderContext {
     ) -> Self {
         let api_key_mask = api_key_value.map(crate::config::mask_api_key);
         Self {
-            config_path: source.path.clone(),
+            config_path: source.path(),
             api_key_env,
             api_key_mask,
         }

@@ -25,8 +25,9 @@ Code, which carries tools of its own:
 | `"gateway"` | none (`--tools ""`, chat only) | No |
 
 `agent-cli`'s registry is never handed to that backend, so neither the approval
-flow nor persona `allowed_tools` / `denied_tools` restrict what Claude Code
-runs. See [`providers/claude-code.md`](providers/claude-code.md).
+flow, nor persona `allowed_tools` / `denied_tools`, nor `[permissions]` restrict
+what Claude Code runs — there is nothing on agent-cli's side of the boundary to
+gate. See [`providers/claude-code.md`](providers/claude-code.md).
 
 ## Tool Execution Approval
 
@@ -412,7 +413,9 @@ Returns `prompt: <prompt>\n\n<converted page text>` in `content`. The main conve
 
 ## Tool Disabling and Permission Control
 
-Priority order in config/persona:
+Two gates, with different jobs.
+
+**Which tools exist**, decided once at startup:
 
 ```text
 [tools] enabled set
@@ -422,6 +425,25 @@ Priority order in config/persona:
 ```
 
 The current tool set can be checked with the REPL command `/tools`.
+
+**What an existing tool may be asked to do**, decided per call from
+`[permissions]` in `config.toml`:
+
+```text
+1. The tool must be in the set above
+2. A matching [permissions] deny  -> refused, and never offered for approval
+3. A matching [permissions] allow -> runs without asking
+4. No match                       -> default_mode: ask (the y/N prompt) / allow / deny
+```
+
+A `deny` outranks `auto_approve_tools` and `/auto on`, which is what makes it
+usable for `agent-cli serve` — a headless agent auto-approves unconditionally,
+so a deny rule is the only gate it has. The rules in force are printed by
+`/permissions`. Full reference in
+[`doc/config.md` §12](config.md#12-permissions-allow-and-deny-rules).
+
+With no `[permissions]` section, step 2 and 3 never fire and step 4 is always
+the y/N prompt — exactly the behaviour that predates the section.
 
 The pre-rename names `shell`, `fs_read`, and `fs_write` are still accepted in
 `[tools] enabled` and in persona `allowed_tools` / `denied_tools`; they are

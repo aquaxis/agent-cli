@@ -188,6 +188,9 @@ pub struct Agent {
     pub log: Option<ConversationLog>,
     /// Shared via `Arc<AtomicBool>` for runtime toggle via `/auto` REPL command (FR-04-2).
     pub auto_approve: Arc<AtomicBool>,
+    /// `[permissions]`, compiled once. A `deny` here outranks `auto_approve`:
+    /// a deny list that `/auto on` can switch off is not a deny list.
+    pub permissions: Arc<crate::permissions::Ruleset>,
     /// Raised by the REPL when the user presses `Esc` / `Ctrl-C` during a turn
     /// (or types `/cancel`); observed at every await point of `process_turn`.
     pub cancel: Arc<CancelToken>,
@@ -547,7 +550,54 @@ impl Agent {
                     .ok();
                 }
 
-                if !self.auto_approve.load(Ordering::SeqCst) {
+                // `[permissions]` decides before approval does. A `deny` is
+                // final: it is not offered to the user, and `auto_approve`
+                // is never consulted, because a deny a flag can switch off is
+                // not a deny. An `allow` skips the prompt; `Ask` — which is
+                // what an unconfigured section always returns — falls through
+                // to exactly the approval flow that was here before.
+                let decision = self.permissions.decide(&name, &args);
+                let skip_approval = match decision {
+                    crate::permissions::Decision::Deny(rule) => {
+                        let output = format!("denied by permission rule: {}", rule.raw);
+                        if let Some(l) = log {
+                            l.write(LogEvent::ToolResult {
+                                name: &name,
+                                ok: false,
+                                output: &output,
+                            })
+                            .await
+                            .ok();
+                        }
+                        let _ = event_tx
+                            .send(AgentEvent::ToolResult {
+                                name: name.clone(),
+                                ok: false,
+                                output: output.clone(),
+                            })
+                            .await;
+                        self.history.push(Message::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: output,
+                            is_error: true,
+                        });
+                        continue;
+                    }
+                    crate::permissions::Decision::Allow(rule) => {
+                        // Which rule skipped the prompt is the first question
+                        // asked when a call runs that was expected to stop.
+                        tracing::debug!(
+                            target: "permissions",
+                            tool = %name,
+                            rule = %rule.raw,
+                            "allowed without approval"
+                        );
+                        true
+                    }
+                    crate::permissions::Decision::Ask => false,
+                };
+
+                if !skip_approval && !self.auto_approve.load(Ordering::SeqCst) {
                     let approved =
                         request_approval(self.approval_tx.as_ref(), name.clone(), args.clone())
                             .await;
@@ -1069,6 +1119,7 @@ mod tests {
             registry_dir: PathBuf::from("/tmp/agent-cli-tests"),
             log: None,
             auto_approve: Arc::new(AtomicBool::new(true)),
+            permissions: Arc::new(crate::permissions::Ruleset::default()),
             cancel: Arc::new(CancelToken::default()),
             approval_tx: None,
             history,
@@ -1696,6 +1747,107 @@ mod tests {
 
         drop(in_tx);
         let _ = handle.await;
+    }
+
+    /// Build the tool-call script both permission tests drive.
+    fn bash_call(command: &str) -> Vec<Vec<ProviderEvent>> {
+        vec![
+            vec![
+                ProviderEvent::ToolUse {
+                    id: "call-perm".into(),
+                    name: "bash".into(),
+                    args: serde_json::json!({ "command": command }),
+                },
+                ProviderEvent::Done,
+            ],
+            vec![ProviderEvent::Done],
+        ]
+    }
+
+    /// Run one turn and report what became of the `bash` call.
+    async fn run_one_tool_call(
+        mut agent: Agent,
+    ) -> (Option<(bool, String)>, mpsc::Receiver<ApprovalRequest>) {
+        let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(4);
+        agent.approval_tx = Some(approval_tx);
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::UserPrompt("go".into()))
+            .await
+            .unwrap();
+
+        let mut result = None;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::ToolResult { name, ok, output } if name == "bash" => {
+                    result = Some((ok, output));
+                }
+                AgentEvent::Done => break,
+                _ => {}
+            }
+        }
+        drop(in_tx);
+        let _ = handle.await;
+        (result, approval_rx)
+    }
+
+    /// FR-16 / AC-10: a `deny` rule outranks `auto_approve`.
+    ///
+    /// This is the single most important behaviour in the permissions feature.
+    /// A deny list that `/auto on`, `--auto-approve-tools` or
+    /// `[runtime] auto_approve_tools = true` can switch off is not a deny list —
+    /// and a headless `serve` agent auto-approves unconditionally, so a deny is
+    /// the *only* thing standing in front of it.
+    #[tokio::test]
+    async fn a_deny_rule_refuses_the_call_even_with_auto_approve_on() {
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let mut agent = build_test_agent(bash_call("rm -rf /tmp/whatever"), history);
+        agent.auto_approve.store(true, Ordering::SeqCst);
+        agent.permissions = Arc::new(crate::permissions::Ruleset::from_config(
+            &crate::config::PermissionsConfig {
+                deny: vec!["bash(rm:*)".into()],
+                allow: Vec::new(),
+                default_mode: None,
+            },
+        ));
+
+        let (result, mut approval_rx) = run_one_tool_call(agent).await;
+        let (ok, output) = result.expect("the call must be reported, not dropped");
+        assert!(!ok, "a denied call must not report success");
+        assert!(
+            output.contains("denied by permission rule") && output.contains("bash(rm:*)"),
+            "the model has to be told which rule refused it, or it retries: {output}"
+        );
+        assert!(
+            approval_rx.try_recv().is_err(),
+            "a deny is final: it is never offered to the user"
+        );
+    }
+
+    /// FR-15 / AC-11: an `allow` rule runs the call without an approval prompt
+    /// while approval is otherwise on.
+    #[tokio::test]
+    async fn an_allow_rule_runs_the_call_without_asking() {
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let mut agent = build_test_agent(bash_call("echo allowed"), history);
+        agent.auto_approve.store(false, Ordering::SeqCst);
+        agent.permissions = Arc::new(crate::permissions::Ruleset::from_config(
+            &crate::config::PermissionsConfig {
+                deny: Vec::new(),
+                allow: vec!["bash(echo:*)".into()],
+                default_mode: None,
+            },
+        ));
+
+        let (result, mut approval_rx) = run_one_tool_call(agent).await;
+        let (ok, _) = result.expect("the call must be reported");
+        assert!(ok, "an allowed call runs");
+        assert!(
+            approval_rx.try_recv().is_err(),
+            "an allow rule means the prompt is skipped"
+        );
     }
 
     /// Task 3: Agent sends a PromptReply when reply_to is set.

@@ -4,6 +4,82 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- **`[permissions]` — per-call allow / deny rules for tool calls.** Two lists of
+  `tool` / `tool(pattern)` rules in `config.toml`, so "git is fine, `rm -rf ~`
+  never" can be written down instead of being answered one y/N prompt at a time.
+  Until now the only gates were whole-tool (`[tools] enabled`, persona
+  `allowed_tools` / `denied_tools`) and all-or-nothing (the approval prompt).
+  - Three pattern shapes: `bash(git:*)` matches a command's leading words,
+    `webfetch(domain:github.com)` matches the URL's host, and anything else is a
+    glob over the tool's one gated argument — `command` for bash/monitor,
+    `file_path` for read/write/edit, `path` for glob/grep (never their *search*
+    `pattern`), `peer` for send_to/stop_agent.
+  - Path patterns match the path as written **and** resolved, so `read(.env*)`
+    is not defeated by `./.env`.
+  - Tool names match case-insensitively and ignoring `_`, so rules copied from a
+    Claude Code `settings.json` work unedited. A name agent-cli does not have is
+    inert and **reported**, not fatal; so is a pattern on a tool with no gated
+    argument, an unparseable rule, and a `default_mode` with no equivalent
+    (`acceptEdits`). Nothing is silently dropped.
+  - `default_mode` = `"ask"` (default) / `"allow"` / `"deny"`. With no
+    `[permissions]` section at all, behaviour is unchanged.
+  - New REPL command **`/permissions`** listing the rules in force, the config
+    layer each came from, the effective mode and any warnings. `agent-cli
+    doctor` reports the same.
+  - The rules are a guardrail against mistakes, **not a sandbox**: only the
+    leading words of a command are inspected, so `bash(rm:*)` does not stop
+    `/bin/rm`, `sh -c rm`, or `cd x && rm -rf /`.
+- `--config` is now **repeatable**; several occurrences layer left to right. A
+  single `--config` still means that file alone.
+
+### Changed
+
+- **Configuration is layered instead of exclusive.** `~/.config/agent-cli/config.toml`
+  is the base and `./.agent-cli/config.toml` overlays it key by key. Previously
+  a project-local file **replaced** the user-level one outright, so every key it
+  did not mention silently reverted to a built-in default. Tables merge
+  recursively; scalars and arrays are replaced; `permissions.deny` /
+  `permissions.allow` **union**, so a project file cannot delete a machine-wide
+  deny rule by redefining the list.
+  - If you have both files today you will start seeing user-level keys that the
+    project file does not override. `agent-cli config path` and `agent-cli
+    doctor` now print every layer, lowest first.
+  - `DEFAULT_CONFIG` is generated only when **no** config file exists anywhere; a
+    project file no longer causes a user-level one to be created.
+- **A detached agent inherits its parent's whole config chain**, one `--config`
+  per layer, rather than the top layer alone. Without this a child would lose
+  the base layer and any machine-wide `[permissions] deny` with it — running
+  under weaker rules than the agent that spawned it, with nothing to say so.
+- **A `[permissions] deny` outranks tool auto-approval.** `/auto on`,
+  `--auto-approve-tools` and `[runtime] auto_approve_tools = true` no longer let
+  a denied call through. A deny list that a flag can switch off is not a deny
+  list — and `agent-cli serve` auto-approves unconditionally, so a deny is the
+  only gate it has. Nothing else about `/auto` changes.
+
+### Removed
+
+- `.agent-cli/settings.json`. It was a copy of `.claude/settings.json` committed
+  to the repository, and **no line of code read it** — a file whose ten deny
+  rules never denied anything. The rules worth keeping are now commented worked
+  examples in `example/config.example.toml`, in agent-cli's own tool names.
+  `.claude/settings.json` is untouched and keeps working for Claude Code.
+
+### Fixed
+
+- `cargo test` is green under the default parallel runner again. One test failed
+  intermittently because the process-wide session transcript is written by every
+  `raw_*` REPL writer, so any test exercising a printing path appended to
+  whatever transcript another test had installed. Recording is now gated on the
+  installing thread under `cfg(test)`, which closes the gap at the source rather
+  than asking every indirect caller to take a lock it does not know about.
+
+Docs updated: `doc/config.md` (§1 rewritten for the chain and the merge, §2 and
+§3 tables, new §12), `doc/tools.md`, `doc/personas.md`, `doc/usage.md`,
+`doc/architecture.md`, `doc/troubleshooting.md`, `README.md`, `README_ja.md`,
+`CONTRIBUTING.md`, `example/config.example.toml`, `/help`.
+
 ## [0.19.0]
 
 ### Added

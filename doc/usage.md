@@ -294,7 +294,8 @@ In the REPL, lines starting with `/` are commands; everything else is a normal p
 | `/history [n]` | Show last n (default 20) user inputs |
 | `/clear`, `/reset` | Clear conversation history (system prompt = persona is kept; User / Assistant / ToolResult are all removed) |
 | `/cancel` | Stop the in-flight turn (same signal as `Esc` during execution); useful when the turn was started by a peer prompt |
-| `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime. No argument or `status` shows the current value |
+| `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime. No argument or `status` shows the current value. Does **not** override a `[permissions]` deny rule |
+| `/permissions` | Show the `[permissions]` rules in force, which config layer each came from, the effective `default_mode`, and any warnings |
 | `/commands` | List custom slash commands with their first line and file path |
 | `/reload-commands` | Re-scan the custom commands directory without restarting |
 | `/help` | Show command list |
@@ -398,6 +399,7 @@ While the line you are typing starts with `!`, the prompt is drawn in yellow, so
 - **A non-zero exit is reported** as `[shell] exit <code>`; a successful command shows nothing but its own output.
 - **While a command runs the prompt is busy**: every key except `Esc` / `Ctrl+C` is ignored until it ends, so a line typed meanwhile is not lost in the output. A bare `!` with nothing after it prints `usage: !<command>` and changes nothing, and leading spaces before the `!` are fine.
 - **Only a line you typed here can run a command.** A prompt that arrives from a peer agent — or anything the model produces — is text, never a command: it does not pass through this part of the REPL at all. The model's own shell access is the `bash` tool, which still asks for approval.
+- **`[permissions]` rules do not apply to `!`.** They gate tool calls the *model* asked for; a `!` line is your own command, so a rule there would gate you against yourself. `[permissions] deny = ["bash(rm:*)"]` stops the model running `rm` and leaves `!rm` alone. Turn `!` off entirely with `[shell] enabled = false`.
 
 What `!` is not for: it has no terminal of its own, so interactive and full-screen programs (`vim`, `less`, `top`, `ssh`) will not work — use a separate terminal for those. Each command is its own `bash -lc`, so `!cd ..` does not carry over to the next one (`!cd build && make` does what you want). Its stdin is closed, so a command that waits for input gets EOF instead of your keystrokes.
 
@@ -693,8 +695,19 @@ from the *same* stdin, which is workable but fragile:
   of shutdown.
 
 Since the number of tool calls is not predictable, prefer `--auto-approve-tools`
-for scripted runs, and restrict what the agent may do with a persona
-(`denied_tools`) rather than by withholding approval.
+for scripted runs, and restrict what the agent may do up front rather than by
+withholding approval. There are two ways to do that, and they answer different
+questions:
+
+- **`[permissions]` in `config.toml`** — per call, by argument: `deny` refuses a
+  matching call **even under `--auto-approve-tools`**, which is what makes it
+  the right gate for an unattended run. `bash(rm:*)` stops the call without
+  taking `bash` away.
+- **A persona's `denied_tools`** — whole tool, for the session: the agent simply
+  does not have it.
+
+See [`doc/config.md` §12](config.md#12-permissions-allow-and-deny-rules) and
+[`doc/personas.md`](personas.md).
 
 ### Getting clean output
 

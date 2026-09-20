@@ -92,7 +92,7 @@ impl Tool for SpawnTool {
         let mut chain = ctx.ancestors.clone();
         chain.push(ctx.self_id.clone());
         let entry = match crate::commands::spawn_detached(
-            &ctx.config_source.path,
+            ctx.config_source.chain(),
             &ctx.registry_dir,
             &run_args,
             // The child's chain is this agent's chain plus this agent itself.

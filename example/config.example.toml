@@ -191,9 +191,57 @@ max_children = 4          # live direct children per agent (0 disables spawning)
 max_depth    = 2          # depth of the spawn chain (0 disables spawning)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Permissions: per-call rules for tools the model asks to run.
+#
+# The whole section is optional. With no rules and no default_mode, every call
+# goes to the y/N approval prompt exactly as it did before this section existed.
+#
+# A rule is `tool` (every call of it) or `tool(pattern)`. Three pattern shapes:
+#   bash(git:*)                  leading words of the command
+#   webfetch(domain:github.com)  the URL's host
+#   read(.env*)                  a glob over the tool's one gated argument
+#
+# The gated argument per tool: `command` for bash/monitor, `file_path` for
+# read/write/edit, `path` for glob/grep, the host of `url` for webfetch, `peer`
+# for send_to/stop_agent. websearch, list_agents, spawn and mcp__* tools have
+# none, so only the bare tool name applies to them.
+#
+# Names are matched case-insensitively and ignoring `_`, so rules copied from a
+# Claude Code settings file (`Bash(git:*)`, `WebFetch(...)`) work unedited.
+#
+# Precedence: deny > allow > default_mode. A deny also outranks
+# `auto_approve_tools` and `/auto on` — a deny a flag can switch off is not a
+# deny. This matters most for `agent-cli serve`, which auto-approves
+# unconditionally, so a deny is the only thing in front of it.
+#
+# These are a guardrail against mistakes, NOT a sandbox. Only the leading words
+# of a command are inspected, so `bash(rm:*)` does not stop `/bin/rm`,
+# `sh -c rm`, a shell alias, a script, or `cd x && rm -rf /`. If you need a real
+# boundary, use a container.
+# ─────────────────────────────────────────────────────────────────────────────
+# [permissions]
+# deny = [
+#   "bash(rm -rf ~/**)",       # unrecoverable
+#   "bash(rm -rf /**)",
+#   "bash(npm publish:*)",     # a mistaken publish cannot be taken back
+#   "bash(git remote add:*)",  # quietly repointing a remote is hard to notice
+#   "bash(git remote set-url:*)",
+#   "read(.env*)",             # secrets would land in the conversation log
+#   "read(**/*.log)",
+# ]
+# allow = [
+#   "bash(git status:*)",
+#   "bash(git diff:*)",
+#   "bash(git log:*)",
+#   "grep",                    # every call: searching reads nothing it should not
+#   "glob",
+# ]
+# default_mode = "ask"         # "ask" (default) | "allow" | "deny"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Shell: running `!<command>` typed at the prompt. This is your own command,
 # not a tool call the model asked for, so it is not subject to the approval
-# gate or to [tools] enabled.
+# gate, to [tools] enabled, or to [permissions].
 # ─────────────────────────────────────────────────────────────────────────────
 [shell]
 enabled       = true      # false => a `!` line is sent to the model as a prompt

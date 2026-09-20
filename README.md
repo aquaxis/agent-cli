@@ -13,6 +13,8 @@
 - Detached agents — `agent-cli spawn` (or `/spawn`) creates a headless peer in its own session that outlives the launcher; stop it with `agent-cli stop <peer>` (or `/stop`).
 - Groups — tag a launched cohort with `--group <id>` (detached children inherit it); filter with `agent-cli list --group <id>` and discover running cohorts with `agent-cli groups`.
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
+- Per-call permission rules — `[permissions]` in `config.toml` holds `deny` / `allow` lists of `tool(pattern)` rules, so "git is fine, `rm -rf ~` never" can be written down instead of being answered one y/N prompt at a time. A `deny` outranks `--auto-approve-tools` and `/auto on`, which makes it the gate that works for a headless `serve` agent. Inspect the rules in force with `/permissions`. They are a guardrail against mistakes, not a sandbox.
+- Layered configuration — `~/.config/agent-cli/config.toml` is the base and `./.agent-cli/config.toml` overlays it key by key, so a project file narrows your settings instead of replacing them. `--config` is repeatable and replaces the chain; a detached agent inherits every layer.
 - Built-in tools: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`. Approval mode can be flipped at runtime with `/auto on`.
 - Custom slash commands — drop a Markdown file into `.agent-cli/commands/` and it becomes `/<name>`, with `$ARGUMENTS` / `$1`…`$N` / `@file` expansion and prefix auto-execution.
 - Line editing at the prompt — `↑` / `↓` history browsing, `Ctrl+A` / `Ctrl+E`, `Esc` to clear, live command candidates shown above the prompt, and `Tab` completion for `/` commands.

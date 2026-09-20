@@ -226,11 +226,31 @@ Verify in the REPL:
 tools: bash, read
 ```
 
-### 5.2 Security operations tips
+### 5.2 How this composes with `[permissions]`
+
+A persona's lists and `[permissions]` in `config.toml` answer different
+questions, and both apply:
+
+| | Question | Granularity | Applied |
+|---|---|---|---|
+| `allowed_tools` / `denied_tools` | **Which tools exist** for this agent | Whole tool | Once, at startup |
+| `[permissions]` `deny` / `allow` | **What an existing tool may be asked to do** | Per call, by argument | Every tool call |
+
+A tool removed by the persona never reaches the permission rules at all — there
+is nothing to decide about a tool the agent does not have. A tool the persona
+keeps is then subject to the rules, which can say "`bash`, but only `git`" in a
+way a persona list cannot. See
+[`doc/config.md` §12](config.md#12-permissions-allow-and-deny-rules).
+
+### 5.3 Security operations tips
 
 - For "read-only" roles (code reviewers, etc.), add `denied_tools: [write]`
 - For a dispatcher role that "only delegates to peers", use `allowed_tools: [send_to]` only
+- To keep a tool but narrow what it may do — `bash` for `git` and nothing else —
+  use `[permissions]` rather than removing the tool outright
 - For any persona with `auto_approve_tools=false` (the default), each tool execution requires y/N approval from the REPL input loop (see `doc/tools.md`)
+- A `[permissions] deny` is refused even when approval is skipped, which is what
+  makes it the gate that works for a headless `agent-cli serve` agent
 
 ---
 

@@ -15,32 +15,72 @@ This document provides a comprehensive guide to configuring `agent-cli`. For a q
 9. [Common Configuration Mistakes and Diagnostics](#9-common-configuration-mistakes-and-diagnostics)
 10. [Applying Configuration Changes and Restarting](#10-applying-configuration-changes-and-restarting)
 11. [Context-efficiency Features (opt-in)](#11-context-efficiency-features-opt-in)
+12. [Permissions: allow and deny rules](#12-permissions-allow-and-deny-rules)
 
 ## 1. Configuration File Location and Resolution Order
 
-`agent-cli` resolves the configuration file path in the following priority order:
+Configuration is **layered**. Two files are read and merged, the lower one
+providing the base and the upper one overriding it key by key:
 
 ```text
-1. --config <path>                 <- Highest priority (explicit specification)
-2. Environment variable AGENT_CLI_CONFIG   <- Next
-3. ./.agent-cli/config.toml        <- Project-local (only if it already exists)
-4. ~/.config/agent-cli/config.toml <- Default
+1. ~/.config/agent-cli/config.toml <- Base: what holds everywhere
+2. ./.agent-cli/config.toml        <- Overlay: what holds in this tree (wins)
+```
+
+`--config <path>` (or the environment variable `AGENT_CLI_CONFIG`) **replaces
+the chain entirely**. One occurrence means that file alone, which is how an
+isolated run is obtained. The flag is **repeatable**, and several occurrences
+layer left to right:
+
+```bash
+agent-cli --config ./base.toml --config ./project-a.toml run
 ```
 
 Behavior:
 
-- If the file specified by option 1 or 2 **does not exist**, the process exits with an error. No auto-generation is performed.
-- Option 3 is the `.agent-cli/config.toml` file under the **current working directory**. It is used **only when it already exists**; it is never auto-generated, and its absence silently falls through to option 4. The path is resolved to an absolute path so a detached agent spawned from here reads the same file. Only the current directory is checked — parent directories are not walked.
-- When option 4 is used and the file does not exist, it is **auto-generated** with default values.
-- The resolved path can be confirmed with `agent-cli config path`.
+- A project-local file **overlays** the user-level one. Setting `[provider] kind`
+  in `.agent-cli/config.toml` no longer discards your `[ui]`, `[runtime]` or
+  `[provider.claude]` settings — only the keys the project file actually names
+  are replaced.
+- Only the **current working directory** is checked for `.agent-cli/config.toml`;
+  parent directories are not walked. The path is resolved to an absolute one, so
+  a detached agent spawned from here reads the same file.
+- If a file named by `--config` **does not exist**, the process exits with an
+  error. No auto-generation is performed.
+- `~/.config/agent-cli/config.toml` is **auto-generated** with default values
+  only when **no** configuration file exists at all. A project-local file does
+  not cause a user-level one to be created.
+- A **detached agent inherits the whole chain**, not just the top layer, so it
+  runs under the same configuration — and the same `[permissions]` rules — as
+  the agent that spawned it.
+- The resolved chain can be confirmed with `agent-cli config path`, which prints
+  one line per layer, lowest priority first.
 
 ```bash
 agent-cli config path
-# Example: /home/alice/.config/agent-cli/config.toml
-
-agent-cli --config ./project-a.toml config path
-# Example: /home/alice/work/project-a.toml
+# /home/alice/.config/agent-cli/config.toml
+# /home/alice/work/project-a/.agent-cli/config.toml
 ```
+
+### How two layers combine
+
+| Value | Behaviour |
+|---|---|
+| Table (`[provider]`, `[provider.claude]`, …) | **Merged recursively.** Keys the overlay does not mention are kept |
+| Scalar (string, number, boolean) | **Replaced** by the overlay |
+| Array | **Replaced** by the overlay. `[tools] enabled = ["read"]` in a project file means "this tool set, here" — appending would make it impossible to *narrow* a tool set locally |
+| `permissions.deny`, `permissions.allow` | **Unioned.** This is the one exception to the array rule |
+
+`permissions.deny` unions rather than replacing because otherwise a project file
+could delete a machine-wide deny rule simply by redefining the list — and a
+project directory is exactly the thing you may not have written yourself. See
+[§12](#12-permissions-allow-and-deny-rules). `permissions.allow` unions for
+symmetry; since an allow can never beat a deny, a wider allow list cannot widen
+the boundary either way.
+
+Use `agent-cli doctor` when a value surprises you: it prints every layer in
+order, marking any that is absent. A surprising value is usually a value from a
+layer you forgot you had.
 
 A fully commented starting point covering every section below ships with the
 repository as [`example/config.example.toml`](../example/config.example.toml).
@@ -63,6 +103,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 [tools.websearch]           # websearch tool endpoint / key (opt-in)
 
 [ui]                        # Display mode
+[permissions]               # Per-call allow / deny rules for tool calls
 [shell]                     # `!<command>` typed at the prompt
 [spawn]                     # limits on agents the `spawn` tool may create
 [history]                   # Opt-in history-window management
@@ -304,7 +345,26 @@ max_depth    = 2
 
 When either limit is reached the `spawn` tool returns an error naming the limit and the current count; no process is created. An agent frees a slot with `stop_agent`.
 
-The limits matter because a spawned peer runs headless — it auto-approves its own tool calls — and inherits this agent's config file, so a `spawn`-enabled agent produces `spawn`-enabled children. Note that an agent started with `agent-cli spawn` is the root of its own tree at depth 0, so `max_depth` bounds each tree rather than the machine.
+The limits matter because a spawned peer runs headless — it auto-approves its own tool calls — and inherits this agent's config chain, so a `spawn`-enabled agent produces `spawn`-enabled children. It also inherits the `[permissions]` rules, which are the only gate a headless agent has. Note that an agent started with `agent-cli spawn` is the root of its own tree at depth 0, so `max_depth` bounds each tree rather than the machine.
+
+### `[permissions]`
+
+Per-call rules for tools the model asks to run. Optional throughout: with no rules and no `default_mode`, every call goes to the y/N approval prompt exactly as it did before this section existed. Full reference in [§12](#12-permissions-allow-and-deny-rules).
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `deny` | array | `[]` | Rules that refuse a call outright. Outranks `allow`, `default_mode`, **and** `auto_approve_tools` / `/auto on` |
+| `allow` | array | `[]` | Rules that run a call without asking |
+| `default_mode` | string | `"ask"` | What happens to a call no rule matched: `"ask"` / `"allow"` / `"deny"`. `defaultMode` is accepted as an alias |
+
+```toml
+[permissions]
+deny  = ["bash(rm -rf ~/**)", "read(.env*)"]
+allow = ["bash(git status:*)"]
+default_mode = "ask"
+```
+
+`deny` and `allow` are the two arrays that **union** across config layers rather than being replaced — see [§1](#1-configuration-file-location-and-resolution-order).
 
 ### `[history]`
 
@@ -769,3 +829,149 @@ prints an `[info]` line reporting what was compacted. Works with any provider.
 > request (claude/ollama/codex/opencode-cloud APIs are stateless); only the
 > TCP/TLS socket is pooled. These features reduce *what* is reprocessed/sent,
 > not the per-send request model. See [`doc/architecture.md`](architecture.md).
+## 12. Permissions: allow and deny rules
+
+Two gates stand between the model and a tool.
+
+The **first** decides *which tools exist*: `[tools] enabled`, intersected with a
+persona's `allowed_tools` and minus its `denied_tools`. It works at whole-tool
+granularity, once, at startup — `bash` is present or absent for the session
+(see [§3](#3-full-item-reference) and [`doc/personas.md`](personas.md)).
+
+The **second** is `[permissions]`, and it is the finer one: for a tool that does
+exist, may it run with the arguments the model chose? This is where "git is fine,
+`rm -rf ~` never" is written down.
+
+The whole section is **optional**. With no rules and no `default_mode`, every
+call goes to the y/N approval prompt exactly as it did before the section
+existed.
+
+```toml
+[permissions]
+deny = [
+  "bash(rm -rf ~/**)",     # unrecoverable
+  "bash(npm publish:*)",   # a mistaken publish cannot be taken back
+  "read(.env*)",           # secrets would land in the conversation log
+]
+allow = [
+  "bash(git status:*)",
+  "bash(git diff:*)",
+  "grep",
+]
+default_mode = "ask"       # "ask" (default) | "allow" | "deny"
+```
+
+The comment beside each deny rule is the reason these lists live in `config.toml`
+rather than in a JSON file: a deny rule's *why* matters as much as the rule.
+
+### 12.1 Rule syntax
+
+A rule is `tool` — every call of that tool, whatever its arguments — or
+`tool(pattern)`. Patterns come in three shapes:
+
+| Shape | Example | Matches |
+|---|---|---|
+| Command prefix | `bash(git:*)` | A command whose **leading words** are `git`. Matches `git status`, not `github-cli x` |
+| Domain | `webfetch(domain:github.com)` | The URL's host. `*` is allowed |
+| Glob | `read(.env*)`, `bash(rm -rf ~/**)` | A glob over the tool's gated argument |
+
+### 12.2 What each tool is gated on
+
+Each tool has exactly one argument a pattern is matched against:
+
+| Tool | Gated argument |
+|---|---|
+| `bash`, `monitor` | `command` |
+| `read`, `write`, `edit` | `file_path` |
+| `glob`, `grep` | `path` (absent means `.`) |
+| `webfetch` | the host of `url` |
+| `send_to`, `stop_agent` | `peer` |
+| `websearch`, `list_agents`, `spawn`, `mcp__*` | none — only the bare `tool` form applies |
+
+`glob` and `grep` are gated on `path` and **never** on their `pattern`, which is
+a *search* pattern: `grep(secret)` would otherwise mean "may not search for the
+word secret".
+
+A pattern written against a tool that has no gated argument can never match, so
+it is reported as a warning at startup rather than silently doing nothing.
+
+A path pattern is matched against the path as the model wrote it **and** against
+its resolved absolute form, so `read(.env*)` catches `.env`, `./.env` and
+`/home/alice/project/.env` alike. Resolution does not require the file to exist,
+because `write` and `edit` create files.
+
+### 12.3 Tool names
+
+Names are matched **case-insensitively and ignoring `_`**, so `Bash` ≡ `bash`,
+`WebFetch` ≡ `webfetch` and `SendTo` ≡ `send_to`. Rules copied from a Claude
+Code `settings.json` therefore work unedited. agent-cli's own spelling —
+lowercase, `snake_case` — is the canonical one and is what `/permissions`
+prints.
+
+A rule naming a tool agent-cli does not have (Claude Code's `MultiEdit`, for
+instance) is **inert and reported**, not fatal: a configuration that refused to
+start would be a worse failure, and the warning is what stops it being silent.
+
+### 12.4 Precedence
+
+```text
+1. The tool must exist         ([tools] enabled ∩ persona lists)
+2. A matching deny  -> refused
+3. A matching allow -> runs without asking
+4. No match         -> default_mode
+```
+
+**A `deny` outranks `auto_approve_tools` and `/auto on`.** A denied call is
+refused with `/auto on`, with `--auto-approve-tools`, and with
+`[runtime] auto_approve_tools = true`. A deny list that a flag can switch off is
+not a deny list — and this matters most for `agent-cli serve`, which
+auto-approves unconditionally because it has no console to ask at, so a `deny`
+is the only thing standing in front of it.
+
+`default_mode = "ask"` hands the call to the ordinary approval flow, which
+`auto_approve_tools` may still skip. Claude Code's other modes — `acceptEdits`
+among them — have no agent-cli equivalent; they are accepted with a warning and
+treated as `"ask"`. `defaultMode` is accepted as a spelling of `default_mode`.
+
+A refusal names the rule that caused it, both on screen and to the model:
+
+```text
+denied by permission rule: deny "bash(rm -rf ~/**)"
+```
+
+### 12.5 What the rules do not cover
+
+- **`!<command>` typed at the prompt** is your own command, not a tool call the
+  model asked for. It is never gated: a rule there would gate you against
+  yourself. See [`doc/usage.md`](usage.md).
+- **The `claude-code` backend in delegation mode** runs its tools inside Claude
+  Code, where agent-cli has nothing to gate. Use that backend's own
+  `permission_mode` / `tools` / `allowed_tools` / `disallowed_tools` — see
+  [`doc/providers/claude-code.md`](providers/claude-code.md).
+
+### 12.6 A guardrail, not a sandbox
+
+These rules stop mistakes. They do not stop a determined adversary, and nothing
+in their design pretends otherwise. Only the leading words of a command are
+inspected, so `bash(rm:*)` does not stop:
+
+```bash
+/bin/rm -rf x            # a different first word
+sh -c 'rm -rf x'         # rm is not the leading word
+cd x && rm -rf .         # only the first command is inspected
+./cleanup.sh             # a script that calls rm
+```
+
+If you need a boundary that holds against something actively trying to get
+around it, run agent-cli in a container.
+
+### 12.7 Inspecting the rules in force
+
+`/permissions` in the REPL prints the config chain, the merged `deny` and
+`allow` lists, the effective `default_mode`, and every warning. `agent-cli
+doctor` reports the same from outside a session. Rules are read at startup;
+changing them takes a restart.
+
+Remember that `deny` and `allow` **union** across config layers (see
+[§1](#1-configuration-file-location-and-resolution-order)), so a project file
+adds to your machine-wide rules and cannot remove them.

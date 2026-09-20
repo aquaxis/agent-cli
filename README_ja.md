@@ -13,6 +13,8 @@
 - デタッチドエージェント — `agent-cli spawn`（または `/spawn`）は、起動元プロセスに依存せず独自セッションで動くヘッドレスなピアを作成します。`agent-cli stop <peer>`（または `/stop`）で停止します。
 - グループ — 起動したコホートを `--group <id>` でタグ付け（デタッチドな子が継承）。`agent-cli list --group <id>` で絞り込み、`agent-cli groups` で稼働中のコホートを検出します。
 - ペルソナファイル（YAML フロントマター + Markdown 本文）でロール、スキル、ツールの許可/拒否リスト、モデル、temperature を定義します。
+- ツール呼び出し単位の権限ルール — `config.toml` の `[permissions]` に `tool(pattern)` 形式の `deny` / `allow` を書けるので、「git は可、`rm -rf ~` は不可」を y/N プロンプトに毎回答える代わりに設定として残せます。`deny` は `--auto-approve-tools` や `/auto on` より優先されるため、ヘッドレスな `serve` エージェントに対しても効く唯一のゲートになります。有効なルールは `/permissions` で確認できます。これはミスに対するガードレールであって、サンドボックスではありません。
+- 設定ファイルの階層化 — `~/.config/agent-cli/config.toml` を土台として `./.agent-cli/config.toml` がキー単位で上書きするので、プロジェクト側のファイルは設定を置き換えるのではなく絞り込みます。`--config` は複数指定可能でチェーン全体を置き換え、デタッチしたエージェントは全層を引き継ぎます。
 - 組み込みツール: `bash` / `read` / `write` / `send_to` / `edit` / `glob` / `grep` / `monitor` / `websearch` / `webfetch`。承認モードは実行中に `/auto on` で切り替えられます。
 - カスタムスラッシュコマンド — `.agent-cli/commands/` に Markdown ファイルを置くだけで `/<name>` として使えます。`$ARGUMENTS` / `$1`…`$N` / `@file` の展開と、前方一致による自動実行に対応します。
 - プロンプトの行編集 — `↑` / `↓` での履歴参照、`Ctrl+A` / `Ctrl+E`、`Esc` でのクリア、`/` コマンド入力中の候補表示（プロンプトの 1 行上）、`Tab` によるコマンド補完。
