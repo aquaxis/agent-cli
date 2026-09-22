@@ -4,6 +4,31 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.21.0]
+
+### Added
+
+- `agent-cli doctor` now reports the clipboard route a copied selection takes
+  — the configured `[ui] copy_command`, or OSC 52 — and for OSC 52 the
+  prerequisites of an actual arrival: inside tmux the two settings that
+  deliver the two forms, outside tmux the note that the `[clip]` line
+  confirms the send rather than the arrival.
+
+### Fixed
+
+- **Mouse-selection copies now have a route to the clipboard inside tmux.**
+  Inside tmux only the DCS-passthrough-wrapped OSC 52 form was written, and
+  tmux ≥ 3.3 has the pane option `allow-passthrough` **off** by default, so the
+  sequence was dropped before it reached the outer terminal while `[clip]
+  copied … via osc52` reported success. Both forms are now written for one
+  copy — the bare form (tmux re-emits it to the outer terminal when
+  `set-clipboard` is `on`, which its own terminfo view normally supports via
+  the `Ms` capability) and the wrapped one (delivered when `allow-passthrough`
+  is `on`) — carrying the same payload, so one `set -g` of either option puts
+  a paste within reach. Under the stock defaults tmux still delivers neither,
+  which no emission can change; `agent-cli doctor` reports both settings and
+  the `[ui] copy_command` way out. Outside tmux the emission is unchanged.
+
 ## [0.20.0]
 
 ### Added

@@ -6,7 +6,9 @@
 //!   which puts it on the clipboard of whoever is *looking at* the session.
 //!   That matters: agent-cli commonly runs over SSH or inside a container,
 //!   where a helper binary would copy into a clipboard nobody can paste from,
-//!   and often there is no helper binary at all.
+//!   and often there is no helper binary at all. Inside tmux both the bare
+//!   and the passthrough-wrapped form are written, because tmux delivers
+//!   each under a different configuration (see [`osc52`]).
 //! * **`[ui] copy_command`** — the text piped to a command's stdin
 //!   (`wl-copy`, `xclip -selection clipboard`, …), for terminals that refuse
 //!   OSC 52.
@@ -113,22 +115,45 @@ pub fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// The OSC 52 sequence that sets the clipboard to `text`.
+/// The escape sequences that set the clipboard to `text`.
 ///
-/// Inside tmux the sequence has to be wrapped in tmux's passthrough or tmux
-/// eats it and nothing reaches the terminal — the difference between the
-/// feature working and appearing to do nothing at all.
+/// Outside tmux this is the one bare OSC 52 sequence. Inside tmux **both**
+/// forms are written, with the same payload, because each is delivered under
+/// a different tmux configuration and the defaults close them in opposite
+/// directions (measured on tmux 3.6, delivery observed on the outer
+/// terminal; tmux 3.6's `input_osc_52` returns unless `set-clipboard` is
+/// `on`, so the default `external` never forwards a program's sequence):
+///
+/// | `allow-passthrough` (pane, default `off`) | `set-clipboard` (default `external`) | bare form | wrapped form |
+/// |---|---|---|---|
+/// | off | off or `external` | consumed | dropped |
+/// | off | on | **forwarded** when tmux sees an `Ms` capability, else consumed | dropped |
+/// | on | off or `external` | consumed | **forwarded** |
+/// | on | on | **forwarded** when tmux sees an `Ms` capability | **forwarded** |
+///
+/// The bare form is the one tmux itself understands, and only `on` hands it
+/// to the outer terminal; the re-emission additionally needs tmux to see an
+/// `Ms` capability for that terminal, which its own terminfo table carries
+/// for the common ones (`infocmp -x "$TERM" | grep Ms` — the `-x` matters,
+/// plain `infocmp` omits extended capabilities). The DCS-passthrough form
+/// bypasses tmux entirely, but only while the pane's `allow-passthrough` is
+/// `on`. Under the stock defaults neither form arrives, which is why sending
+/// only the wrapped form looked like a success and never arrived, and why
+/// both are sent: one `set -g` either way puts a paste within reach. Where
+/// both are forwarded the clipboard is set twice to the same text —
+/// idempotent, and cheaper than a session where neither arrives.
 pub fn osc52(text: &str, in_tmux: bool) -> String {
     let payload = base64(text.as_bytes());
+    let bare = format!("\u{1b}]52;c;{payload}\u{7}");
     if in_tmux {
-        format!("\u{1b}Ptmux;\u{1b}\u{1b}]52;c;{payload}\u{7}\u{1b}\\")
+        format!("{bare}\u{1b}Ptmux;\u{1b}\u{1b}]52;c;{payload}\u{7}\u{1b}\\")
     } else {
-        format!("\u{1b}]52;c;{payload}\u{7}")
+        bare
     }
 }
 
 /// Whether this process is running inside tmux.
-fn in_tmux() -> bool {
+pub(crate) fn in_tmux() -> bool {
     std::env::var_os("TMUX").is_some()
 }
 
@@ -238,9 +263,12 @@ mod tests {
     #[test]
     fn osc52_is_wrapped_for_tmux() {
         let seq = osc52("foo", true);
-        assert!(seq.starts_with("\u{1b}Ptmux;\u{1b}"), "tmux passthrough: {seq:?}");
-        assert!(seq.ends_with("\u{1b}\\"), "terminated for tmux: {seq:?}");
-        assert!(seq.contains("]52;c;Zm9v"), "payload survives: {seq:?}");
+        assert!(seq.starts_with("\u{1b}]52;c;Zm9v\u{7}"), "bare form first: {seq:?}");
+        assert!(
+            seq.contains("\u{1b}Ptmux;\u{1b}\u{1b}]52;c;Zm9v\u{7}\u{1b}\\"),
+            "wrapped form second: {seq:?}"
+        );
+        assert_eq!(seq.matches("]52;c;Zm9v").count(), 2, "one payload, two forms: {seq:?}");
     }
 
     #[test]

@@ -300,15 +300,34 @@ Behaviour below was observed with Claude Code `2.1.233`.
 
 ### Nothing is pasted after selecting the log with the mouse
 
+Start with `agent-cli doctor`: it prints the clipboard route in effect and,
+for OSC 52, the prerequisites below.
+
 - agent-cli copies by writing the **OSC 52** escape sequence to your terminal.
   Not every terminal accepts it, and several need it enabled first: xterm wants
   `allowWindowOps` (or `disallowedWindowOps` without `SetSelection`), and a few
   emulators have a "clipboard write" or "OSC 52" permission setting. The
   `[clip]` line saying `via osc52` means agent-cli *sent* it — the sequence is
   fire-and-forget, so a terminal that ignores it looks exactly like a success.
-- **Inside tmux** the sequence is wrapped in tmux's passthrough automatically,
-  but tmux itself must allow it: `set -g allow-passthrough on`, and
-  `set -g set-clipboard on` for it to reach the outer terminal.
+- **Inside tmux** both forms are written for one copy, because tmux delivers
+  each under a different setting and their defaults differ:
+  - the **bare** form is re-emitted by tmux to the outer terminal when
+    `set -g set-clipboard on` — only `on` does this. The default is
+    `external`, which reads pane clipboard attempts but never forwards one,
+    so with the default the bare form goes nowhere;
+  - the re-emission additionally needs tmux to see an `Ms` capability for the
+    outer terminal — tmux's own terminfo table carries it for the common ones
+    (`infocmp -x "$TERM" | grep Ms`; the `-x` matters, plain `infocmp` omits
+    extended capabilities). `doctor` reports the route without trying to
+    detect any of this from inside agent-cli, which no program can do
+    reliably;
+  - the **wrapped** passthrough form reaches the outer terminal when the pane
+    option `allow-passthrough` is `on` — `set -g allow-passthrough on`. Its
+    default has been **off** since tmux 3.3, which is why a stock tmux drops
+    agent-cli's copy while the `[clip]` line reports success. Under the stock
+    defaults tmux delivers **neither** form — no emission can change that,
+    which is why both are sent (one `set -g` of either option puts a paste
+    within reach).
 - **The way round it** is to pipe the text to a clipboard command instead:
 
   ```toml

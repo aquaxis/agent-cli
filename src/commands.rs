@@ -483,6 +483,9 @@ pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
     }
     println!("[doctor] config explicit : {}", source.from_explicit);
     report_permissions(cfg);
+    for line in clipboard_report(&cfg.ui.copy_command, crate::clip::in_tmux()) {
+        println!("{line}");
+    }
 
     // MCP servers check (fail-soft: a bad server is reported here but never
     // aborts startup — see `mcp::connect_all`).
@@ -1145,6 +1148,35 @@ fn report_permissions(cfg: &Config) {
     }
 }
 
+/// The `doctor` clipboard lines: the route a copied selection takes and, for
+/// the OSC 52 route, what has to hold before the sequence actually arrives.
+/// Pure, so the wording is pinned by tests rather than by a terminal. It
+/// never reports a failure — a route with unmet prerequisites is not a broken
+/// configuration, and the `[clip]` line already names its route per copy.
+fn clipboard_report(copy_command: &str, in_tmux: bool) -> Vec<String> {
+    let cmd = copy_command.trim();
+    if !cmd.is_empty() {
+        return vec![format!(
+            "[doctor] clipboard route  : {cmd} ([ui] copy_command) — the [clip] line reports its exit status"
+        )];
+    }
+    let mut lines = vec![format!(
+        "[doctor] clipboard route  : osc52 (set [ui] copy_command to override)"
+    )];
+    if in_tmux {
+        lines.push(
+            "[doctor] clipboard tmux   : both forms are sent — `set -g allow-passthrough on` delivers the wrapped form, `set -g set-clipboard on` delivers the bare form (tmux re-emits it when it sees an `Ms` capability for the outer terminal); until one is set, a paste comes up empty"
+                .to_string(),
+        );
+    } else {
+        lines.push(
+            "[doctor] clipboard note   : the [clip] line confirms the send, not the arrival — a terminal that ignores OSC 52 looks exactly like a success; set [ui] copy_command if a paste comes up empty"
+                .to_string(),
+        );
+    }
+    lines
+}
+
 /// Open the highest-priority layer — the project file when there is one, since
 /// that is the file an edit in this directory is meant to change.
 pub fn config_edit(source: &ConfigSource) -> Result<()> {
@@ -1167,6 +1199,33 @@ mod tests {
     use chrono::Utc;
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    #[test]
+    fn the_clipboard_report_names_the_command_route_when_one_is_set() {
+        let lines = clipboard_report("  wl-copy  ", true);
+        assert_eq!(lines.len(), 1, "a command route needs no tmux lines: {lines:?}");
+        assert!(lines[0].contains("wl-copy"), "{lines:?}");
+        assert!(lines[0].contains("copy_command"), "{lines:?}");
+        assert!(lines[0].contains("exit status"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_clipboard_report_inside_tmux_names_both_settings() {
+        let lines = clipboard_report("", true);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("osc52"), "{lines:?}");
+        assert!(lines[1].contains("allow-passthrough"), "{lines:?}");
+        assert!(lines[1].contains("set-clipboard"), "{lines:?}");
+        assert!(lines[1].contains("Ms"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_clipboard_report_outside_tmux_says_the_send_is_not_the_arrival() {
+        let lines = clipboard_report("", false);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[1].contains("confirms the send, not the arrival"), "{lines:?}");
+        assert!(lines[1].contains("copy_command"), "{lines:?}");
+    }
 
     fn entry_with_group(name: &str, group: Option<&str>) -> RegistryEntry {
         RegistryEntry {
