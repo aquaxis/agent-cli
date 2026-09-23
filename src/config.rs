@@ -976,6 +976,72 @@ fn unions(path: &[&str]) -> bool {
     matches!(path, ["permissions", "deny"] | ["permissions", "allow"])
 }
 
+/// The TOML spellings that deserialize to one field, and the canonical one.
+///
+/// Keep in step with the `#[serde(alias = ...)]` attributes on the config
+/// structs — serde rejects a table carrying both spellings of one field, and
+/// layering two files can produce exactly that: the merge matches keys by name
+/// on `toml::Value`, so a base `[tools.bash]` plus an overlay `[tools.shell]`
+/// deserialize as one table holding both (see doc/troubleshooting.md).
+const ALIASES: &[(&str, &str, &str)] = &[
+    // (table, legacy, canonical)
+    ("tools", "shell", "bash"),
+    ("permissions", "defaultMode", "default_mode"),
+];
+
+/// Rename a layer's legacy spellings to their canonical ones.
+///
+/// Applied to each layer right after its parse and before it enters
+/// [`merge`], so layer precedence — the overlay winning — decides the outcome
+/// for free, whatever spelling each layer used. Within one layer carrying both
+/// spellings there is no order to consult, so the two tables combine: the
+/// canonical spelling's keys win each conflict, the legacy table's keys fill
+/// where the canonical one is absent. Every rename is reported, naming the
+/// file — a rewrite nobody hears about is not a compatibility shim but a
+/// surprise.
+///
+/// Only the aliased keys are touched; every other key passes through. The
+/// returned strings are the report: one line per renamed key.
+fn canonicalize_aliases(value: toml::Value, file: &Path) -> (toml::Value, Vec<String>) {
+    use toml::Value;
+
+    let mut renames = Vec::new();
+    let mut value = value;
+    let Value::Table(root) = &mut value else {
+        return (value, renames);
+    };
+    for (table, legacy, canonical) in ALIASES {
+        let Some(Value::Table(t)) = root.get_mut(*table) else {
+            continue;
+        };
+        let legacy_table = t.remove(*legacy);
+        let canonical_table = t.remove(*canonical);
+        if legacy_table.is_none() && canonical_table.is_none() {
+            continue;
+        }
+        let combined = match (legacy_table, canonical_table) {
+            (Some(Value::Table(lt)), Some(Value::Table(mut ct))) => {
+                for (k, v) in lt {
+                    ct.entry(k).or_insert(v);
+                }
+                Value::Table(ct)
+            }
+            // A legacy value that is not a table cannot be merged into one:
+            // the canonical spelling wins the conflict.
+            (Some(_), Some(c)) => c,
+            (Some(l), None) => l,
+            (None, Some(c)) => c,
+            (None, None) => continue,
+        };
+        renames.push(format!(
+            "renamed legacy key [{table}.{legacy}] → [{table}.{canonical}] in {}",
+            file.display()
+        ));
+        t.insert((*canonical).to_string(), combined);
+    }
+    (value, renames)
+}
+
 /// Read and merge every layer of `source`.
 ///
 /// The merge happens on `toml::Value`, before `Config` is deserialized, so
@@ -1012,13 +1078,25 @@ pub fn load(source: &ConfigSource) -> Result<Config> {
         let value: toml::Value = toml::from_str(&raw).map_err(|e| {
             AppError::config(format!("{}: {e}", path.display()))
         })?;
+        let (value, renames) = canonicalize_aliases(value, path);
+        for rename in &renames {
+            tracing::info!(file = %path.display(), rename, "renamed legacy key to its canonical spelling");
+        }
         merged = Some(match merged {
             Some(base) => merge(base, value),
             None => value,
         });
     }
     let merged = merged.expect("at least one layer was present");
-    let cfg: Config = merged.try_into()?;
+    let chain = source
+        .chain()
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cfg: Config = merged.try_into().map_err(|e| {
+        AppError::config(format!("merged configuration ({chain}): {e}"))
+    })?;
     Ok(cfg)
 }
 
@@ -2182,5 +2260,186 @@ api         = "openai"
         let kind_before = cfg.provider.kind.clone();
         cfg.apply_opencode_go_defaults();
         assert_eq!(cfg.provider.kind, kind_before, "no-op for non-opencode-go kind");
+    }
+
+    // ── Per-layer alias normalization (the `duplicate field` failure) ────────
+    //
+    // serde rejects a table carrying both spellings of one aliased field, and
+    // the layered merge matches keys by name before deserialization — so a
+    // base `[tools.bash]` plus an overlay `[tools.shell]` used to fail with
+    // `duplicate field `bash` in `tools``. Each layer is now normalized to the
+    // canonical spellings before the merge; the tests pin the whole matrix.
+
+    /// The provider section every test config needs.
+    const PROVIDER: &str = "[provider]\nkind = \"claude\"\n";
+
+    fn layer(tools_bash: &str, tools_shell: &str) -> String {
+        let mut s = PROVIDER.to_string();
+        if !tools_bash.is_empty() {
+            s.push_str("\n[tools.bash]\n");
+            s.push_str(tools_bash);
+        }
+        if !tools_shell.is_empty() {
+            s.push_str("\n[tools.shell]\n");
+            s.push_str(tools_shell);
+        }
+        s
+    }
+
+    fn parse(toml_src: &str) -> toml::Value {
+        toml::from_str(toml_src).unwrap()
+    }
+
+    fn load_layers(base: &str, overlay: &str) -> Config {
+        load(&ConfigSource {
+            layers: vec![PathBuf::from(base), PathBuf::from(overlay)],
+            from_explicit: true,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn the_reported_shape_loads_and_the_overlay_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.toml");
+        let over = dir.path().join("overlay.toml");
+        std::fs::write(&base, layer("timeout_ms    = 60000", "")).unwrap();
+        std::fs::write(&over, layer("", "timeout_ms    = 300000")).unwrap();
+        let cfg = load_layers(base.to_str().unwrap(), over.to_str().unwrap());
+        assert_eq!(cfg.tools.bash.timeout_ms, 300_000);
+        assert_eq!(cfg.tools.bash.max_output_kb, 256); // the base's, kept
+    }
+
+    #[test]
+    fn the_reverse_order_loads_and_the_overlay_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.toml");
+        let over = dir.path().join("overlay.toml");
+        std::fs::write(&base, layer("", "timeout_ms    = 60000")).unwrap();
+        std::fs::write(&over, layer("timeout_ms    = 300000", "")).unwrap();
+        let cfg = load_layers(base.to_str().unwrap(), over.to_str().unwrap());
+        assert_eq!(cfg.tools.bash.timeout_ms, 300_000);
+    }
+
+    #[test]
+    fn one_file_carrying_both_spellings_loads_with_canonical_winning() {
+        // The layer path is the one that matters: canonicalize the value the
+        // way `load` does, then deserialize the result.
+        let (v, renames) = canonicalize_aliases(
+            parse(&layer("timeout_ms    = 60000", "timeout_ms    = 300000")),
+            Path::new("x.toml"),
+        );
+        assert_eq!(renames.len(), 1);
+        let cfg: Config = v.try_into().unwrap();
+        // The canonical spelling ([tools.bash]) wins the conflict; the legacy
+        // table only fills keys the canonical one does not set.
+        assert_eq!(cfg.tools.bash.timeout_ms, 60_000);
+        // The legacy table's keys fill where the canonical one is absent:
+        let (v, _) = canonicalize_aliases(
+            parse(&layer(
+                "timeout_ms    = 60000",
+                "max_output_kb = 512",
+            )),
+            Path::new("x.toml"),
+        );
+        let fills: Config = v.try_into().unwrap();
+        assert_eq!(fills.tools.bash.timeout_ms, 60_000);
+        assert_eq!(fills.tools.bash.max_output_kb, 512);
+    }
+
+    #[test]
+    fn the_sibling_alias_pair_loads_in_both_orders() {
+        let both = |base: &str, over: &str| -> String {
+            let dir = tempfile::tempdir().unwrap();
+            let (b, o) = (dir.path().join("base.toml"), dir.path().join("overlay.toml"));
+            std::fs::write(&b, base).unwrap();
+            std::fs::write(&o, over).unwrap();
+            load(&ConfigSource {
+                layers: vec![b, o],
+                from_explicit: true,
+            })
+            .unwrap()
+            .permissions
+            .default_mode
+            .clone()
+            .unwrap()
+        };
+        assert_eq!(
+            both(
+                "[provider]\nkind = \"claude\"\n[permissions]\ndefaultMode = \"deny\"\n",
+                "[provider]\nkind = \"claude\"\n[permissions]\ndefault_mode = \"allow\"\n"
+            ),
+            "allow"
+        );
+        assert_eq!(
+            both(
+                "[provider]\nkind = \"claude\"\n[permissions]\ndefault_mode = \"allow\"\n",
+                "[provider]\nkind = \"claude\"\n[permissions]\ndefaultMode = \"deny\"\n"
+            ),
+            "deny"
+        );
+        assert_eq!(
+            both(
+                "[provider]\nkind = \"claude\"\n[permissions]\ndefaultMode = \"deny\"\n",
+                "[provider]\nkind = \"claude\"\n[permissions]\ndefault_mode = \"ask\"\n"
+            ),
+            "ask"
+        );
+    }
+
+    #[test]
+    fn the_controls_load_exactly_as_before() {
+        // Alias-only:
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.toml");
+        let over = dir.path().join("overlay.toml");
+        std::fs::write(&base, layer("", "timeout_ms    = 60000")).unwrap();
+        let cfg = load(&ConfigSource {
+            layers: vec![base.clone()],
+            from_explicit: true,
+        })
+        .unwrap();
+        assert_eq!(cfg.tools.bash.timeout_ms, 60_000);
+        // Same spelling in both layers — the overlay wins (today's rule):
+        std::fs::write(&over, layer("timeout_ms    = 300000", "")).unwrap();
+        let cfg = load(&ConfigSource {
+            layers: vec![base, over],
+            from_explicit: true,
+        })
+        .unwrap();
+        assert_eq!(cfg.tools.bash.timeout_ms, 300_000);
+    }
+
+    #[test]
+    fn renames_are_reported_naming_the_file_and_the_pair() {
+        let dir = tempfile::tempdir().unwrap();
+        let over = dir.path().join("overlay.toml");
+        std::fs::write(&over, layer("", "timeout_ms    = 60000")).unwrap();
+        let value: toml::Value = toml::from_str(&std::fs::read_to_string(&over).unwrap()).unwrap();
+        let (_, renames) = canonicalize_aliases(value, &over);
+        assert_eq!(renames.len(), 1);
+        let r = &renames[0];
+        assert!(r.contains("[tools.shell] → [tools.bash]"), "{r}");
+        assert!(r.contains(over.to_str().unwrap()), "{r}");
+    }
+
+    #[test]
+    fn a_still_broken_merged_configuration_names_the_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("base.toml");
+        let over = dir.path().join("overlay.toml");
+        std::fs::write(&base, PROVIDER).unwrap();
+        std::fs::write(&over, PROVIDER).unwrap(); // provider twice: no conflict
+        // A genuine type error the normalization does not touch:
+        std::fs::write(&over, "[provider]\nkind = \"claude\"\n\n[ui]\nmouse_scroll = \"not-a-bool\"\n").unwrap();
+        let err = load(&ConfigSource {
+            layers: vec![base, over],
+            from_explicit: true,
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("merged configuration ("), "{err}");
+        assert!(err.contains("base.toml"), "{err}");
+        assert!(err.contains("overlay.toml"), "{err}");
     }
 }

@@ -68,6 +68,37 @@ Almost always a value coming from the *other* layer.
 - If you want one file and nothing else, use `--config <path>`; a single
   occurrence replaces the chain.
 
+### Getting `toml parse error: duplicate field 'bash' in 'tools'` at startup
+
+One configuration key is arriving under **both** of its spellings, and serde
+refuses the table that carries both. Two spellings of one key exist: the legacy
+`[tools.shell]` (now `[tools.bash]`) and `defaultMode` (now `default_mode`).
+Since v0.20.0 the two configuration files are merged key by key, so a
+user-level file with `[tools.bash]` and a project-local `.agent-cli/config.toml`
+with `[tools.shell]` — or the reverse — deserialize as one table holding both,
+and the process exits before anything runs. Every command that loads the
+configuration fails the same way, `doctor` included; only `agent-cli config
+path` (which does not deserialize) still prints the chain, and `agent-cli
+update` (which does not load it) still runs.
+
+1. Run `agent-cli config path` — it prints every layer, lowest priority first.
+2. Search the named files for the legacy spellings (`tools.shell`,
+   `defaultMode`) and any file carrying both spellings of one key.
+3. Pick a remedy:
+
+- **Rename the legacy spelling to the canonical one** in the offending file
+  (`[tools.shell]` → `[tools.bash]`). The chain then loads with every setting
+  intact — the merge already gives the overlay's values precedence for
+  same-named keys.
+- **Bypass the overlay**: `agent-cli --config <user file> run` runs clean, at
+  the cost of the overlay entirely — its `[permissions]`, `[runtime]` and
+  `[tools]` are not in effect.
+- **Update**: `agent-cli update` works even on a broken directory. From
+  v0.22.0 such a configuration loads: the project overlay overrides the
+  user-level file whatever spelling either used, and each rename is reported
+  at load, e.g. `renamed legacy key [tools.shell] → [tools.bash] in
+  <file>`.
+
 ### A tool call was refused with `denied by permission rule`
 
 Working as configured — the message names the rule that refused it.

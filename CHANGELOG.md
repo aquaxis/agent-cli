@@ -4,6 +4,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.22.0]
+
+### Fixed
+
+- **Layered configurations no longer fail with `duplicate field 'bash' in 'tools'`.**
+  One key written under both of its spellings — `[tools.bash]` and the legacy
+  `[tools.shell]`, or `[permissions] default_mode` and the legacy `defaultMode` —
+  in different layers (a project overlay over the user-level file) or within one
+  file made every command exit with a TOML parse error that named only the
+  field. Each layer is now normalized to the canonical spelling before the
+  merge, so the project overlay overrides the user-level file regardless of the
+  spelling either used; each rename is reported at load, and a merged
+  configuration that still fails names the chain it was merged from.
+
 ## [0.21.0]
 
 ### Added

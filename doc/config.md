@@ -70,6 +70,7 @@ agent-cli config path
 | Scalar (string, number, boolean) | **Replaced** by the overlay |
 | Array | **Replaced** by the overlay. `[tools] enabled = ["read"]` in a project file means "this tool set, here" — appending would make it impossible to *narrow* a tool set locally |
 | `permissions.deny`, `permissions.allow` | **Unioned.** This is the one exception to the array rule |
+| Legacy spellings (`tools.shell`, `permissions.defaultMode`) | **Normalized** to the canonical spellings per layer, **before** the merge, and the rename is reported. The last layer mentioning the key wins whatever spelling it used. A layer carrying **both** spellings of one key combines them — the canonical spelling wins each conflict, the legacy table's keys fill where the canonical one is absent — instead of failing with `duplicate field …` |
 
 `permissions.deny` unions rather than replacing because otherwise a project file
 could delete a machine-wide deny rule simply by redefining the list — and a
@@ -355,7 +356,7 @@ Per-call rules for tools the model asks to run. Optional throughout: with no rul
 |------|----|------|------|
 | `deny` | array | `[]` | Rules that refuse a call outright. Outranks `allow`, `default_mode`, **and** `auto_approve_tools` / `/auto on` |
 | `allow` | array | `[]` | Rules that run a call without asking |
-| `default_mode` | string | `"ask"` | What happens to a call no rule matched: `"ask"` / `"allow"` / `"deny"`. `defaultMode` is accepted as an alias |
+| `default_mode` | string | `"ask"` | What happens to a call no rule matched: `"ask"` / `"allow"` / `"deny"`. `defaultMode` is accepted as an alias — see [§1](#1-configuration-file-location-and-resolution-order) for how the two spellings layer |
 
 ```toml
 [permissions]
