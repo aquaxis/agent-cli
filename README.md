@@ -587,7 +587,9 @@ agent-cli run --name alice
 # → <agents_dir>/alice.md is auto-loaded
 ```
 
-Resolution order: **`--persona <path>` → `[runtime] persona_file` → `<agents_dir>/<name>.md` → built-in default.**
+Resolution order: **`--persona <path>` → `[runtime] persona_file` → `<agents_dir>/<name>.md` → `.agent-cli/persona.md` → built-in default.**
+
+A project can state the role of the agent that runs in it: drop a persona file at `.agent-cli/persona.md` and every agent-cli started in that directory — interactive, headless, or a detached child — adopts it, instead of the built-in default. It is discovered, not requested: absent is not an error, while a file that exists and cannot be loaded is one, naming the path. The file in use is reported at startup and shown by `/persona`.
 
 Minimal example:
 

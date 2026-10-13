@@ -587,7 +587,9 @@ agent-cli run --name alice
 # → <agents_dir>/alice.md が自動読み込みされます
 ```
 
-解決順序: **`--persona <path>` → `[runtime] persona_file` → `<agents_dir>/<name>.md` → 組み込みデフォルト。**
+解決順序: **`--persona <path>` → `[runtime] persona_file` → `<agents_dir>/<name>.md` → `.agent-cli/persona.md` → 組み込みデフォルト。**
+
+プロジェクト自身が、そこで動くエージェントの役目を宣言できます。`.agent-cli/persona.md` にペルソナファイルを置けば、そのディレクトリで起動した agent-cli は — 対話・ヘッドレス・デタッチされた子プロセスのいずれでも — 組み込みデフォルトの代わりにそれを読み込みます。これは明示指定ではなく発見による解決です: ファイルが無いことはエラーになりませんが、存在して読み込めない場合はパスを示してエラーになります。実際に使われたファイルは起動時に報告され、`/persona` でも確認できます。
 
 最小例:
 

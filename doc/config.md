@@ -55,6 +55,11 @@ Behavior:
   the agent that spawned it.
 - The resolved chain can be confirmed with `agent-cli config path`, which prints
   one line per layer, lowest priority first.
+- `config.toml` is not the only project-local file `.agent-cli/` carries:
+  `.agent-cli/persona.md` states the **role** of the agent that runs in this
+  directory (see [`doc/personas.md`](personas.md) §2.4), and
+  `.agent-cli/commands/` holds custom slash commands (`[runtime] commands_dir`).
+  All three are looked up in the current working directory only.
 
 ```bash
 agent-cli config path
@@ -211,7 +216,7 @@ Two consequences worth knowing before choosing a mode:
 | `log_dir` | string | `~/.local/share/agent-cli/logs` | Directory where conversation logs are saved |
 | `registry_dir` | string | empty | Location of the agent registry. When empty, uses `$XDG_RUNTIME_DIR/agent-cli` or `/tmp/agent-cli` |
 | `agents_dir` | string | `~/.config/agent-cli/agents` | Directory to search for persona files (`<agents_dir>/<name>.md`). See [`doc/personas.md`](personas.md) for details |
-| `persona_file` | string | empty | Explicit persona file path. When empty, falls back to `<agents_dir>/<name>.md` or the built-in default. See [`doc/personas.md`](personas.md) for details |
+| `persona_file` | string | empty | Explicit persona file path. When empty, falls back to `<agents_dir>/<name>.md`, then the project-local `.agent-cli/persona.md`, then the built-in default. Being explicit, a value here **outranks the project-local persona** — a user-level setting hides every project's own role. See [`doc/personas.md`](personas.md) for details |
 | `max_tool_iterations` | u32 | `24` | Upper limit for tool_use iterations within a single turn. Minimum is 1 (`0` or negative values are clamped to `1` internally), maximum is `u32::MAX = 4,294,967,295`. This is a safeguard to prevent infinite loops. See "Tuning `max_tool_iterations`" below for details |
 | `commands_dir` | string | `.agent-cli/commands` | Directory scanned for user-defined custom slash commands (`*.md`). Relative paths resolve against the working directory; `~` and env-style paths are expanded. An empty string falls back to the default, and a directory that does not exist is not an error — the REPL simply runs with built-in commands only. See [`doc/usage.md`](usage.md) "Custom Slash Commands" |
 | `group` | string | unset | Default group id for agents this config launches. The `--group` command-line flag overrides it; with neither, agents are ungrouped. Detached children inherit their launcher's effective group. See [`doc/usage.md`](usage.md) "Groups" |

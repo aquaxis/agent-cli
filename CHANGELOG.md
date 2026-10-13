@@ -4,6 +4,34 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.23.0]
+
+### Added
+
+- **A project can state the role of the agent that runs in it:
+  `.agent-cli/persona.md`.** When that file exists, agent-cli loads it as its
+  own persona — interactive `run`, headless `serve`, and detached children
+  alike, since a child inherits the launcher's working directory. It joins the
+  resolution order directly above the built-in default: `--persona` →
+  `[runtime] persona_file` → `<agents_dir>/<name>.md` →
+  `.agent-cli/persona.md` → built-in default, so every input that resolved to a
+  persona before resolves to the same one now, and a spawned `--name alice`
+  keeps `alice`'s role rather than the directory's.
+  - Discovered, not requested: an absent file falls through (as the
+    `<agents_dir>/<name>.md` convention does), and a bare `.agent-cli`
+    directory is not a match. Only the current working directory is checked —
+    no walk toward the repository root, the same rule `.agent-cli/config.toml`
+    follows.
+  - A file that exists but cannot be loaded is an **error naming the path**
+    (`project persona <path>: ...`) rather than a silent fall-back to the
+    built-in default.
+  - The project persona in use is reported at startup, and `/persona` shows it
+    on the `source` line; `/reload-persona` re-reads the same path, including a
+    `persona.md` created after startup.
+  - The file is an ordinary persona file: `role` / `skills` / `description` /
+    body, `model` / `temperature` overrides and the
+    `allowed_tools` / `denied_tools` filters all behave as documented.
+
 ## [0.22.0]
 
 ### Fixed

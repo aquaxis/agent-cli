@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest, CancelToken};
 use crate::ai;
 use crate::cli::RunArgs;
-use crate::config::{Config, ConfigSource, ShowThinkingMode};
+use crate::config::{self, Config, ConfigSource, ShowThinkingMode};
 use crate::custom_commands::{self, CustomCommand};
 use crate::editor::InputState;
 use crate::error::Result;
@@ -96,6 +96,10 @@ pub(crate) struct ReplState {
     agents_dir: PathBuf,
     persona_file_setting: String,
     cli_persona_path: Option<PathBuf>,
+    /// The `.agent-cli/persona.md` candidate of the directory this session
+    /// started in, resolved once so `/reload-persona` re-reads that same path —
+    /// its existence is tested at each resolution, not here.
+    project_persona_path: Option<PathBuf>,
     name: Option<String>,
     persona: RwLock<Persona>,
     tool_names: Vec<String>,
@@ -218,15 +222,24 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let name = args.name.clone();
     let group = config.resolve_group(args.group.as_deref());
     let agents_dir = config.agents_dir()?;
+    // The project's own role, if the directory states one. Resolved once, here,
+    // so `/reload-persona` keeps reading the directory this session started in.
+    let project_persona_path = config::local_persona_candidate();
     let resolution: PersonaResolution = persona::resolve(
         args.persona.as_deref(),
         &config.runtime.persona_file,
         &agents_dir,
         name.as_deref(),
+        project_persona_path.as_deref(),
     )?;
 
     if resolution.builtin_used {
         tracing::info!("using builtin default persona");
+    }
+    if resolution.project_used {
+        if let Some(p) = &resolution.persona.source_path {
+            tracing::info!("using project persona {}", p.display());
+        }
     }
 
     // Reflect persona-derived model / temperature into Provider settings
@@ -360,6 +373,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         agents_dir: agents_dir.clone(),
         persona_file_setting: config.runtime.persona_file.clone(),
         cli_persona_path: args.persona.clone(),
+        project_persona_path: project_persona_path.clone(),
         name: name.clone(),
         persona: RwLock::new(initial_persona),
         tool_names,
@@ -644,12 +658,25 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
     let name = args.name.clone();
     let group = config.resolve_group(args.group.as_deref());
     let agents_dir = config.agents_dir()?;
+    // A headless agent reads the directory it was started in exactly as an
+    // interactive one does — a detached child inherits that directory.
+    let project_persona_path = config::local_persona_candidate();
     let resolution: PersonaResolution = persona::resolve(
         args.persona.as_deref(),
         &config.runtime.persona_file,
         &agents_dir,
         name.as_deref(),
+        project_persona_path.as_deref(),
     )?;
+
+    if resolution.builtin_used {
+        tracing::info!("using builtin default persona");
+    }
+    if resolution.project_used {
+        if let Some(p) = &resolution.persona.source_path {
+            tracing::info!("using project persona {}", p.display());
+        }
+    }
 
     config.apply_persona_overrides(
         resolution.persona.frontmatter.model.as_deref(),
@@ -3985,6 +4012,7 @@ async fn reload_persona(state: &Arc<ReplState>, input_tx: &mpsc::Sender<AgentInp
         &state.persona_file_setting,
         &state.agents_dir,
         state.name.as_deref(),
+        state.project_persona_path.as_deref(),
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -4207,6 +4235,7 @@ mod tests {
             agents_dir: dir.to_path_buf(),
             persona_file_setting: String::new(),
             cli_persona_path: None,
+            project_persona_path: None,
             name: Some("test".into()),
             persona: RwLock::new(Persona::builtin_default()),
             tool_names: Vec::new(),

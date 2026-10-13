@@ -33,8 +33,14 @@ The persona file resolution priority is as follows (tried top to bottom; the fir
 1. CLI option        --persona <path>
 2. Config file       [runtime] persona_file = "<path>"
 3. Filename convention  <agents_dir>/<name>.md  (matches --name)
-4. Built-in default   "General-purpose assistant"
+4. Project-local     .agent-cli/persona.md   (the directory's own role)
+5. Built-in default   "General-purpose assistant"
 ```
+
+Steps 1 and 2 are **requests**: you named a file, so a missing one is an error.
+Steps 3 and 4 are **conventions**: a missing file simply falls through to the
+next step. A convention file that exists but cannot be loaded is still an
+error — a wrong role must not be presented as an intended one.
 
 ### 2.1 Explicit CLI option (highest priority)
 
@@ -75,11 +81,37 @@ The default `agents_dir` is `~/.config/agent-cli/agents`. You can change it via 
 agents_dir = "~/projects/agent-cli/personas"
 ```
 
-With this pattern, **if the file does not exist, agent-cli silently falls back to the built-in default** (unlike the explicit specification paths).
+With this pattern, **if the file does not exist, agent-cli falls through to the next step** (unlike the explicit specification paths).
 
-### 2.4 Built-in default
+### 2.4 Project-local persona (`.agent-cli/persona.md`)
 
-When `--persona`, `persona_file`, and `<agents_dir>/<name>.md` all miss, agent-cli launches with the following persona:
+A project can state the role of the agent that runs in it. Put a persona file at `.agent-cli/persona.md` — beside the `config.toml` overlay and the `commands/` directory that already live there — and every agent-cli started in that directory adopts it:
+
+```bash
+cd ~/work/project-a
+mkdir -p .agent-cli
+cp example/agents/reviewer.md .agent-cli/persona.md
+
+agent-cli run
+# → ./.agent-cli/persona.md is loaded; the startup log reports
+#   "using project persona /home/alice/work/project-a/.agent-cli/persona.md"
+```
+
+Behavior:
+
+- **Discovered, not requested.** No file means "this project states no role", and resolution falls through to the built-in default — exactly like the `<agents_dir>/<name>.md` convention. A bare `.agent-cli` directory is not a match either.
+- **A malformed file is an error, naming the path.** Because nothing on the command line pointed at the file, the message says where it is:
+  `error: persona error: project persona /path/.agent-cli/persona.md: \`role\` is required in persona frontmatter`. The built-in default is **not** substituted. `--persona <other>` is the bypass if you need to start anyway.
+- **The working directory decides.** Only `./.agent-cli/persona.md` is checked — there is no walk toward the repository root, the same rule `.agent-cli/config.toml` follows.
+- **Everything else behaves as in any persona**: the frontmatter keys, `model` / `temperature` overrides and the `allowed_tools` / `denied_tools` filters all apply as documented below.
+- **Headless agents and detached children too.** `agent-cli serve` resolves it the same way, and a child from `spawn` inherits the launcher's working directory — so it adopts the project persona unless it was given its own with `--persona`, or with a `--name` that matches a file in `agents_dir`.
+- **It is the lowest-priority mechanism except the built-in default.** `--persona`, `[runtime] persona_file` and a matching `<agents_dir>/<name>.md` all win over it: a user-level `persona_file` therefore hides every project persona (unset it, or clear `[runtime] persona_file` in the project's own `.agent-cli/config.toml`), and `agent-cli run --name alice` keeps `alice`'s role rather than the directory's.
+
+Which file actually won is always visible: the startup log reports a project persona, and `/persona` prints it on the `source` line.
+
+### 2.5 Built-in default
+
+When `--persona`, `persona_file`, `<agents_dir>/<name>.md`, and `.agent-cli/persona.md` all miss, agent-cli launches with the following persona:
 
 ```yaml
 name: default
@@ -473,7 +505,7 @@ This allows another process to check a peer's role, skills, and description simp
 ### `persona file not found: <path>`
 
 - The path specified by `--persona` or `[runtime] persona_file` does not exist.
-- When using the default path (`<agents_dir>/<name>.md`), agent-cli falls back to the built-in default, so this message will not appear.
+- The two conventions (`<agents_dir>/<name>.md` and `.agent-cli/persona.md`) fall through when their file is absent, so this message never comes from them.
 - Resolution: Verify the path with `agent-cli config show`, or convert a relative `--persona` path to an absolute path.
 
 ### `` `role` is required in persona frontmatter ``
@@ -501,9 +533,21 @@ This allows another process to check a peer's role, skills, and description simp
 - `allowed_tools` / `denied_tools` replacement does not currently rebuild `ToolRegistry`, so restart agent-cli.
 - The system prompt is reflected immediately.
 
+### `project persona <path>: ...`
+
+- The project-local `.agent-cli/persona.md` exists but could not be loaded; the rest of the message is the usual frontmatter fault (see the entries above). The built-in default is deliberately not substituted.
+- Resolution: fix the file, or start with `--persona <other>` which outranks it (§2.4).
+
+### `.agent-cli/persona.md` is not being used
+
+- Check the `source` line of `/persona` — it names the file that actually won.
+- A higher-priority mechanism may be winning: `--persona`, `[runtime] persona_file` (a user-level setting hides every project persona), or a `--name` that matches `<agents_dir>/<name>.md` (§2.4).
+- The file is looked up only in the **working directory** agent-cli was started in — `./.agent-cli/persona.md`, with no walk toward the repository root. Check the spelling of the path, and that it is a file (a bare `.agent-cli` directory is not a match).
+- A `persona.md` created after startup is picked up by `/reload-persona`.
+
 ### REPL header shows a different `role`
 
-- The filename convention (`<agents_dir>/<name>.md`) may have been overridden by CLI `--persona`. Check the `source` line in `/persona` to see which file was actually loaded.
+- The filename convention (`<agents_dir>/<name>.md`) may have been overridden by CLI `--persona`, or the role may be coming from the project-local `.agent-cli/persona.md`. Check the `source` line in `/persona` to see which file was actually loaded.
 
 ### I want to customize the example personas
 
@@ -514,7 +558,10 @@ This allows another process to check a peer's role, skills, and description simp
 ## 12. Specification Summary (Cheat Sheet)
 
 ```text
-Resolution order: --persona > [runtime] persona_file > <agents_dir>/<name>.md > builtin
+Resolution order: --persona > [runtime] persona_file > <agents_dir>/<name>.md
+                  > .agent-cli/persona.md > builtin
+Missing file:     error for --persona / persona_file; falls through for the two
+                  conventions. Exists but unloadable: always an error
 Required key:     role
 Optional keys:    name / skills / description / model / temperature / allowed_tools / denied_tools
 Tool selection:   enabled ∩ allowed_tools \ denied_tools

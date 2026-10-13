@@ -896,6 +896,30 @@ fn local_path_in(dir: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The project-local persona *candidate* under `dir`: `.agent-cli/persona.md` —
+/// the directory stating the role of the agent that runs in it. The path is
+/// returned without testing whether it exists.
+///
+/// Mirrors [`local_path_in`] for `config.toml`, with one deliberate
+/// difference: the existence test lives at the point of use, not here. A
+/// session resolves this candidate once, at startup, and keeps it; existence
+/// is re-tested at every resolution, so `/reload-persona` picks up a
+/// `persona.md` written mid-session while the session can never resolve
+/// against a directory it did not start in.
+///
+/// Consulted after `<agents_dir>/<name>.md` and before the built-in default;
+/// see `persona::resolve`.
+pub fn local_persona_candidate_in(dir: &Path) -> PathBuf {
+    dir.join(".agent-cli").join("persona.md")
+}
+
+/// The project-local persona candidate under the current working directory,
+/// absolute. `None` only when the working directory cannot be read.
+pub fn local_persona_candidate() -> Option<PathBuf> {
+    let dir = std::env::current_dir().ok()?;
+    Some(local_persona_candidate_in(&dir))
+}
+
 /// Resolve the chain of config files to load, lowest priority first.
 ///
 /// With no `--config`, the chain is the user-level
@@ -1281,6 +1305,28 @@ mod tests {
         let cfg = dir.path().join(".agent-cli").join("config.toml");
         std::fs::write(&cfg, "[provider]\nkind = \"claude\"\n").unwrap();
         assert_eq!(local_path_in(dir.path()), Some(cfg));
+    }
+
+    /// V-7: the project-local persona candidate is `.agent-cli/persona.md`
+    /// under the given directory — the path alone, with existence tested where
+    /// it is used (see `persona::resolve`), so a session can hold the candidate
+    /// across its lifetime.
+    #[test]
+    fn local_persona_candidate_is_the_project_local_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let candidate = local_persona_candidate_in(dir.path());
+        assert_eq!(candidate, dir.path().join(".agent-cli").join("persona.md"));
+        assert!(candidate.is_absolute());
+        // It is the sibling of the config overlay, in the same directory.
+        assert_eq!(
+            candidate.parent(),
+            Some(dir.path().join(".agent-cli").as_path())
+        );
+        // The candidate does not depend on the file existing.
+        assert!(!candidate.exists());
+        std::fs::create_dir(dir.path().join(".agent-cli")).unwrap();
+        std::fs::write(&candidate, "---\nrole: Project\n---\nbody").unwrap();
+        assert_eq!(local_persona_candidate_in(dir.path()), candidate);
     }
 
     #[test]
