@@ -3911,7 +3911,10 @@ async fn handle_repl_command(
         "help" => {
             raw_println(raw_mode, "Commands:");
             raw_println(raw_mode, "  /list                       List currently running peers (id / name / provider / model / role).");
-            raw_println(raw_mode, "  /send <peer> <text>         Send a one-shot prompt to a peer (id or name).");
+            raw_println(raw_mode, "  /send [--report|--ask] <peer> <text>");
+            raw_println(raw_mode, "                              Send to a peer (id or name): a one-shot prompt (default),");
+            raw_println(raw_mode, "                              a report added to its conversation with no turn, or an ask");
+            raw_println(raw_mode, "                              that waits for the answer (up to 120s).");
             raw_println(raw_mode, "  /tools                      List tools enabled for this agent.");
             raw_println(raw_mode, "  /persona                    Show this agent's persona (role / skills / source path).");
             raw_println(raw_mode, "  /reload-persona             Re-resolve and reload the persona; system prompt is replaced, history kept.");

@@ -9,7 +9,7 @@
 - Standalone — no tmux required. Just run `agent-cli` (the no-arg form is equivalent to `agent-cli run`).
 - Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch — the REPL and tools never call out to the `claude` CLI. (Driving that CLI is available separately, as the opt-in `claude-code` backend below.)
 - Seven backends: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
-- Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>`.
+- Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>` (a report that costs the peer no turn, or an ask that waits for its answer, with `--report` / `--ask`).
 - Detached agents — `agent-cli spawn` (or `/spawn`) creates a headless peer in its own session that outlives the launcher; stop it with `agent-cli stop <peer>` (or `/stop`).
 - Groups — tag a launched cohort with `--group <id>` (detached children inherit it); filter with `agent-cli list --group <id>` and discover running cohorts with `agent-cli groups`.
 - Persona files (YAML frontmatter + Markdown body) define role, skills, tool allow / deny lists, model, and temperature.
@@ -341,7 +341,7 @@ REPL commands inside `agent-cli run`:
 | Command | Purpose |
 |---------|---------|
 | `/list` | List running peers |
-| `/send <peer> <text>` | Send a prompt to a peer |
+| `/send [--report&#124;--ask] <peer> <text>` | Send to a peer: a prompt (default), a report added to its conversation with no turn, or an ask that waits for the answer |
 | `/spawn [name] [provider]` | Create a detached peer that outlives this session |
 | `/stop <peer>` | Stop a running peer (id or name), detached agents included |
 | `/tools` | List tools enabled for this agent |

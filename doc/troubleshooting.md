@@ -376,8 +376,9 @@ for OSC 52, the prerequisites below.
 
 ### A selection copied nothing, or less than expected
 
-- `[clip] nothing selected` is a click rather than a drag: press, move, then
-  release.
+- A click (or a drag over no characters) **prints nothing** since v0.26.0: the
+  empty case is silent. A click was probably meant as a drag — press, move,
+  then release.
 - Only what the transcript still holds can be selected — `[ui] scrollback_lines`
   (2000 by default) — and the prompt line and the running turn's spinner are not
   part of the log.

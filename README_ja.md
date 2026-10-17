@@ -9,7 +9,7 @@
 - スタンドアロン — tmux 不要。`agent-cli` を実行するだけです（引数なしは `agent-cli run` と等価）。
 - ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（REPL とツール自体は `claude` CLI を呼び出しません）。なお `claude` CLI を駆動する方法は、後述の `claude-code` バックエンドとして別途選択できます。
 - 7 つのバックエンド: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
-- マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します。
+- マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します（`--report` でターンなしのレポート、`--ask` で回答を待つ ask も指定可能）。
 - デタッチドエージェント — `agent-cli spawn`（または `/spawn`）は、起動元プロセスに依存せず独自セッションで動くヘッドレスなピアを作成します。`agent-cli stop <peer>`（または `/stop`）で停止します。
 - グループ — 起動したコホートを `--group <id>` でタグ付け（デタッチドな子が継承）。`agent-cli list --group <id>` で絞り込み、`agent-cli groups` で稼働中のコホートを検出します。
 - ペルソナファイル（YAML フロントマター + Markdown 本文）でロール、スキル、ツールの許可/拒否リスト、モデル、temperature を定義します。
@@ -340,7 +340,7 @@ keep_recent_turns  = 6
 | コマンド | 用途 |
 |---------|---------|
 | `/list` | 稼働中のピアを一覧表示 |
-| `/send <peer> <text>` | ピアにプロンプトを送信 |
+| `/send [--report&#124;--ask] <peer> <text>` | ピアに送信: プロンプト（既定）、ターンなしで会話に追加されるレポート、回答を待つ ask |
 | `/spawn [name] [provider]` | このセッションより長く生きるデタッチドなピアを作成 |
 | `/stop <peer>` | 稼働中のピア（id または名前）を停止。デタッチドエージェントも対象 |
 | `/tools` | このエージェントで有効なツールを一覧表示 |
