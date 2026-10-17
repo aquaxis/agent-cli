@@ -239,6 +239,46 @@ impl Agent {
                         Some(n) => format!("[peer prompt from {} ({})]", n, from.as_str()),
                         None => format!("[peer prompt from {}]", from.as_str()),
                     };
+                    // Stopping: skip the turn entirely and answer the asker
+                    // truthfully. Without this the queued prompt would
+                    // either run a doomed turn after the cancel or be
+                    // destroyed unread (the previous shutdown dropped the
+                    // queue silently).
+                    if self.cancel.is_cancelled() {
+                        if let Some(l) = &log {
+                            l.write(LogEvent::Error {
+                                message: "prompt received while stopping; not processed",
+                            })
+                            .await
+                            .ok();
+                        }
+                        if let Some(reply_socket) = reply_to {
+                            let reply = crate::ipc::IpcMessage::PromptReply {
+                                from: self.id.clone(),
+                                text: "message not processed: the agent was cancelled"
+                                    .to_string(),
+                            };
+                            if let Err(e) =
+                                crate::ipc::client::send(&reply_socket, &reply).await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to send stop reply to {}",
+                                    reply_socket.display()
+                                );
+                            }
+                        }
+                        event_tx
+                            .send(AgentEvent::Info {
+                                message: format!(
+                                    "prompt from {} skipped: agent is stopping",
+                                    from.as_str()
+                                ),
+                            })
+                            .await
+                            .ok();
+                        continue;
+                    }
                     let combined = format!("{header}\n{text}");
                     let history_len_before = self.history.len();
                     self.history.push(Message::User { content: combined });
@@ -260,7 +300,13 @@ impl Agent {
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        let response_text = if response_text.is_empty() {
+                        // A turn cancelled by the shutdown path (or a user
+                        // cancel) produced no assistant content: answer the
+                        // asker with what actually happened instead of a
+                        // hollow success.
+                        let response_text = if self.cancel.is_cancelled() {
+                            "turn was cancelled; no answer was produced".to_string()
+                        } else if response_text.is_empty() {
                             "(no text response)".to_string()
                         } else {
                             response_text
@@ -397,9 +443,15 @@ impl Agent {
             let mut stream = match self.provider.complete_stream(&self.history, &specs).await {
                 Ok(s) => s,
                 Err(e) => {
+                    let message = e.to_string();
+                    if let Some(l) = log {
+                        l.write(LogEvent::Error { message: &message })
+                            .await
+                            .ok();
+                    }
                     let _ = event_tx
                         .send(AgentEvent::Error {
-                            message: e.to_string(),
+                            message: message.clone(),
                         })
                         .await;
                     // FR-03-2: Always emit a `Done` even on error, so the REPL input
@@ -450,6 +502,11 @@ impl Agent {
                     }
                     ProviderEvent::Error { message } => {
                         had_error = true;
+                        if let Some(l) = log {
+                            l.write(LogEvent::Error { message: &message })
+                                .await
+                                .ok();
+                        }
                         let _ = event_tx
                             .send(AgentEvent::Error {
                                 message: message.clone(),
@@ -1104,9 +1161,17 @@ mod tests {
     }
 
     fn build_test_agent(scripts: Vec<Vec<ProviderEvent>>, history: Vec<Message>) -> Agent {
+        build_test_agent_with_cancel(scripts, history).0
+    }
+
+    fn build_test_agent_with_cancel(
+        scripts: Vec<Vec<ProviderEvent>>,
+        history: Vec<Message>,
+    ) -> (Agent, Arc<CancelToken>) {
         let cfg: Config = toml::from_str(crate::config::tests_default_config()).unwrap();
         let tools = ToolRegistry::build(&cfg, None, None);
-        Agent {
+        let cancel = Arc::new(CancelToken::default());
+        let agent = Agent {
             id: AgentId::new(),
             name: Some("test".into()),
             group: None,
@@ -1120,10 +1185,11 @@ mod tests {
             log: None,
             auto_approve: Arc::new(AtomicBool::new(true)),
             permissions: Arc::new(crate::permissions::Ruleset::default()),
-            cancel: Arc::new(CancelToken::default()),
+            cancel: cancel.clone(),
             approval_tx: None,
             history,
-        }
+        };
+        (agent, cancel)
     }
 
     #[tokio::test]
@@ -1848,6 +1914,59 @@ mod tests {
             approval_rx.try_recv().is_err(),
             "an allow rule means the prompt is skipped"
         );
+    }
+
+    /// A prompt that already sits in the queue when the cancel is raised is
+    /// answered truthfully instead of running a doomed turn: the shutdown
+    /// path counts on this to drain the queue with real replies.
+    #[tokio::test]
+    async fn a_queued_peer_prompt_is_answered_without_a_turn_when_cancelled() {
+        use crate::ipc::server::IpcServer;
+
+        // No provider events: the prompt must never reach the provider.
+        let (agent, cancel) = build_test_agent_with_cancel(
+            Vec::new(),
+            Agent::build_initial_history(&Persona::builtin_default()),
+        );
+        let reply_dir = tempfile::TempDir::new().unwrap();
+        let reply_socket = reply_dir.path().join("reply.sock");
+        let mut reply_server = IpcServer::bind(reply_socket.clone()).await.unwrap();
+        let mut reply_rx = reply_server.take_rx().expect("rx available after bind");
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, _ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        // The queue-drain shape of the headless shutdown: the cancel is
+        // already raised when the queued prompt is taken from the channel.
+        cancel.cancel();
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("tester".into()),
+                text: "hello".into(),
+                reply_to: Some(reply_socket),
+            })
+            .await
+            .unwrap();
+
+        let received = tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx.recv())
+            .await
+            .expect("recv timeout")
+            .expect("channel closed");
+        match received {
+            crate::ipc::IpcMessage::PromptReply { text, .. } => {
+                assert!(
+                    text.contains("message not processed"),
+                    "expected the truthful skip reply, got: {text}"
+                );
+            }
+            other => panic!("expected PromptReply, got {:?}", other),
+        }
+
+        drop(in_tx);
+        drop(reply_server);
+        let _ = handle.await;
     }
 
     /// Task 3: Agent sends a PromptReply when reply_to is set.

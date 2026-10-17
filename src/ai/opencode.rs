@@ -312,7 +312,9 @@ impl OpenCodeProvider {
                         }
                     }
                     Err(e) => {
-                        yield ProviderEvent::Error { message: e.to_string() };
+                        yield ProviderEvent::Error {
+                            message: crate::ai::stream_mid_body("opencode", &self.model, &e.to_string()),
+                        };
                         return;
                     }
                 }
@@ -366,7 +368,9 @@ impl OpenCodeProvider {
                         }
                     }
                     Err(e) => {
-                        yield ProviderEvent::Error { message: e.to_string() };
+                        yield ProviderEvent::Error {
+                            message: crate::ai::stream_mid_body("opencode", &self.model, &e.to_string()),
+                        };
                         return;
                     }
                 }

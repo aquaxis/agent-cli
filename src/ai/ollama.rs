@@ -261,7 +261,9 @@ impl Provider for OllamaProvider {
                         }
                     }
                     Err(e) => {
-                        yield ProviderEvent::Error { message: e.to_string() };
+                        yield ProviderEvent::Error {
+                            message: crate::ai::stream_mid_body("ollama", &self.model, &e.to_string()),
+                        };
                         return;
                     }
                 }

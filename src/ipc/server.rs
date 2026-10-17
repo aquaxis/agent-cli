@@ -1,5 +1,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -11,6 +13,10 @@ use crate::ipc::IpcMessage;
 pub struct IpcServer {
     pub socket_path: PathBuf,
     pub rx: Option<mpsc::Receiver<IpcMessage>>,
+    /// Raised by the owner once a shutdown begins: while it is set, new
+    /// `Prompt` / `Context` messages are answered with an error naming the
+    /// state instead of being acked into a queue that would be destroyed.
+    stopping: Arc<AtomicBool>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -30,14 +36,17 @@ impl IpcServer {
         std::fs::set_permissions(&socket_path, perms)?;
 
         let (tx, rx) = mpsc::channel::<IpcMessage>(64);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let stopping_for_handle = Arc::clone(&stopping);
 
         let task = tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, _)) => {
                         let tx = tx.clone();
+                        let stopping = Arc::clone(&stopping);
                         tokio::spawn(async move {
-                            if let Err(e) = handle_conn(stream, tx).await {
+                            if let Err(e) = handle_conn(stream, tx, stopping).await {
                                 tracing::warn!(error = %e, "ipc conn error");
                             }
                         });
@@ -53,8 +62,16 @@ impl IpcServer {
         Ok(Self {
             socket_path,
             rx: Some(rx),
+            stopping: stopping_for_handle,
             task,
         })
+    }
+
+    /// A handle to the stopping flag shared with the accept loop. Raise it to
+    /// make the server reject new `Prompt` / `Context` messages instead of
+    /// acking them into a queue the owner may have stopped reading.
+    pub fn stopping(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stopping)
     }
 
     /// Take ownership of the receive channel. Can only be called once, immediately after `bind`.
@@ -78,7 +95,11 @@ impl Drop for IpcServer {
     }
 }
 
-async fn handle_conn(stream: tokio::net::UnixStream, tx: mpsc::Sender<IpcMessage>) -> Result<()> {
+async fn handle_conn(
+    stream: tokio::net::UnixStream,
+    tx: mpsc::Sender<IpcMessage>,
+    stopping: Arc<AtomicBool>,
+) -> Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half).lines();
     while let Some(line) = reader.next_line().await? {
@@ -87,6 +108,20 @@ async fn handle_conn(stream: tokio::net::UnixStream, tx: mpsc::Sender<IpcMessage
         }
         match serde_json::from_str::<IpcMessage>(&line) {
             Ok(msg) => {
+                // While the owner is stopping, do not ack Prompt / Context
+                // messages into a queue that would be destroyed unread; answer
+                // them so the sender learns the agent is going away.
+                if matches!(msg, IpcMessage::Prompt { .. } | IpcMessage::Context { .. })
+                    && stopping.load(Ordering::SeqCst)
+                {
+                    let err = IpcMessage::Error {
+                        message: "agent is stopping; message not accepted".to_string(),
+                    };
+                    let line = serde_json::to_string(&err)?;
+                    write_half.write_all(line.as_bytes()).await?;
+                    write_half.write_all(b"\n").await?;
+                    continue;
+                }
                 let response = match &msg {
                     IpcMessage::Prompt { .. }
                     | IpcMessage::PromptReply { .. }
@@ -149,6 +184,50 @@ mod tests {
             IpcMessage::Prompt { text, .. } => assert_eq!(text, "hello"),
             other => panic!("unexpected message: {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn prompt_while_stopping_is_rejected_not_acked() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stopping.sock");
+        let mut server = IpcServer::bind(path.clone()).await.unwrap();
+        let mut rx = server.take_rx().expect("rx not taken yet");
+        server.stopping().store(true, Ordering::SeqCst);
+
+        let msg = IpcMessage::Prompt {
+            from: crate::id::AgentId::new(),
+            from_name: None,
+            text: "hello".into(),
+            reply_to: None,
+        };
+        let resp = client::send(&path, &msg).await.unwrap();
+        match resp {
+            IpcMessage::Error { message } => {
+                assert_eq!(message, "agent is stopping; message not accepted")
+            }
+            other => panic!("expected the stopping error, got {:?}", other),
+        }
+        // And nothing was forwarded to the agent's queue.
+        let drained = tokio::time::timeout(std::time::Duration::from_millis(300), rx.recv()).await;
+        assert!(
+            drained.is_err(),
+            "the rejected prompt must not reach the agent's queue: {:?}",
+            drained
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_is_still_acked_while_stopping() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stopping-shutdown.sock");
+        let server = IpcServer::bind(path.clone()).await.unwrap();
+        server.stopping().store(true, Ordering::SeqCst);
+        let resp = client::send(&path, &IpcMessage::Shutdown).await.unwrap();
+        assert!(
+            matches!(resp, IpcMessage::Ack { .. }),
+            "Shutdown must remain ackable: {:?}",
+            resp
+        );
     }
 
     #[tokio::test]

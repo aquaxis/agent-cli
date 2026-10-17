@@ -345,8 +345,23 @@ Independence follows from three facts: `setsid` isolates the child from the
 parent's terminal signals; stdio is detached; and the parent never holds the
 child with `kill_on_drop` nor `wait()`s on it, so dropping the handle leaves it
 running (a spawned agent-cli already has no lifetime tie to its launcher). `stop`
-resolves the peer and sends `IpcMessage::Shutdown` (the receiver Acks it and
-converges on the §7 shutdown), falling back to `SIGTERM` by the registered pid.
+resolves the peer and sends `IpcMessage::Shutdown` (the receiver Acks receipt
+and converges on the §7 shutdown), falling back to `SIGTERM` by the registered pid.
+
+Unlike `run`, `run_headless` shuts down through a **graceful drain**, because a
+headless agent is the one being talked to while it goes away. When the shutdown
+begins the server rejects new `Prompt` / `Context` deliveries with
+`error: agent is stopping; message not accepted` (so a sender learns the truth
+immediately instead of having a delivery silently destroyed), the in-flight
+turn is cancelled through the cancel path so it closes with
+`finish_cancelled` instead of being dropped mid-stream, everything still
+queued in the input channel is answered with a truthful `PromptReply`
+(`message not processed: the agent was cancelled`; the interrupted turn says
+`turn was cancelled; no answer was produced`), and the abort remains only as
+a safety net behind a 10 s drain window. `stop` polls the registry until the
+entry is gone and reports `stopped: <id>` — or `stop queued: <id> still
+draining` after its 6 s poll window — so the reported state is the exit,
+not the receipt.
 
 ## 8. Context-efficiency Features (opt-in)
 

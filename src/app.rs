@@ -152,6 +152,12 @@ pub(crate) struct ReplState {
 
 const HISTORY_LIMIT: usize = 200;
 
+/// How long the headless shutdown path waits for the agent task to finish
+/// cleanly — cancel the in-flight turn, reply truthfully to queued prompts —
+/// before falling back to the abort (`run_headless`). Long enough for a
+/// stream/tool call to close; short enough that a `stop` remains prompt.
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn load_history(path: &Path) -> Vec<String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -732,6 +738,11 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         tracing::warn!(target: "permissions", "{warning}");
     }
 
+    // Headless: no console, so no user input can raise this token — only the
+    // shutdown path, so the in-flight turn closes cleanly (`finish_cancelled`
+    // instead of being dropped mid-stream).
+    let cancel = Arc::new(CancelToken::default());
+
     let agent = Agent {
         id: id.clone(),
         name: name.clone(),
@@ -746,8 +757,10 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         log: Some(log),
         auto_approve,
         permissions,
-        // Headless: no console, so nothing ever raises this token.
-        cancel: Arc::new(CancelToken::default()),
+        // Headless: no console, so nothing user input can raise this token.
+        // The shutdown path raises it so the in-flight turn closes cleanly
+        // (`finish_cancelled`, not a silent drop).
+        cancel: cancel.clone(),
         approval_tx: None,
         history,
     };
@@ -774,7 +787,11 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
     );
     let _ = std::io::stdout().flush();
 
-    let agent_handle = tokio::spawn(async move { agent.run(input_rx, event_tx).await });
+    let mut agent_handle = tokio::spawn(async move { agent.run(input_rx, event_tx).await });
+
+    // Raised when the shutdown begins; the IPC server answers new prompts
+    // itself instead of acking them into a queue that would be destroyed.
+    let stopping = ipc_server.stopping();
 
     // SIGINT / SIGTERM handler
     let signal_task = {
@@ -862,21 +879,29 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         }
     }
 
+    // Shutdown begins: reject further prompts (the server answers them with
+    // the stopping error), finish the current turn cleanly, skip queued
+    // prompts with a truthful reply, and only then tear down.
+    stopping.store(true, std::sync::atomic::Ordering::SeqCst);
+
     ipc_task.abort();
     let _ = ipc_task.await;
     signal_task.abort();
     let _ = signal_task.await;
 
     drop(input_tx);
+    // Cancel the current turn so it closes with `finish_cancelled` instead of
+    // being dropped mid-stream, and let the agent loop skip the remaining
+    // queue with truthful replies before ending on the closed channel.
+    cancel.cancel();
 
-    let agent_abort = agent_handle.abort_handle();
-    let abort_timer = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        agent_abort.abort();
-    });
+    match tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, &mut agent_handle).await {
+        // finished within the drain window
+        Ok(_) => {}
+        // did not finish in time: detach, then abort the task itself
+        Err(_) => agent_handle.abort(),
+    }
     let _ = agent_handle.await;
-    abort_timer.abort();
-    let _ = abort_timer.await;
     let _ = display_task.await;
 
     drop(ipc_server);

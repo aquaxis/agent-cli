@@ -51,6 +51,11 @@ pub enum LogEvent<'a> {
         status: &'a str,
         output: &'a str,
     },
+    /// A failed turn or failed provider stream. Recorded so failures leave a
+    /// trace in the log even when the session display is not being watched.
+    Error {
+        message: &'a str,
+    },
 }
 
 pub struct ConversationLog {

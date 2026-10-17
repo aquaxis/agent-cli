@@ -4,6 +4,45 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.24.0]
+
+### Changed
+
+- **A provider stream that fails mid-body is attributed.** The message that a
+  failing provider stream surfaces — reqwest's bare `error decoding response
+  body` — is now prefixed with the provider and model:
+  `provider stream ended mid-body (provider ollama, model <model>): …`, with
+  the original text kept verbatim at the end so existing greps keep working.
+  The stream-failure branches of all five providers (claude, claude-code via
+  its own prefixes, codex, ollama, opencode, llama.cpp) carry the context the
+  bare text lacked, and `AgentEvent::Error` is written to the conversation
+  log (`"kind":"error"`) so a failed turn leaves a trace even when nobody is
+  watching the session.
+
+### Added
+
+- **A graceful drain on stop.** Raising a shutdown (IPC `Shutdown`,
+  SIGINT/SIGTERM) used to abort the agent task after 500 ms: the in-flight
+  turn was dropped silently, prompts queued behind the busy turn were
+  destroyed without confirmation, and a parent waiting in `delivery="ask"`
+  paid the full 120 s for nothing. Now: the IPC server rejects new
+  `prompt` / `context` deliveries while stopping (`error: agent is stopping;
+  message not accepted` — senders learn immediately instead of pretending a
+  delivery succeeded), the in-flight turn closes cleanly via the cancel
+  path, everything still queued is answered with a truthful `PromptReply`
+  (`message not processed: the agent was cancelled`, or
+  `turn was cancelled; no answer was produced` for the turn that was
+  interrupted), and the abort remains only as a safety net behind a 10 s
+  drain window.
+- **`stop` and `send_to` report what actually happened.** `agent-cli stop` /
+  `/stop` / the `stop_agent` tool now report `stopped: <id>` only after the
+  registry entry is gone (IPC acknowledges receipt, not exit — they used to
+  print `stop requested:` and call it done; the poll window is 6 s, shorter
+  than the drain), and `delivery="ask"` failures name the gap:
+  `peer <peer> stopped before replying (<why>)` when the registry no longer
+  resolves the peer, with the plain timeout text kept when it is still
+  registered.
+
 ## [0.23.0]
 
 ### Added

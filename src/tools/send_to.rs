@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -205,10 +206,35 @@ impl Tool for SendToTool {
                 Ok(Some(other)) => {
                     Ok(ToolOutput::err(format!("unexpected reply: {:?}", other)))
                 }
-                Ok(None) => Ok(ToolOutput::err("reply channel closed without response")),
-                Err(_) => Ok(ToolOutput::err("timed out waiting for reply after 120s")),
+                // Did the peer stop while we were waiting? A plain timeout
+                // and a silently-dropped queue look identical without the
+                // registry check.
+                Err(_) | Ok(None) => {
+                    let why = match result {
+                        Err(_) => "timed out waiting for reply after 120s",
+                        Ok(None) => "reply channel closed without response",
+                        _ => unreachable!(),
+                    };
+                    Ok(ToolOutput::err(disambiguate_reply_failure(
+                        why,
+                        &ctx.registry_dir,
+                        &parsed.peer,
+                    )))
+                }
             }
         }
+    }
+}
+
+/// A timeout or a closed reply channel on ask-mode means "no answer", but not
+/// *why*: the peer may simply be slow, or it may have been stopped and never
+/// processed the prompt. On the failure paths the registry now resolves the
+/// real question — a peer that is gone says so.
+fn disambiguate_reply_failure(why: &str, registry_dir: &Path, peer: &str) -> String {
+    match registry::resolve_peer(registry_dir, peer) {
+        // still registered: the timeout stands on its own
+        Ok(_) => why.to_string(),
+        Err(_) => format!("peer {peer} stopped before replying ({why})"),
     }
 }
 
@@ -240,6 +266,56 @@ mod tests {
         let meta_path = dir.join(format!("{}.json", entry.id.as_str()));
         let raw = serde_json::to_vec_pretty(entry).unwrap();
         std::fs::write(&meta_path, raw).unwrap();
+    }
+
+    #[test]
+    fn reply_failure_disambiguates_by_registry() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_path_buf();
+
+        // A peer that resolves (socket file present, our own pid): the plain
+        // timeout text stands on its own.
+        let entry = make_entry(path.clone(), std::process::id());
+        write_registry_entry(&path, &entry);
+        assert_eq!(
+            disambiguate_reply_failure(
+                "timed out waiting for reply after 120s",
+                &path,
+                entry.id.as_str()
+            ),
+            "timed out waiting for reply after 120s"
+        );
+
+        // A peer that does not resolve: the message names the gap.
+        assert_eq!(
+            disambiguate_reply_failure(
+                "reply channel closed without response",
+                &path,
+                "no-such-peer",
+            ),
+            "peer no-such-peer stopped before replying (reply channel closed without response)"
+        );
+        let _ = std::fs::remove_file(&entry.socket);
+    }
+
+    fn make_entry(dir: PathBuf, pid: u32) -> crate::ipc::registry::RegistryEntry {
+        use crate::ipc::registry::RegistryEntry;
+        use chrono::Utc;
+        let id = AgentId::new();
+        let socket = dir.join(format!("{}.sock", id.as_str()));
+        std::fs::write(&socket, b"").unwrap();
+        RegistryEntry {
+            id,
+            name: Some("peer".into()),
+            group: None,
+            pid,
+            started_at: Utc::now(),
+            provider: "ollama".into(),
+            model: "m".into(),
+            socket,
+            persona: None,
+            ancestors: Vec::new(),
+        }
     }
 
     /// Create a mock peer: bind an IpcServer, register a registry entry,

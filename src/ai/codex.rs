@@ -178,7 +178,9 @@ impl Provider for CodexProvider {
                         }
                     }
                     Err(e) => {
-                        yield ProviderEvent::Error { message: e.to_string() };
+                        yield ProviderEvent::Error {
+                            message: crate::ai::stream_mid_body("codex", &self.model, &e.to_string()),
+                        };
                         return;
                     }
                 }

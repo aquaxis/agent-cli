@@ -159,6 +159,17 @@ pub const SUPPORTED: &[&str] = &[
     "llama.cpp",
 ];
 
+/// Message for a provider stream that failed mid-body, carrying the
+/// provider/model context the bare reqwest error text lacks. The raw error is
+/// kept verbatim at the end so the original text (e.g. reqwest's
+/// "error decoding response body") stays grep-able.
+pub(crate) fn stream_mid_body(provider: &str, model: &str, raw: &str) -> String {
+    format!(
+        "provider stream ended mid-body (provider {provider}, model {model}): {raw}"
+    )
+}
+
+
 /// Diagnostic information for provider HTTP errors (FR-09-3 / design doc 5.1).
 ///
 /// When a 4xx/5xx response is received, this formats all context known to the
@@ -394,6 +405,23 @@ pub fn extract_request_id(headers: &reqwest::header::HeaderMap, body: &str) -> O
 mod diagnostics_tests {
     use super::*;
     use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn stream_mid_body_keeps_the_raw_error_verbatim() {
+        let m = stream_mid_body(
+            "ollama",
+            "glm-5.3-flash:cloud",
+            "error decoding response body",
+        );
+        assert!(
+            m.starts_with("provider stream ended mid-body (provider ollama, model glm-5.3-flash:cloud): "),
+            "context prefix missing: {m}"
+        );
+        assert!(
+            m.ends_with(": error decoding response body"),
+            "raw error not kept verbatim: {m}"
+        );
+    }
 
     #[test]
     fn hint_for_credit_balance_too_low() {

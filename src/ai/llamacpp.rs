@@ -218,7 +218,9 @@ impl Provider for LlamaCppProvider {
                         }
                     }
                     Err(e) => {
-                        yield ProviderEvent::Error { message: e.to_string() };
+                        yield ProviderEvent::Error {
+                            message: crate::ai::stream_mid_body("llama.cpp", &self.model, &e.to_string()),
+                        };
                         return;
                     }
                 }

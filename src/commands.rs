@@ -154,11 +154,27 @@ pub async fn stop(cfg: &Config, peer: &str) -> Result<()> {
 /// Resolve `peer` in `registry_dir` and request a graceful shutdown over IPC;
 /// on transport failure, fall back to SIGTERM by the registered pid. Shared by
 /// the `stop` subcommand and the REPL `/stop` command.
+///
+/// The IPC ack means "received", not "stopped": the agent may still be
+/// draining its current turn (a bounded grace, shorter than the agent's own
+/// `SHUTDOWN_DRAIN_TIMEOUT`). The reported result is the truth: the entry is
+/// polled until the registry no longer resolves it.
 pub async fn stop_peer(registry_dir: &Path, peer: &str) -> Result<()> {
     let entry = registry::resolve_peer(registry_dir, peer)?;
     match client::send(&entry.socket, &IpcMessage::Shutdown).await {
         Ok(IpcMessage::Ack { .. }) => {
-            println!("stop requested: {} ({peer})", entry.id);
+            let deadline = tokio::time::Instant::now() + STOP_POLL_TIMEOUT;
+            loop {
+                if registry::resolve_peer(registry_dir, peer).is_err() {
+                    println!("stopped: {} ({peer})", entry.id);
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    println!("stop queued: {} ({peer}) still draining", entry.id);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
             Ok(())
         }
         other => {
@@ -176,6 +192,10 @@ pub async fn stop_peer(registry_dir: &Path, peer: &str) -> Result<()> {
         }
     }
 }
+
+/// How long `stop_peer` polls the registry for the agent's actual exit before
+/// reporting that stop is still draining.
+const STOP_POLL_TIMEOUT: Duration = Duration::from_secs(6);
 
 pub async fn list(cfg: &Config, group_filter: Option<&str>) -> Result<()> {
     let dir = cfg.registry_dir()?;

@@ -257,7 +257,9 @@ impl Provider for ClaudeProvider {
                         }
                     }
                     Err(e) => {
-                        yield ProviderEvent::Error { message: e.to_string() };
+                        yield ProviderEvent::Error {
+                            message: crate::ai::stream_mid_body("claude", &self.model, &e.to_string()),
+                        };
                         return;
                     }
                 }
