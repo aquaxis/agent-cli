@@ -1686,8 +1686,114 @@ pub(crate) async fn run_input_loop<R>(
     }
 }
 
+/// A cursor-position query the input loop hands to the pump, answered on the
+/// pump's own thread: `crossterm::cursor::position()` touches the same global
+/// reader the pump owns, so the question must be asked from that thread rather
+/// than concurrently from the loop.
+struct CursorQuery {
+    reply: oneshot::Sender<std::io::Result<(u16, u16)>>,
+}
+
+/// Events still queued with the pump between two loop runs are delivered in
+/// one batch; matched to what the per-iteration drain used to read.
+const PUMP_CHANNEL_CAPACITY: usize = 256;
+
+/// Hard bound on waiting for a cursor-position reply. The vendor's own query
+/// waits up to two seconds per attempt and retries on internal errors — an
+/// unbounded window on the thread that must keep accepting input — so the
+/// loop-side helper caps the wait and maps expiry to the same `Err` fallback
+/// the direct call had.
+const PUMP_QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The single owner of this process's crossterm event reader.
+///
+/// crossterm 0.27 funnels every `event::poll`/`read` through one global
+/// reader protected by a mutex; a `poll` with a timeout gives up (`Ok(false)`)
+/// when the lock is taken, and `read()` takes the mutex with no timeout and
+/// can then block inside the underying tty read. Having several consumers —
+/// overlapping polls, or a query on another thread — is undefined by the
+/// vendor: events sit unread behind a parked poll (typing lags, then never
+/// registers again), and a byte stream split across concurrent readers makes
+/// the parser desynchronize, garbage the current sequence, and surface the
+/// fragments as typed input.
+///
+/// One thread polls, drains everything immediately available (the same batch
+/// discipline the per-iteration drain had), and forwards each event to the
+/// async loop over a bounded channel; a closed channel is the pump's own
+/// termination signal. Cursor-position queries are answered here too, between
+/// the pump's own poll cycles, so the singleton is touched by one thread
+/// only. `position`, `poll` and `read` arrive as injectable operations — the
+/// production site passes the crossterm functions; tests pass canned ones, so
+/// the pump's contract is pinned without a terminal.
+fn run_input_pump<S, P, R>(
+    query_rx: std::sync::mpsc::Receiver<CursorQuery>,
+    event_tx: mpsc::Sender<CtEvent>,
+    position: S,
+    poll: P,
+    read: R,
+) where
+    S: Fn() -> std::io::Result<(u16, u16)>,
+    P: Fn(Duration) -> std::io::Result<bool>,
+    R: Fn() -> std::io::Result<CtEvent>,
+{
+    loop {
+        // Answer a pending cursor query before anything else: the loop asked
+        // while a click was being handled, and it is waiting bounded — the
+        // answer should not wait behind a poll cycle.
+        match query_rx.try_recv() {
+            Ok(query) => {
+                let _ = query.reply.send(position());
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        if poll(Duration::from_millis(50)).unwrap_or(false) {
+            while let Ok(ct_event) = read() {
+                // The receiver going away is this pump's retirement:
+                // the session that owned it is over.
+                if event_tx.blocking_send(ct_event).is_err() {
+                    return;
+                }
+                if !poll(Duration::from_millis(0)).unwrap_or(false) {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// Ask the pump for the physical cursor position, bounded by
+/// [`PUMP_QUERY_TIMEOUT`]: expiry maps to the same `Err` fallback the direct
+/// `cursor::position()` call answered with, so the click semantics behind it
+/// are unchanged. A session without a pump (its thread could not be spawned)
+/// answers `Err` directly, keeping the same fallback.
+async fn cursor_position_via_pump(
+    query_tx: Option<&std::sync::mpsc::Sender<CursorQuery>>,
+) -> std::io::Result<(u16, u16)> {
+    let Some(query_tx) = query_tx else {
+        return Err(std::io::Error::other("input pump is gone"));
+    };
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let query = CursorQuery {
+        reply: reply_tx,
+    };
+    if query_tx.send(query).is_err() {
+        return Err(std::io::Error::other("input pump is gone"));
+    }
+    match tokio::time::timeout(PUMP_QUERY_TIMEOUT, reply_rx).await {
+        Ok(Ok(result)) => result,
+        _ => Err(std::io::Error::other(
+            "no cursor position within the query window",
+        )),
+    }
+}
+
 /// Raw-mode input loop with crossterm (FR-01/FR-02/FR-03).
-/// Uses `crossterm::event::poll` + `read()` for key events inside `tokio::select!`.
+/// A dedicated pump thread (`run_input_pump`) is the only consumer of
+/// crossterm's event reader: it polls, drains and forwards events over a
+/// channel, and answers cursor-position queries from the same thread, so
+/// concurrent users of the single global reader that starve each other
+/// cannot exist by construction.
 #[allow(clippy::too_many_arguments)]
 async fn run_input_loop_raw(
     input_tx: mpsc::Sender<AgentInput>,
@@ -1739,6 +1845,38 @@ async fn run_input_loop_raw(
     if state.scroll {
         let _ = std::io::stderr().execute(crossterm::event::EnableMouseCapture);
     }
+
+    // The pump: one thread that owns every crossterm reader call of this
+    // session. crossterm 0.27 funnels all of `event::poll`/`read` through a
+    // single global reader whose timed `poll` returns `Ok(false)` on a lock
+    // miss and whose `read()` blocks without a timeout; the per-iteration
+    // `spawn_blocking` polls this loop used to spawn could overlap each other
+    // and the cursor query, which showed up exactly as the reported pair of
+    // symptoms — typing that first lags and then stops registering at all,
+    // and mouse reports surfacing as garbled escape-sequence-like input once
+    // the shared parser desynchronizes. With one owner, none of those
+    // overlaps exist by construction; the loop below only receives events
+    // from the channel and asks the pump for the cursor position.
+    let (pump_req_tx, pump_req_rx) = std::sync::mpsc::channel::<CursorQuery>();
+    let (event_tx, mut event_rx) = mpsc::channel::<CtEvent>(PUMP_CHANNEL_CAPACITY);
+    let pump_handle = std::thread::Builder::new()
+        .name("input-pump".to_string())
+        .spawn(move || {
+            run_input_pump(
+                pump_req_rx,
+                event_tx,
+                crossterm::cursor::position,
+                event::poll,
+                event::read,
+            )
+        });
+    let pump_query_tx = match pump_handle {
+        Ok(_) => Some(pump_req_tx),
+        Err(e) => {
+            tracing::error!("failed to spawn the input pump: {e}");
+            None
+        }
+    };
 
     // Draw initial prompt
     render_prompt(
@@ -1889,16 +2027,18 @@ async fn run_input_loop_raw(
                     }
                 }
             }
-            // Poll for crossterm key events in all states (Ready, Pending, AwaitingApproval).
+            // Receive a crossterm event from the pump — the session's single
+            // reader thread — in all states (Ready, Pending, AwaitingApproval).
             // During Pending, ESC and Ctrl-C send AgentInput::Cancel; other keys are ignored.
-            _ = tokio::task::spawn_blocking(move || {
-                // This blocks the calling thread until a key event or timeout.
-                // We use a short timeout so tokio::select! can check other branches frequently.
-                let _ = event::poll(Duration::from_millis(50));
-            }) => {
-                // Drain all pending key events. `exit_loop` lets an inner break
+            ct_event = event_rx.recv() => {
+                // The pump is gone: its channels close when the session ends,
+                // the same condition that closes the loop here.
+                let Some(ct_event) = ct_event else {
+                    break;
+                };
+                // Drain everything already queued behind it. `exit_loop` lets an inner break
                 // (quit/exit command, EOF, closed channel) propagate out of the
-                // event-drain `while` to terminate the outer input loop — a plain
+                // event-drain `for` to terminate the outer input loop — a plain
                 // `break` here would only stop draining events, not exit the REPL.
                 let mut exit_loop = false;
                 // Set by a wheel report that moved the view, so a burst of
@@ -1907,8 +2047,16 @@ async fn run_input_loop_raw(
                 // Set by a finished drag, reported once the screen is back the
                 // way the user expects it.
                 let mut copied: Option<crate::clip::Outcome> = None;
-                while event::poll(Duration::from_millis(0)).unwrap_or(false) {
-                    let ct_event = event::read();
+                // The burst discipline the previous drain had: the first event
+                // arrived over the channel, and everything the pump already
+                // read behind it joins the same pass — a wheel burst still
+                // repaints once, after the whole drain.
+                let mut batch: Vec<std::io::Result<CtEvent>> = Vec::with_capacity(4);
+                batch.push(Ok(ct_event));
+                while let Ok(queued) = event_rx.try_recv() {
+                    batch.push(Ok(queued));
+                }
+                for ct_event in batch.into_iter() {
                     if let Ok(CtEvent::Mouse(mouse_event)) = &ct_event {
                         // The wheel scrolls the session log behind the prompt,
                         // which stays where it is. The keyboard is untouched:
@@ -1949,9 +2097,14 @@ async fn run_input_loop_raw(
                             )
                         {
                             let painted = lock_indicator(&state.indicator).painted_rows();
-                            // Without a cursor report the row cannot be placed;
-                            // a click during a turn is then taken at face value.
-                            let hit = match crossterm::cursor::position() {
+                            // The physical cursor row decides where the click
+                            // landed, and the question goes to the pump — the
+                            // only thread that may touch crossterm's reader —
+                            // so it is never asked behind another consumer's
+                            // back. Without an answer in time the click is
+                            // taken at face value, as with a direct query
+                            // error before.
+                            let hit = match cursor_position_via_pump(pump_query_tx.as_ref()).await {
                                 Ok((_, cursor_row)) => {
                                     click_hits_indicator(painted, cursor_row, mouse_event.row)
                                 }
@@ -6250,5 +6403,187 @@ mod tests {
         // No UserPrompt sent
         let none = tokio::time::timeout(Duration::from_millis(100), input_rx.recv()).await;
         assert!(none.is_err(), "built-in /help must not send UserPrompt");
+    }
+
+    // ——— Input pump (the session's single crossterm reader thread) ———
+
+    /// A canned event source for the pump: replays queued answers to
+    /// `read()` and programmed outcomes for `poll(duration)`.
+    struct CannedSource {
+        reads: std::sync::Mutex<std::collections::VecDeque<std::io::Result<CtEvent>>>,
+        polls: std::sync::Mutex<std::collections::VecDeque<std::io::Result<bool>>>,
+    }
+
+    impl CannedSource {
+        fn new(
+            reads: Vec<std::io::Result<CtEvent>>,
+            polls: Vec<std::io::Result<bool>>,
+        ) -> Self {
+            let mut reads: std::collections::VecDeque<_> = reads.into();
+            reads.make_contiguous();
+            let mut polls: std::collections::VecDeque<_> = polls.into();
+            polls.make_contiguous();
+            Self {
+                reads: std::sync::Mutex::new(reads),
+                polls: std::sync::Mutex::new(polls),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn input_pump_forwards_events_in_arrival_order_and_exits_when_closed() {
+        // A key press, a mouse press and a second key: the pump forwards them
+        // in exactly the order its source produced them — the same order the
+        // per-iteration drain used to have.
+        let reads = vec![
+            Ok(CtEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))),
+            Ok(CtEvent::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 10,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Ok(CtEvent::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))),
+        ];
+        // First poll: an event is ready. Inside the drain, every read must be
+        // preceded by a ready report, so each canned read is followed by an
+        // Ok(true) before the closing Ok(false); the not-ready polls close the
+        // drain, and the timer keeps cycling afterwards so the query check
+        // runs first.
+        let polls = vec![
+            Ok(true),
+            Ok(true),
+            Ok(true),
+            Ok(false),
+            Ok(false),
+            Ok(false),
+        ];
+        let canned = std::sync::Arc::new(CannedSource::new(reads, polls));
+        let source = canned.clone();
+        let read_fn = move || {
+            source
+                .reads
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(std::io::Error::other("no more canned reads")))
+        };
+        let source = canned.clone();
+        let poll_fn = move |timeout: Duration| {
+            let _ = timeout;
+            source
+                .polls
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(std::io::Error::other("no more canned polls")))
+        };
+        let position_fn = || Err(std::io::Error::other("no position in this test"));
+
+        let (event_tx, mut event_rx) = mpsc::channel::<CtEvent>(PUMP_CHANNEL_CAPACITY);
+        let (query_tx, query_rx) = std::sync::mpsc::channel::<CursorQuery>();
+        let handle = std::thread::spawn(move || {
+            run_input_pump(query_rx, event_tx, position_fn, poll_fn, read_fn)
+        });
+
+        let mut received = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while received.len() < 3 {
+                if let Some(ct_event) = event_rx.recv().await {
+                    received.push(ct_event);
+                }
+            }
+        })
+        .await
+        .expect("the pump delivers its three canned events");
+        assert!(
+            matches!(&received[0], CtEvent::Key(k) if k.code == KeyCode::Char('a')),
+            "first event must be the first canned key"
+        );
+        assert!(
+            matches!(received[1], CtEvent::Mouse(_)),
+            "second event must be the canned mouse press"
+        );
+        assert!(
+            matches!(&received[2], CtEvent::Key(k) if k.code == KeyCode::Char('b')),
+            "third event must be the second canned key"
+        );
+        // The sender side going away is what retires the pump: with the query
+        // channel dropped it has nothing left to answer, so it returns.
+        drop(query_tx);
+        handle.join().expect("the pump thread exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn input_pump_answers_a_cursor_query_between_its_own_poll_cycles() {
+        // Idle source: no events, only not-ready polls, so the query is
+        // answered by the check that precedes each poll cycle.
+        let polls = vec![Ok(false), Ok(false), Ok(false), Ok(false), Ok(false), Ok(false)];
+        let canned = std::sync::Arc::new(CannedSource::new(vec![], polls));
+        let source = canned.clone();
+        let read_fn = move || {
+            source
+                .reads
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(std::io::Error::other("no reads")))
+        };
+        let source = canned.clone();
+        let poll_fn = move |timeout: Duration| {
+            let _ = timeout;
+            source
+                .polls
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(false))
+        };
+        let position_fn = || Ok((7u16, 3u16));
+        let (event_tx, _event_rx) = mpsc::channel::<CtEvent>(PUMP_CHANNEL_CAPACITY);
+        let (query_tx, query_rx) = std::sync::mpsc::channel::<CursorQuery>();
+        let _handle = std::thread::spawn(move || {
+            run_input_pump(query_rx, event_tx, position_fn, poll_fn, read_fn)
+        });
+
+        let position = cursor_position_via_pump(Some(&query_tx)).await;
+        assert_eq!(position.expect("the pump answers the query"), (7, 3));
+    }
+
+    #[tokio::test]
+    async fn input_pump_reports_a_failing_position_query_as_the_documented_error() {
+        let polls = vec![Ok(false), Ok(false), Ok(false), Ok(false), Ok(false), Ok(false)];
+        let canned = std::sync::Arc::new(CannedSource::new(vec![], polls));
+        let source = canned.clone();
+        let read_fn = move || {
+            source
+                .reads
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(std::io::Error::other("no reads")))
+        };
+        let source = canned.clone();
+        let poll_fn = move |timeout: Duration| {
+            let _ = timeout;
+            source
+                .polls
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(false))
+        };
+        let position_fn = || Err(std::io::Error::other("position failed"));
+        let (event_tx, _event_rx) = mpsc::channel::<CtEvent>(PUMP_CHANNEL_CAPACITY);
+        let (query_tx, query_rx) = std::sync::mpsc::channel::<CursorQuery>();
+        let _handle = std::thread::spawn(move || {
+            run_input_pump(query_rx, event_tx, position_fn, poll_fn, read_fn)
+        });
+
+        let position = cursor_position_via_pump(Some(&query_tx)).await;
+        assert!(
+            position.is_err(),
+            "a failing source must surface as the Err fallback, got {position:?}"
+        );
     }
 }

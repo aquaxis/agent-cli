@@ -4,6 +4,58 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.25.0]
+
+### Fixed
+
+- **The interactive input path no longer reads the terminal through
+  overlapping workers.** Two intermittent session defects — mouse input
+  occasionally surfacing as escape-sequence-like text (`0;…;…` fragments on
+  the prompt line), and typing occasionally getting heavy until input stops
+  registering — shared one root: crossterm 0.27 funnels every
+  `event::poll`/`read` through a single global reader (its timed `poll`
+  gives up with `Ok(false)` on a lock miss; `read()` takes the lock with no
+  timeout and can block inside the underlying tty read), while the REPL
+  spawned a fresh `spawn_blocking` polling task every loop iteration, then
+  drained events on the loop thread itself, and queried the cursor
+  position synchronously during a turn — several consumers racing one
+  reader. Under heavy output the delivered keystrokes lagged at the
+  poll-timeout beat and could stop arriving entirely when a blocking read
+  parked behind another consumer's; the shared parser desynchronized
+  enough for mouse-report fragments to fall through to character
+  conversion and into the editor buffer.
+  (`crossterm`'s own issue tracker acknowledges the cursor/event mixing as
+  the race behind the position timeouts.)
+- **A single pump thread now owns every terminal read of the session**
+  (`run_input_pump`): it polls, drains everything immediately available —
+  the same batch discipline the per-iteration drain had, so a wheel burst
+  still repaints once — and forwards events to the async loop over a
+  bounded channel that is also its retirement signal. The loop
+  receives instead of polling, coalescing queued events with
+  `try_recv`, so event order and the burst behaviour are unchanged.
+- **The cursor query during a click on the reasoning block is routed to
+  the pump as well**: `cursor::position()` touches the same global
+  reader as the event calls, so the question is asked from the pump's
+  thread between its own poll cycles. The reply is bounded by a 3-second
+  wait whose expiry maps to the same `Err` fallback the direct call
+  answered with; the click semantics — hit test, fall-through to
+  selection, and the face-value fallback — are unchanged.
+- **Tests**: three new tests pin the pump contract — canned events
+  forwarded in arrival order with a clean retirement on channel close, a
+  cursor query answered between the pump's own poll cycles, and a failing
+  query surfaced as the documented error — with the pump's poll/read and
+  position operations injectable so the tests run without a terminal.
+  Suite **586 unit + 6 integration, 0 failed**; clippy unchanged at the
+  8 pre-existing warnings. The previously-shipped mouse features (wheel
+  scrollback, drag-to-copy) and all key contracts keep their test
+  coverage.
+- Verified in a scripted pty session: split mouse-report bursts and
+  keystroke bursts during busy output keep the session responsive, the
+  editor content clean (no report fragments rendered or submitted), and
+  `/quit` working. The two defect timings themselves are rare races and
+  could not be provoked on demand in a short scripted session — the fix
+  removes the overlap they raced for, by construction.
+
 ## [0.24.0]
 
 ### Changed

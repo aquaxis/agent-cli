@@ -535,6 +535,26 @@ The wheel scrolls the session log while the prompt stays pinned (see [`doc/usage
 | `Esc` did not cancel the turn | The first `Esc` returns from the scrolled view to the live one and is consumed there; press it again to cancel |
 | The screen looks stuck in a scrolled view | Press `Esc`, or scroll back to the bottom. Exiting the REPL always returns to the normal screen, including after `Ctrl+C` / `Ctrl+D` |
 
+### Mouse input arrives as escape-sequence-like text, or typing turns heavy and stops registering (old bug, v0.24.x)
+
+The interactive input path used to read the terminal through overlapping
+workers: a fresh polling worker every cycle, the event drain on the loop
+thread, and a synchronous cursor query during a turn — several readers
+against the one terminal reader the platform provides. Under heavy output
+the readers starved each other, and a desynchronized byte stream could put
+the leftover mouse-report bits (`0;10;5` shapes) on the prompt line as if
+typed.
+
+- Fixed in **v0.25.0**: a single thread (`input-pump`) now owns every
+  terminal read of the session, and the cursor query is routed to that
+  thread, so the readers can no longer race.
+- If you still see garbled input on a newer version, check what is left
+  behind your terminal: an emulator with unusual byte-splitting behaviour,
+  a cable/pty wrapper that mangles reports, or another process left mouse
+  reporting enabled before agent-cli started (`printf '\033[<u'` style
+  state survives across processes on some emulators). Sending a fresh
+  reset and restarting the session is the recovery of record.
+
 ### The colours are missing, wrong, or end up in a file
 
 The REPL colour-codes its output (see [`doc/usage.md`](usage.md), "Colours on Screen"). Colour is resolved once at startup, separately for stdout and stderr.
