@@ -284,7 +284,7 @@ In the REPL, lines starting with `/` are commands; everything else is a normal p
 | Command | Purpose |
 |---------|---------|
 | `/list` | List peers (id, name, provider, model, role) |
-| `/send <peer> <text>` | Send a prompt to a peer |
+| `/send [--report&#124;--ask] <peer> <text>` | Send to a peer: a prompt (default), a report added to its conversation with no turn, or an ask that waits for the answer |
 | `/spawn [name] [provider]` | Create a detached agent peer (see [Detached agents](#detached-agents)) that outlives this session |
 | `/stop <peer>` | Stop a running peer (id or name), including detached agents |
 | `/tools` | List tools enabled for this agent (agent-cli's own registry; not offered to the model under `claude-code` delegation) |
@@ -342,6 +342,7 @@ On an interactive terminal, the REPL shows what it is doing while a turn runs:
 ```
 
 - The **line above** describes what is being executed. While the indicator is on, a tool call is written on a single line and anything past the terminal width is cut with `…`, so the raw arguments never push the display around. Before the first tool call the line above is simply the question you submitted.
+- The **turn does not have to be one you typed**: a prompt another agent sends you over the socket opens the same spinner while that turn runs (a peer *report* runs no turn, so nothing spins and only its `[info] peer report` receipt appears). It is the same indicator either way, and `Esc` / `/cancel` stop it the same way.
 - The **line below** is redrawn in place about ten times a second: a spinner at the head of the line, then the time elapsed since the turn started (`0.4s`, `12.4s`, `2m03s`).
 - When the turn ends, both are replaced by a single permanent line — `✔ 12.4s` on success, `✗ 12.4s` when the turn ended with an error — and the prompt is drawn beneath it. A turn stopped with `Esc` shows `[cancelled]` instead and leaves no mark.
 - The indicator pauses while a tool-approval prompt is on screen and resumes once you answer.
@@ -587,7 +588,20 @@ agent-01HY...    bob      ollama    glm-5.1:cloud      general assistant
 delivered to agent-01HY...
 ```
 
-Terminal B shows `[peer prompt from agent-01HX...]` and the AI responds.
+Terminal B shows `[peer prompt from agent-01HX...]` and the AI responds — with the same spinner and elapsed time a typed prompt gets while the turn runs.
+
+Options on `/send` choose the delivery: `--report` (or `--ask`, `--prompt`) before or after the peer name, matching the `send_to` tool's `delivery` parameter.
+
+```text
+> /send bob --report "found the leaking fd"
+reported to agent-01HY... (added to its conversation; it runs no turn and sends no answer)
+
+> /send alice --ask "what did the review conclude?"
+[send] asked agent-01HX... (waiting for the reply, up to 120s)
+[peer reply] the review concluded that the fix is sufficient
+```
+
+`--ask` waits on its own task, so your prompt keeps accepting keys while the answer is on its way; if the peer stops first the failure says so (`peer <peer> stopped before replying (...)`), and the 120 s bound matches the tool's.
 
 ### 5. Role assignment (persona operation)
 

@@ -10,6 +10,7 @@ use crossterm::terminal::{self, ClearType};
 use crossterm::ExecutableCommand;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
+use crate::tools::send_to::Delivery;
 
 use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest, CancelToken};
 use crate::ai;
@@ -935,11 +936,15 @@ enum PromptState {
 ///   caller must drain stale idle notifications and enter `PromptState::Pending`
 ///   (same as a normal user prompt).
 /// - `Quit`: terminate the REPL (`/quit`, `/exit`).
+/// - `SpawnedAsk`: a `/send --ask` was handed to a background runner; the
+///   caller stores it and lets a dedicated select arm print the outcome, so
+///   the loop keeps taking keys while the reply is unpaid on its way.
 #[derive(Debug)]
 enum CommandResult {
     Continue,
     SubmittedPrompt,
     Quit,
+    SpawnedAsk(crate::tools::send_to::PeerAsk),
 }
 
 impl PromptState {
@@ -1832,6 +1837,9 @@ async fn run_input_loop_raw(
     // `prompt_state` rather than inside it so the `select!` arm below can poll
     // it while the other arms still read the state.
     let mut shell_run: Option<crate::shell::ShellRun> = None;
+    // A `/send --ask` waiting for its peer's answer on a background task; its
+    // arm below prints the outcome (answer or the disambiguated failure).
+    let mut ask_run: Option<crate::tools::send_to::PeerAsk> = None;
     let mut approval_rx: Option<mpsc::Receiver<ApprovalRequest>> = Some(approval_rx);
     let mut stdout = std::io::stdout();
     let mut shutdown_rx = shutdown_rx;
@@ -2027,6 +2035,33 @@ async fn run_input_loop_raw(
                     }
                 }
             }
+            // A `/send --ask` said nothing still: its runner answers on its
+            // own task, and this arm reports the outcome — the peer's answer
+            // or the disambiguated failure — the moment it is known, without
+            // holding the loop away from anything else you type meanwhile.
+            ask_outcome = async {
+                match ask_run.as_mut() {
+                    Some(run) => run.next().await,
+                    None => std::future::pending::<Option<std::result::Result<String, String>>>().await,
+                }
+            }, if ask_run.is_some() => {
+                match ask_outcome {
+                    Some(Ok(text)) => {
+                        raw_println(true, &state.theme.out(Role::Info, &format!("[peer reply] {text}")));
+                    }
+                    Some(Err(why)) => {
+                        raw_eprintln(true, &state.theme.err(Role::Failure, &format!("[send] {why}")));
+                    }
+                    // The runner is gone with nothing to say (its receiver was
+                    // dropped with the loop): treat it as the end of the ask.
+                    None => {}
+                }
+                ask_run = None;
+                if !prompt_state.is_pending() {
+                    renderer.reset();
+                    render_prompt(&mut overlay, &mut renderer, &mut stdout, if prompt_state.is_awaiting_approval() { Role::Confirm } else { Role::PromptSymbol }, if prompt_state.is_awaiting_approval() { APPROVAL_PROMPT } else { PROMPT }, &state, &input_state).await;
+                }
+            }
             // Receive a crossterm event from the pump — the session's single
             // reader thread — in all states (Ready, Pending, AwaitingApproval).
             // During Pending, ESC and Ctrl-C send AgentInput::Cancel; other keys are ignored.
@@ -2168,7 +2203,7 @@ async fn run_input_loop_raw(
                                     if let Some(sel) = overlay.take_selection() {
                                         let rows = body_slice_at(width, body, sel.offset);
                                         let text = crate::select::selected_text(&rows, &sel);
-                                        copied = Some(crate::clip::copy(
+                                        let outcome = crate::clip::copy(
                                             &text,
                                             &state.copy_command,
                                             |seq| {
@@ -2177,7 +2212,13 @@ async fn run_input_loop_raw(
                                                 err.write_all(seq.as_bytes())?;
                                                 err.flush()
                                             },
-                                        ));
+                                        );
+                                        // An empty report is no report: a
+                                        // gesture that touched nothing does
+                                        // not get a line of its own.
+                                        if !outcome.is_empty() {
+                                            copied = Some(outcome);
+                                        }
                                     }
                                     scroll_dirty = true;
                                     continue;
@@ -2356,6 +2397,12 @@ async fn run_input_loop_raw(
                                             CommandResult::Continue => {
                                                 // Redraw prompt after command
                                                 render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                                            }
+                                            // The ask runs on its own task; the
+                                            // dedicated select arm below prints the
+                                            // outcome when it arrives.
+                                            CommandResult::SpawnedAsk(run) => {
+                                                ask_run = Some(run);
                                             }
                                         }
                                         continue;
@@ -2640,6 +2687,14 @@ async fn run_input_loop_line<R>(
                                     prompt_state = PromptState::Pending;
                                 }
                                 CommandResult::Continue => {}
+                                // No select arm here (line mode has no prompt
+                                // state to redraw through): the ask outcome is
+                                // waited for synchronously, out of band.
+                                CommandResult::SpawnedAsk(mut run) => match run.next().await {
+                                    Some(Ok(text)) => println!("[peer reply] {text}"),
+                                    Some(Err(why)) => eprintln!("[error] {why}"),
+                                    None => {}
+                                },
                             }
                             continue;
                         }
@@ -3929,7 +3984,13 @@ async fn handle_repl_command(
             }
         }
         "list" => list_peers(&state.registry_dir, raw_mode),
-        "send" => send_to_peer(arg, &state.registry_dir, raw_mode).await,
+        "send" => {
+            if let CommandResult::SpawnedAsk(ask) =
+                send_to_peer(arg, &state.registry_dir, raw_mode).await
+            {
+                return CommandResult::SpawnedAsk(ask);
+            }
+        }
         "spawn" => spawn_peer(arg, state, raw_mode).await,
         "stop" => stop_peer_cmd(arg, &state.registry_dir, raw_mode).await,
         "tools" => {
@@ -4130,29 +4191,116 @@ fn list_peers(registry_dir: &Path, raw_mode: bool) {
     }
 }
 
-async fn send_to_peer(arg: &str, registry_dir: &Path, raw_mode: bool) {
-    let mut p = arg.splitn(2, ' ');
-    let peer = p.next().unwrap_or("").trim();
-    let text = p.next().unwrap_or("").trim();
-    if peer.is_empty() || text.is_empty() {
-        raw_eprintln(raw_mode, "usage: /send <peer> <text>");
-        return;
-    }
-    match crate::ipc::registry::resolve_peer(registry_dir, peer) {
-        Ok(p) => {
-            let msg = crate::ipc::IpcMessage::Prompt {
-                from: p.id.clone(),
-                from_name: None,
-                text: text.to_string(),
-                reply_to: None,
-            };
-            if let Err(e) = crate::ipc::client::send(&p.socket, &msg).await {
-                raw_eprintln(raw_mode, &format!("[error] {e}"));
-            } else {
-                raw_println(raw_mode, &format!("delivered to {}", p.id));
-            }
+/// Parse the `/send` argument: an optional delivery option (`--prompt`, the
+/// silent default; `--report`; `--ask`) followed by `<peer> <text>`. The
+/// option reads naturally in either slot — `/send --ask <peer> <text>` or
+/// `/send <peer> --report <text>` — and an unknown `--` word surfaces the
+/// `send_to` tool's exact error, so both surfaces reject the same vocabulary.
+/// The deprecated `wait_reply` boolean stays a tool-side concept.
+fn parse_send_args(arg: &str) -> std::result::Result<(Delivery, String, String), String> {
+    const USAGE: &str = "usage: /send [--report|--ask] <peer> <text>";
+    // Leading option tokens.
+    let mut delivery: Option<Delivery> = None;
+    let mut rest = arg;
+    loop {
+        let (tok, after) = match rest.split_once(' ') {
+            Some((f, a)) => (f, a.trim_start()),
+            None => (rest, ""),
+        };
+        if tok.starts_with("--") {
+            delivery = Some(resolve_option_token(tok)?);
+            rest = after;
+        } else {
+            break;
         }
-        Err(e) => raw_eprintln(raw_mode, &format!("[error] {e}")),
+    }
+    // The peer, then possibly one option token right after it.
+    let (peer_token, tail) = match rest.split_once(' ') {
+        Some((f, a)) => (f, a.trim_start()),
+        None => (rest, ""),
+    };
+    if tail.starts_with("--") {
+        let (tok, after) = match tail.split_once(' ') {
+            Some((f, a)) => (f, a.trim_start()),
+            None => (tail, ""),
+        };
+        delivery = Some(resolve_option_token(tok)?);
+        rest = after;
+    } else {
+        rest = tail;
+    }
+    let peer = peer_token.trim();
+    let text = rest.trim();
+    if peer.is_empty() || text.is_empty() {
+        return Err(USAGE.to_string());
+    }
+    Ok((delivery.unwrap_or(Delivery::Prompt), peer.to_string(), text.to_string()))
+}
+
+/// Resolve an option token that carries its dashes (`--report` → Report; an
+/// unknown `--verbose` errors with the tool's exact text, dashes and all).
+fn resolve_option_token(tok: &str) -> std::result::Result<Delivery, String> {
+    match Delivery::resolve(Some(tok.trim_start_matches('-')), false) {
+        Ok(d) => Ok(d),
+        // The stripped word is not vocabulary either: re-resolve the token as
+        // written so the error names what was typed.
+        Err(_) => Delivery::resolve(Some(tok), false),
+    }
+}
+
+async fn send_to_peer(arg: &str, registry_dir: &Path, raw_mode: bool) -> CommandResult {
+    let (delivery, peer_name, text) = match parse_send_args(arg) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            raw_eprintln(raw_mode, &format!("[error] {why}"));
+            return CommandResult::Continue;
+        }
+    };
+    match crate::ipc::registry::resolve_peer(registry_dir, &peer_name) {
+        Ok(p) => match delivery {
+            Delivery::Prompt => {
+                let msg = crate::ipc::IpcMessage::Prompt {
+                    from: p.id.clone(),
+                    from_name: None,
+                    text,
+                    reply_to: None,
+                };
+                if let Err(e) = crate::ipc::client::send(&p.socket, &msg).await {
+                    raw_eprintln(raw_mode, &format!("[error] {e}"));
+                } else {
+                    raw_println(raw_mode, &format!("delivered to {}", p.id));
+                }
+                CommandResult::Continue
+            }
+            Delivery::Report => {
+                match crate::tools::send_to::deliver_report(
+                    &p.id, registry_dir, &peer_name, &text,
+                )
+                .await
+                {
+                    Ok(outcome) => raw_println(raw_mode, &outcome),
+                    Err(why) => raw_eprintln(raw_mode, &format!("[error] {why}")),
+                }
+                CommandResult::Continue
+            }
+            // The runner binds the reply socket and waits on its own task; the
+            // loop keeps taking keys and the ask arm below prints the outcome
+            // when it arrives, so a slow peer cannot hold the prompt hostage.
+            Delivery::Ask => {
+                let ask = crate::tools::send_to::PeerAsk::spawn(
+                    &p.id, registry_dir.to_path_buf(), peer_name, text,
+                );
+                raw_println(
+                    raw_mode,
+                    &format!("[send] asked {} (waiting for the reply, up to 120s)", p.id),
+                );
+                CommandResult::SpawnedAsk(ask)
+            }
+        },
+        Err(e) => {
+            raw_eprintln(raw_mode, &format!("[error] {e}"));
+            CommandResult::Continue
+        }
     }
 }
 
@@ -6586,4 +6734,72 @@ mod tests {
             "a failing source must surface as the Err fallback, got {position:?}"
         );
     }
+    // ——— /send delivery options (FR-04) ———
+
+    #[test]
+    fn send_args_default_to_prompt_without_an_option() {
+        let (delivery, peer, text) =
+            parse_send_args("worker fix the failing test").expect("plain /send parses");
+        assert_eq!(delivery, Delivery::Prompt);
+        assert_eq!(peer, "worker");
+        assert_eq!(text, "fix the failing test");
+    }
+
+    #[test]
+    fn send_args_accept_the_report_option() {
+        // A result handed over without costing the peer a turn.
+        let (delivery, peer, text) =
+            parse_send_args("worker --report done with task 4").expect("report parses");
+        assert_eq!(delivery, Delivery::Report);
+        assert_eq!(peer, "worker");
+        assert_eq!(text, "done with task 4");
+    }
+
+    #[test]
+    fn send_args_accept_the_ask_option() {
+        let (delivery, _, text) =
+            parse_send_args("worker --ask what did the build say?").expect("ask parses");
+        assert_eq!(delivery, Delivery::Ask);
+        assert_eq!(text, "what did the build say?");
+    }
+
+    #[test]
+    fn send_args_explicit_prompt_is_the_same_as_the_default() {
+        let explicit = parse_send_args("peer --prompt ping").expect("prompt parses");
+        let implicit = parse_send_args("peer ping").expect("plain parses");
+        assert_eq!(explicit, implicit);
+        assert_eq!(explicit.0, Delivery::Prompt);
+    }
+
+    #[test]
+    fn send_args_reject_unknown_options_with_the_tool_s_exact_text() {
+        // The vocabulary is the send_to tool's: both surfaces reject the same
+        // word, so a typo in either place reads the same.
+        let err = parse_send_args("worker --verbose ping").unwrap_err();
+        let tool = Delivery::resolve(Some("--verbose"), false).unwrap_err();
+        assert_eq!(err, tool, "the REPL and the tool must share the error text");
+        assert!(err.contains("unknown delivery"), "the shape is the tool's: {err}");
+    }
+
+    #[test]
+    fn send_args_keep_the_usage_error_on_missing_parts() {
+        for arg in ["", "worker", "--ask worker"] {
+            let err = parse_send_args(arg).unwrap_err();
+            assert_eq!(
+                err, "usage: /send [--report|--ask] <peer> <text>",
+                "missing-part /send {arg:?} must point at the new usage"
+            );
+        }
+    }
+
+    #[test]
+    fn send_args_an_option_lone_is_still_a_usage_error_not_an_unknown_delivery() {
+        // A bare `--ask` with no peer/text is a usage problem, not a vocabulary
+        // one: the option was recognized.
+        assert_eq!(
+            parse_send_args("--ask").unwrap_err(),
+            "usage: /send [--report|--ask] <peer> <text>"
+        );
+    }
 }
+

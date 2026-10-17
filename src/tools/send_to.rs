@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ struct SendArgs {
 /// result, so the sender chooses: a report that arrives as a prompt makes the
 /// peer run a turn and compose an answer nobody will read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Delivery {
+pub(crate) enum Delivery {
     /// A prompt the peer answers in its own session; nothing comes back here.
     Prompt,
     /// A result added to the peer's conversation without running a turn.
@@ -43,7 +43,10 @@ enum Delivery {
 impl Delivery {
     /// `delivery` wins when given; otherwise the deprecated `wait_reply` flag;
     /// otherwise a plain prompt, which is what this tool has always done.
-    fn resolve(delivery: Option<&str>, wait_reply: bool) -> std::result::Result<Self, String> {
+    pub(crate) fn resolve(
+        delivery: Option<&str>,
+        wait_reply: bool,
+    ) -> std::result::Result<Self, String> {
         match delivery.map(str::trim) {
             None | Some("") => Ok(if wait_reply {
                 Delivery::Ask
@@ -106,46 +109,13 @@ impl Tool for SendToTool {
         };
 
         if delivery == Delivery::Report {
-            let msg = IpcMessage::Context {
-                from: ctx.self_id.clone(),
-                from_name: None,
-                text: parsed.text.clone(),
+            return match
+                deliver_report(&ctx.self_id, &ctx.registry_dir, &parsed.peer, &parsed.text)
+                .await
+            {
+                Ok(text) => Ok(ToolOutput::ok(text)),
+                Err(message) => Ok(ToolOutput::err(message)),
             };
-            match client::send(&peer.socket, &msg).await {
-                Ok(IpcMessage::Ack { .. }) => {
-                    return Ok(ToolOutput::ok(format!(
-                        "reported to {} (added to its conversation; it runs no turn and sends no answer)",
-                        peer.id.as_str()
-                    )))
-                }
-                // An agent-cli that predates this delivery cannot parse the
-                // message and says so. The text still has to arrive, so send it
-                // as an ordinary prompt — and say that the peer will answer it
-                // rather than only record it, which changes what to do next.
-                Ok(IpcMessage::Error { message }) => {
-                    let fallback = IpcMessage::Prompt {
-                        from: ctx.self_id.clone(),
-                        from_name: None,
-                        text: parsed.text.clone(),
-                        reply_to: None,
-                    };
-                    return match client::send(&peer.socket, &fallback).await {
-                        Ok(IpcMessage::Ack { .. }) => Ok(ToolOutput::ok(format!(
-                            "delivered to {} as a prompt: that agent does not support report \
-                             delivery, so it will answer this in its own session instead of only \
-                             recording it (it said: {message})",
-                            peer.id.as_str()
-                        ))),
-                        Ok(IpcMessage::Error { message }) => Ok(ToolOutput::err(message)),
-                        Ok(other) => {
-                            Ok(ToolOutput::err(format!("unexpected response: {:?}", other)))
-                        }
-                        Err(e) => Ok(ToolOutput::err(e.to_string())),
-                    };
-                }
-                Ok(other) => return Ok(ToolOutput::err(format!("unexpected response: {:?}", other))),
-                Err(e) => return Ok(ToolOutput::err(e.to_string())),
-            }
         }
 
         if delivery == Delivery::Prompt {
@@ -166,61 +136,16 @@ impl Tool for SendToTool {
                 Err(e) => Ok(ToolOutput::err(e.to_string())),
             }
         } else {
-            // Wait for reply
-            let reply_dir = match tempfile::tempdir() {
-                Ok(d) => d,
-                Err(e) => return Ok(ToolOutput::err(format!("temp dir: {e}"))),
-            };
-            let reply_socket = reply_dir.path().join("reply.sock");
-            let mut reply_server = match IpcServer::bind(reply_socket.clone()).await {
-                Ok(s) => s,
-                Err(e) => return Ok(ToolOutput::err(format!("bind reply socket: {e}"))),
-            };
-            let mut reply_rx = reply_server.take_rx().expect("rx available after bind");
-
-            let msg = IpcMessage::Prompt {
-                from: ctx.self_id.clone(),
-                from_name: None,
-                text: parsed.text.clone(),
-                reply_to: Some(reply_socket.clone()),
-            };
-            match client::send(&peer.socket, &msg).await {
-                Ok(IpcMessage::Ack { .. }) => {}
-                Ok(IpcMessage::Error { message }) => return Ok(ToolOutput::err(message)),
-                Ok(other) => {
-                    return Ok(ToolOutput::err(format!("unexpected response: {:?}", other)))
-                }
-                Err(e) => return Ok(ToolOutput::err(e.to_string())),
-            }
-
-            let result = tokio::time::timeout(
-                Duration::from_secs(120),
-                reply_rx.recv(),
-            )
-            .await;
-
-            drop(reply_server);
-
-            match result {
-                Ok(Some(IpcMessage::PromptReply { text, .. })) => Ok(ToolOutput::ok(text)),
-                Ok(Some(other)) => {
-                    Ok(ToolOutput::err(format!("unexpected reply: {:?}", other)))
-                }
-                // Did the peer stop while we were waiting? A plain timeout
-                // and a silently-dropped queue look identical without the
-                // registry check.
-                Err(_) | Ok(None) => {
-                    let why = match result {
-                        Err(_) => "timed out waiting for reply after 120s",
-                        Ok(None) => "reply channel closed without response",
-                        _ => unreachable!(),
-                    };
-                    Ok(ToolOutput::err(disambiguate_reply_failure(
-                        why,
-                        &ctx.registry_dir,
-                        &parsed.peer,
-                    )))
-                }
+            let mut ask = PeerAsk::spawn(
+                &ctx.self_id,
+                ctx.registry_dir.clone(),
+                parsed.peer.clone(),
+                parsed.text.clone(),
+            );
+            match ask.next().await {
+                Some(Ok(text)) => Ok(ToolOutput::ok(text)),
+                Some(Err(why)) => Ok(ToolOutput::err(why)),
+                None => Ok(ToolOutput::err("the ask runner went away before an answer")),
             }
         }
     }
@@ -230,11 +155,155 @@ impl Tool for SendToTool {
 /// *why*: the peer may simply be slow, or it may have been stopped and never
 /// processed the prompt. On the failure paths the registry now resolves the
 /// real question — a peer that is gone says so.
-fn disambiguate_reply_failure(why: &str, registry_dir: &Path, peer: &str) -> String {
+pub(crate) fn disambiguate_reply_failure(why: &str, registry_dir: &Path, peer: &str) -> String {
     match registry::resolve_peer(registry_dir, peer) {
         // still registered: the timeout stands on its own
         Ok(_) => why.to_string(),
         Err(_) => format!("peer {peer} stopped before replying ({why})"),
+    }
+}
+
+/// Send `text` to `peer` as a report and return the confirmation the caller
+/// can print as-is. The REPL's `/send` command and this tool share the
+/// behaviour: the report is a [`IpcMessage::Context`], and when the peer
+/// cannot parse that variant (an agent-cli that predates report delivery) the
+/// text still has to arrive, so it is re-sent as an ordinary prompt and the
+/// outcome says so — the caller's next step differs (the peer will run a turn
+/// and answer in its own session instead of only recording the text).
+pub(crate) async fn deliver_report(
+    from_id: &crate::id::AgentId,
+    registry_dir: &Path,
+    peer_name: &str,
+    text: &str,
+) -> std::result::Result<String, String> {
+    let peer = registry::resolve_peer(registry_dir, peer_name)
+        .map_err(|e| e.to_string())?;
+    let msg = IpcMessage::Context {
+        from: from_id.clone(),
+        from_name: None,
+        text: text.to_string(),
+    };
+    match client::send(&peer.socket, &msg).await {
+        Ok(IpcMessage::Ack { .. }) => Ok(format!(
+            "reported to {} (added to its conversation; it runs no turn and sends no answer)",
+            peer.id.as_str()
+        )),
+        Ok(IpcMessage::Error { message }) => {
+            let fallback = IpcMessage::Prompt {
+                from: from_id.clone(),
+                from_name: None,
+                text: text.to_string(),
+                reply_to: None,
+            };
+            match client::send(&peer.socket, &fallback).await {
+                Ok(IpcMessage::Ack { .. }) => Ok(format!(
+                    "delivered to {} as a prompt: that agent does not support report \
+                     delivery, so it will answer this in its own session instead of only \
+                     recording it (it said: {message})",
+                    peer.id.as_str()
+                )),
+                Ok(IpcMessage::Error { message }) => Err(message),
+                Ok(other) => Err(format!("unexpected response: {other:?}")),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        Ok(other) => Err(format!("unexpected response: {other:?}")),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// A peer prompt sent in ask mode, waited for on its own task.
+///
+/// The REPL's `/send` command shares this runner with the tool's ask
+/// delivery: the socket dance, the 120 s bound and the registry-backed
+/// disambiguation of a failed wait live here once. The task is spawned at
+/// the call site and its result arrives on the channel, so an interactive
+/// caller can keep its own loop alive while the answer is on its way.
+pub(crate) struct PeerAsk {
+    result_rx: tokio::sync::mpsc::Receiver<std::result::Result<String, String>>,
+}
+
+impl std::fmt::Debug for PeerAsk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerAsk").finish_non_exhaustive()
+    }
+}
+
+impl PeerAsk {
+    /// Resolve the peer, bind a one-shot reply socket, send the prompt and
+    /// wait up to both the documented 120 s and the peer's own patience on a
+    /// background task. The first value off the channel is the whole outcome.
+    pub(crate) fn spawn(
+        from_id: &crate::id::AgentId,
+        registry_dir: PathBuf,
+        peer_name: String,
+        text: String,
+    ) -> Self {
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel(1);
+        let from_id = from_id.clone();
+        tokio::spawn(async move {
+            let result = ask_peer_once(&from_id, &registry_dir, &peer_name, &text).await;
+            // The receiver is held by the caller's `next()` until it has the
+            // answer; if the caller went away the channel is closed and the
+            // result simply has nowhere to go — the ask is over either way.
+            let _ = result_tx.send(result).await;
+        });
+        Self { result_rx }
+    }
+
+    /// The ask's outcome: the peer's answer on success, the (disambiguated)
+    /// failure text on error, or nothing at all when the caller went away
+    /// before the background task finished.
+    pub(crate) async fn next(
+        &mut self,
+    ) -> Option<std::result::Result<String, String>> {
+        self.result_rx.recv().await
+    }
+}
+
+async fn ask_peer_once(
+    from_id: &crate::id::AgentId,
+    registry_dir: &Path,
+    peer_name: &str,
+    text: &str,
+) -> std::result::Result<String, String> {
+    let peer = registry::resolve_peer(registry_dir, peer_name)
+        .map_err(|e| e.to_string())?;
+    let reply_dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
+    let reply_socket = reply_dir.path().join("reply.sock");
+    let mut reply_server = IpcServer::bind(reply_socket.clone())
+        .await
+        .map_err(|e| format!("bind reply socket: {e}"))?;
+    let mut reply_rx = reply_server.take_rx().expect("rx available after bind");
+
+    let msg = IpcMessage::Prompt {
+        from: from_id.clone(),
+        from_name: None,
+        text: text.to_string(),
+        reply_to: Some(reply_socket.clone()),
+    };
+    match client::send(&peer.socket, &msg).await {
+        Ok(IpcMessage::Ack { .. }) => {}
+        Ok(IpcMessage::Error { message }) => return Err(message),
+        Ok(other) => return Err(format!("unexpected response: {other:?}")),
+        Err(e) => return Err(e.to_string()),
+    }
+
+    let result = tokio::time::timeout(Duration::from_secs(120), reply_rx.recv()).await;
+
+    drop(reply_server);
+
+    match result {
+        Ok(Some(IpcMessage::PromptReply { text, .. })) => Ok(text),
+        Ok(Some(other)) => Err(format!("unexpected reply: {other:?}")),
+        Err(_) | Ok(None) => {
+            let why = match result {
+                Err(_) => "timed out waiting for reply after 120s",
+                Ok(None) => "reply channel closed without response",
+                _ => unreachable!(),
+            };
+            Err(disambiguate_reply_failure(why, registry_dir, peer_name))
+        }
     }
 }
 
@@ -567,6 +636,21 @@ mod tests {
         // The server lives as long as the test does.
         std::mem::forget(server);
         (entry, rx)
+    }
+
+    #[tokio::test]
+    async fn peer_ask_runner_returns_the_mock_reply() {
+        let dir = TempDir::new().unwrap();
+        let registry_dir = dir.path().to_path_buf();
+        std::fs::create_dir_all(&registry_dir).unwrap();
+        let _entry = setup_mock_peer_with_reply(&registry_dir, "mock-peer", "hello from peer").await;
+        let mut ask = PeerAsk::spawn(&AgentId::new(), registry_dir, "mock-peer".into(), "hi".into());
+        let result = tokio::time::timeout(Duration::from_secs(10), ask.next())
+            .await
+            .expect("the runner answers well within the bound")
+            .expect("the runner yields a result");
+        assert!(result.is_ok(), "the mock replies, got: {result:?}");
+        assert_eq!(result.unwrap(), "hello from peer".to_string());
     }
 
     #[tokio::test]

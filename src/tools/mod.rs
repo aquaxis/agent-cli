@@ -20,7 +20,7 @@ pub mod grep;
 pub mod monitor;
 pub mod read;
 pub mod list_agents;
-mod send_to;
+pub mod send_to;
 pub mod spawn;
 pub mod stop_agent;
 pub mod webfetch;

@@ -4,6 +4,38 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.26.0]
+
+### Added
+
+- **`/send` speaks the same delivery language as the `send_to` tool.** The
+  REPL command accepts `--report` / `--ask` / `--prompt` either side of the
+  peer name (`/send bob --report done`, `/send --ask alice why?`). A report
+  is added to the peer's conversation without costing it a turn — and when
+  the peer predates that message it is re-delivered as a prompt with the
+  say-so (the tool's fallback, now shared code) — while an `ask` sends a
+  prompt with a reply socket and prints the peer's answer the moment it
+  arrives, on a background runner that leaves the prompt free while the
+  answer is on its way (the 120 s bound and the registry-backed failure
+  text, `peer <peer> stopped before replying (…)`, come along from the
+  tool). The default (`prompt`) is byte-for-byte what `/send` always did,
+  and both surfaces now share one `resolve`, one `deliver_report` and one
+  ask runner.
+- **A mouse gesture that copied nothing prints nothing.** A click, or a
+  drag over no characters, used to answer with `[clip] nothing selected`;
+  it now stays silent, while real copies and failures keep their report
+  lines.
+
+### Changed
+
+- **The spinner's visibility for socket-received work is pinned and
+  documented.** A prompt another agent sends over the socket opens the
+  same progress indicator a typed prompt does (the indicator starts on
+  the turn marker, which a peer prompt's turn emits like any other); a
+  peer *report* runs no turn, so its receipt line remains its only
+  feedback. The behaviour was verified end to end and is now stated in
+  `doc/usage.md` rather than implied — no code change was needed.
+
 ## [0.25.0]
 
 ### Fixed

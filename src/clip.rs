@@ -84,6 +84,13 @@ impl Outcome {
     pub fn is_failure(&self) -> bool {
         matches!(self, Outcome::TooLarge { .. } | Outcome::Failed { .. })
     }
+
+    /// A click that touched nothing (or a drag over no characters): nothing
+    /// was copied and the REPL does not print a report for it — an outcome a
+    /// mouse gesture produces on its own should not speak for itself.
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Outcome::Empty)
+    }
 }
 
 /// Standard base64, no line breaks. Twenty lines rather than a dependency for
@@ -295,6 +302,9 @@ mod tests {
         assert_eq!(outcome, Outcome::Empty);
         assert!(written.is_empty(), "nothing goes to the terminal");
         assert_eq!(outcome.message(), "nothing selected");
+        // And the REPL does not print it: an empty report is no report.
+        assert!(outcome.is_empty(), "the display skips it");
+        assert!(!outcome.is_failure(), "it is not an error either");
     }
 
     #[test]
