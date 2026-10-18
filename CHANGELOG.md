@@ -4,6 +4,30 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.28.0]
+
+### Fixed
+
+- **A cancelled turn no longer strands the peer-prompt queue behind a
+  flag only a manually typed prompt would clear.** In the field, a
+  session sometimes stopped processing every received peer prompt, and
+  only typing a prompt by hand brought it back: the per-turn cancel
+  token stayed raised (a mid-turn `Esc` unwound the turn but never
+  cleared the flag, and a `/cancel` typed while nothing was running
+  raised it with no turn at all), while the queued-peer-prompt skip
+  branch read that token as "the agent is stopping" — so each dequeued
+  peer prompt was refused (`[info] prompt from <id> skipped: agent is
+  stopping`, an honest "message not processed" reply) until the next
+  manual prompt reset the flag on its way in. The skip branch now
+  consults the session's genuine stopping flag — the same shared flag
+  the IPC front door answers `agent is stopping; message not accepted`
+  with, raised by the interactive and headless shutdown paths — and a
+  cancelled turn's unwind clears the per-turn token as it lands.
+  Behaviour change to note: a prompt queued behind a turn you cancelled
+  now RUNS after the unwind instead of being skipped (the truthful skip
+  is reserved for a session that is genuinely stopping); `/cancel` at an
+  idle prompt raises nothing and only records that nothing was running.
+
 ## [0.27.0]
 
 ### Fixed

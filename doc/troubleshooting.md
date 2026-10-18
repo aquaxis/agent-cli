@@ -351,6 +351,17 @@ after the one before it ends. The diagnostic ladder, read from the top:
   the turn, freeing the queue.
 - **Shutting down** — once a shutdown begins, prompts are answered with
   `[error] agent is stopping` instead of being acked into a dying queue.
+- **Skipped by a stale cancellation** — the peer's log shows a
+  `peer_prompt` record followed by
+  `Error: prompt received while stopping; not processed` with no
+  assistant record for that prompt, while the on-screen session printed
+  `[info] prompt from <id> skipped: agent is stopping`. This was the old
+  shape of a + `/cancel` cancellation: the per-turn cancel flag stayed
+  raised after the turn unwound (or after `/cancel` with nothing running),
+  and only a manually typed prompt cleared it. Since this fix the skip
+  gate is the session's genuine stopping state, so a cancelled turn
+  cannot strand the queue — if you still see skips, the session really is
+  stopping (check the front-door `[error] agent is stopping` answer).
 - **Not actually a wedge** — a `[error]`/`[error] decoding` line and its
   `[error]` print means the turn ended; `WARN failed to send PromptReply`
   on the peer means the asker left before the reply arrived (a late

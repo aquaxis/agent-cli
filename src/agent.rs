@@ -193,7 +193,17 @@ pub struct Agent {
     pub permissions: Arc<crate::permissions::Ruleset>,
     /// Raised by the REPL when the user presses `Esc` / `Ctrl-C` during a turn
     /// (or types `/cancel`); observed at every await point of `process_turn`.
+    /// Governs the CURRENT turn only: a user cancel stops the turn, not the
+    /// session — the flag is cleared when the unwind lands so queued prompts
+    /// advance without human input.
     pub cancel: Arc<CancelToken>,
+    /// Shared with the IPC server's accept loop (the same flag the front-door
+    /// gate answers `agent is stopping; message not accepted` with). THE skip
+    /// condition of a dequeued peer prompt: only a genuinely stopping session
+    /// refuses its queue. Raised per-turn cancellations never set it, so a
+    /// cancelled turn cannot strand the queue behind a state only a manually
+    /// typed prompt would clear.
+    pub stopping: Arc<AtomicBool>,
     /// Channel to send approval requests to the input loop. `None` means approval is not possible, so deny (FR-04-1).
     pub approval_tx: Option<mpsc::Sender<ApprovalRequest>>,
     pub history: Vec<Message>,
@@ -243,8 +253,11 @@ impl Agent {
                     // truthfully. Without this the queued prompt would
                     // either run a doomed turn after the cancel or be
                     // destroyed unread (the previous shutdown dropped the
-                    // queue silently).
-                    if self.cancel.is_cancelled() {
+                    // queue silently). The gate is the session's stopping
+                    // flag — not the per-turn cancel token: a user cancel
+                    // on a past turn must not strand the queue (a manual
+                    // prompt was the only thing that un-stuck it).
+                    if self.stopping.load(Ordering::SeqCst) {
                         if let Some(l) = &log {
                             l.write(LogEvent::Error {
                                 message: "prompt received while stopping; not processed",
@@ -782,6 +795,13 @@ impl Agent {
             })
             .await;
         let _ = event_tx.send(AgentEvent::Done).await;
+        // The unwind has fully landed (all await points of this turn were
+        // observed before this terminal). Clear the flag so the NEXT
+        // dequeued prompt — a peer prompt's, typically — is not refused by
+        // a cancellation the user aimed at THIS turn only: the manual
+        // branch (which resets at entry) was otherwise the one path that
+        // unstuck the session.
+        self.cancel.reset();
         Ok(())
     }
 
@@ -1201,6 +1221,7 @@ mod tests {
             auto_approve: Arc::new(AtomicBool::new(true)),
             permissions: Arc::new(crate::permissions::Ruleset::default()),
             cancel: cancel.clone(),
+            stopping: Arc::new(AtomicBool::new(false)),
             approval_tx: None,
             history,
         };
@@ -1781,14 +1802,24 @@ mod tests {
     /// advance to the prompt that was waiting behind it.
     #[tokio::test]
     async fn cancellation_frees_an_unanswered_approval() {
-        let scripts = vec![vec![
-            ProviderEvent::ToolUse {
-                id: "call-stuck".into(),
-                name: "bash".into(),
-                args: serde_json::json!({"command": "echo blocked"}),
-            },
-            ProviderEvent::Done,
-        ]];
+        let scripts = vec![
+            vec![
+                ProviderEvent::ToolUse {
+                    id: "call-stuck".into(),
+                    name: "bash".into(),
+                    args: serde_json::json!({"command": "echo blocked"}),
+                },
+                ProviderEvent::Done,
+            ],
+            // The queued peer prompt's turn: it must RUN once the unwind has
+            // landed (a user cancel stops one turn, not the session).
+            vec![
+                ProviderEvent::Text {
+                    delta: "queued prompt answered".into(),
+                },
+                ProviderEvent::Done,
+            ],
+        ];
         let history = Agent::build_initial_history(&Persona::builtin_default());
         let (mut agent, cancel) = build_test_agent_with_cancel(scripts, history);
         agent.auto_approve = Arc::new(AtomicBool::new(false));
@@ -1822,8 +1853,9 @@ mod tests {
         // call announced, no result yet), then cancel it.
         let mut saw_tool_call = false;
         let mut saw_denial = false;
-        let mut saw_queue_advance = false;
+        let mut saw_queued_turn_process = false;
         let mut saw_cancelled_turn = false;
+        let mut saw_second_done = false;
         while let Some(ev) = ev_rx.recv().await {
             match ev {
                 AgentEvent::ToolCall { .. } => {
@@ -1831,22 +1863,26 @@ mod tests {
                     cancel.cancel();
                 }
                 AgentEvent::ToolResult { ok, output, .. } => {
-                    saw_denial = !ok && output.contains("user denied tool execution");
+                    saw_denial |= !ok && output.contains("user denied tool execution");
                 }
                 AgentEvent::Info { message } => {
-                    if message.contains("skipped: agent is stopping") {
-                        saw_queue_advance = true;
+                    if message.contains("peer prompt received from") {
+                        saw_queued_turn_process = true;
                     }
                 }
                 AgentEvent::Done => {
                     saw_cancelled_turn = true;
+                    if saw_queued_turn_process {
+                        saw_second_done = true;
+                        break;
+                    }
                     // Do not break: the queued peer prompt is dequeued AFTER
                     // this terminal event, so keep collecting until it is
                     // visibly processed.
                 }
                 _ => {}
             }
-            if saw_queue_advance {
+            if saw_second_done {
                 break;
             }
         }
@@ -1856,9 +1892,11 @@ mod tests {
             "the cancelled approval should be denied, not hung on"
         );
         assert!(
-            saw_queue_advance,
-            "the prompt queued behind the wedge should process after the unwind"
+            saw_queued_turn_process,
+            "the prompt queued behind the wedge should RUN after the unwind — \
+             a user cancel stops the turn, not the session"
         );
+        assert!(saw_second_done, "the queued prompt's turn should complete");
         assert!(saw_cancelled_turn, "the first turn should close as cancelled");
 
         drop(in_tx);
@@ -2031,10 +2069,14 @@ mod tests {
         use crate::ipc::server::IpcServer;
 
         // No provider events: the prompt must never reach the provider.
-        let (agent, cancel) = build_test_agent_with_cancel(
+        let (mut agent, _cancel) = build_test_agent_with_cancel(
             Vec::new(),
             Agent::build_initial_history(&Persona::builtin_default()),
         );
+        // The GENUINE stopping shape: the session is shutting down (the same
+        // flag the IPC server's front-door gate rejects new prompts with).
+        // Only this — not a per-turn user cancel — refuses the queue.
+        agent.stopping = Arc::new(AtomicBool::new(true));
         let reply_dir = tempfile::TempDir::new().unwrap();
         let reply_socket = reply_dir.path().join("reply.sock");
         let mut reply_server = IpcServer::bind(reply_socket.clone()).await.unwrap();
@@ -2044,9 +2086,6 @@ mod tests {
         let (ev_tx, _ev_rx) = mpsc::channel::<AgentEvent>(32);
 
         let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
-        // The queue-drain shape of the headless shutdown: the cancel is
-        // already raised when the queued prompt is taken from the channel.
-        cancel.cancel();
         in_tx
             .send(AgentInput::PeerPrompt {
                 from: AgentId::new(),
@@ -2076,7 +2115,65 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// Task 3: Agent sends a PromptReply when reply_to is set.
+    /// FR-12: the reported field shape — a cancel raised while the agent was
+    /// IDLE left the token set (nothing unwinds, so the unwind-end clear never
+    /// runs). The dequeued peer prompt must still process: the skip branch
+    /// consults the session's stopping flag, never the per-turn token — a
+    /// manually typed prompt may not be the only way back.
+    #[tokio::test]
+    async fn a_peer_prompt_processes_even_when_an_idle_cancel_left_the_token_set() {
+        let scripts = vec![vec![
+            ProviderEvent::Text {
+                delta: "still responsive".into(),
+            },
+            ProviderEvent::Done,
+        ]];
+        let (agent, cancel) = build_test_agent_with_cancel(
+            scripts,
+            Agent::build_initial_history(&Persona::builtin_default()),
+        );
+        // The poisoned shape: raised with no turn in flight.
+        cancel.cancel();
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("parent".into()),
+                text: "are you there?".into(),
+                reply_to: None,
+            })
+            .await
+            .unwrap();
+
+        let mut saw_received = false;
+        let mut saw_text = false;
+        let mut saw_done = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::Info { message } => {
+                    saw_received |= message.contains("peer prompt received from");
+                }
+                AgentEvent::Text { delta } => saw_text |= delta == "still responsive",
+                AgentEvent::Done => {
+                    saw_done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_received,
+            "the queued peer prompt should be received, not skipped by the stale token"
+        );
+        assert!(saw_text, "the prompt's turn should run to an answer");
+        assert!(saw_done);
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
     #[tokio::test]
     async fn agent_sends_reply_for_peer_prompt_with_reply_to() {
         use crate::ipc::server::IpcServer;

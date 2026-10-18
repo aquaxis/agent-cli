@@ -271,6 +271,10 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let mut ipc_rx = ipc_server
         .take_rx()
         .expect("IpcServer rx should be available immediately after bind");
+    // Shared with the accept loop's front-door gate; also the Agent's skip
+    // condition for its queued prompts (only a genuinely stopping session
+    // refuses its queue).
+    let stopping = ipc_server.stopping();
 
     // The chain of agents that created this one, set by the launcher on this
     // process' environment. Empty means a human started it: depth 0, and this
@@ -371,6 +375,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         auto_approve: auto_approve.clone(),
         permissions: permissions.clone(),
         cancel: cancel.clone(),
+        stopping: stopping.clone(),
         approval_tx: Some(approval_tx),
         history,
     };
@@ -721,6 +726,10 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
     let mut ipc_rx = ipc_server
         .take_rx()
         .expect("IpcServer rx should be available immediately after bind");
+    // Shared with the accept loop's front-door gate; also the Agent's skip
+    // condition for its queued prompts (only a genuinely stopping session
+    // refuses its queue).
+    let stopping = ipc_server.stopping();
 
     // The chain of agents that created this one, set by the launcher on this
     // process' environment. Empty means a human started it: depth 0, and this
@@ -784,6 +793,7 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         // The shutdown path raises it so the in-flight turn closes cleanly
         // (`finish_cancelled`, not a silent drop).
         cancel: cancel.clone(),
+        stopping: stopping.clone(),
         approval_tx: None,
         history,
     };
@@ -1559,6 +1569,20 @@ fn begin_cancel(
         suppress.fetch_add(1, Ordering::SeqCst) + 1
     } else {
         suppress.load(Ordering::SeqCst)
+    }
+}
+
+/// `/cancel`'s raise, guarded: the token is raised only while a turn is
+/// actually in flight. Raised while the agent is idle, the flag would sit
+/// with no unwind to consume or clear it (the turn-entry reset only runs on
+/// the next turn), stranding every later peer prompt in the skip branch
+/// until a manual prompt unstuck the session.
+fn raise_cancel_if_turn_in_flight(cancel: &CancelToken, turn_in_flight: &AtomicBool) -> bool {
+    if turn_in_flight.load(Ordering::SeqCst) {
+        cancel.cancel();
+        true
+    } else {
+        false
     }
 }
 
@@ -4053,7 +4077,11 @@ async fn handle_repl_command(
         "cancel" => {
             // Same signal as `Esc` during a turn: stops an in-flight turn (e.g.
             // one started by a peer prompt) rather than merely asking for it.
-            state.cancel.cancel();
+            // Raised only while a turn is actually in flight — raised while
+            // the agent is idle, the flag would sit un-consumed (nothing is
+            // unwinding, and the unwind-end clear never runs) and every later
+            // peer prompt would skip until a manual prompt ran.
+            raise_cancel_if_turn_in_flight(&state.cancel, &state.turn_in_flight);
             let _ = input_tx.send(AgentInput::Cancel).await;
         }
         "commands" => {
@@ -6201,6 +6229,26 @@ mod tests {
         assert_eq!(begin_cancel(&cancel, &suppress, &turn), 0);
         assert!(cancel.is_cancelled());
         assert_eq!(suppress.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn raise_cancel_if_turn_in_flight_refuses_the_idle_raise() {
+        // FR-12: `/cancel` at an idle prompt must NOT raise the token — there
+        // is no unwind to consume or clear it, and the queued peer prompts
+        // would then skip until a manual prompt unstuck the session.
+        let cancel = CancelToken::default();
+        let turn = AtomicBool::new(false);
+        assert!(!raise_cancel_if_turn_in_flight(&cancel, &turn));
+        assert!(
+            !cancel.is_cancelled(),
+            "an idle /cancel leaves the token clear"
+        );
+
+        // While a turn is in flight the raise goes through (the Esc-equivalent
+        // signal the command documents).
+        turn.store(true, Ordering::SeqCst);
+        assert!(raise_cancel_if_turn_in_flight(&cancel, &turn));
+        assert!(cancel.is_cancelled());
     }
 
     #[test]
