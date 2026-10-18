@@ -4,6 +4,34 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.29.0]
+
+### Fixed
+
+- **Peer prompts can no longer stall behind the idle-notification channel
+  ("a received peer prompt never starts; typing a prompt revives it").**
+  On an interactive session, every turn that ends while the user sits at
+  an idle prompt (a peer-driven turn) left one notification in the
+  8-slot idle channel; with eight undelivered notifications queued, the
+  ninth turn's terminal parked the display task on an awaited send. The
+  parked display task stopped consuming agent events, the event channel
+  backed up, and the agent parked mid-turn with the acked peer prompt
+  still queued — no marker, no error — until a manually typed prompt
+  drained the stale notifications at submit and revived the pipeline
+  (which is exactly the reported cure). The terminal's notification is
+  now best-effort (`try_send`): a full channel already holds eight
+  unwatched terminals for no Pending waiter to release, so the surplus
+  drops and the display task keeps consuming forever. The display loop
+  was extracted (`run_display_task`) for the pin
+  `a_display_task_survives_more_unwatched_terminals_than_the_idle_channel_holds`.
+- **`websearch` no longer makes an unbounded HTTP call.** A search
+  endpoint that accepts and then stalls held the head of the serial turn
+  — and with it every queued peer prompt — forever. The client now
+  carries a 60 s total bound (connect + response + body read), the same
+  shape `webfetch` has had since v0.27.0; the tool's caller-facing error
+  texts are unchanged. Pinned by
+  `search_exchange_times_out_on_a_stalled_endpoint`.
+
 ## [0.28.0]
 
 ### Fixed

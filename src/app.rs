@@ -415,7 +415,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     });
 
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(32);
-    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
+    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
 
     // Shutdown coordination channel (FR-13 / design doc 4.9). Regardless of whether
     // triggered by `/quit`, EOF, SIGINT, or SIGTERM, `shutdown_tx.send(true)` propagates to all tasks.
@@ -533,93 +533,17 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let display_suppress = suppress.clone();
     let display_turn_flag = turn_in_flight.clone();
     let display_indicator = indicator.clone();
-    let display_task = tokio::spawn(async move {
-        let mut display_state = DisplayState::new(stdin_is_tty());
-        // With the indicator drawing right beneath it, a tool call is described
-        // on a single row instead of dumping its raw arguments.
-        display_state.compact_output = progress_enabled;
-        // With the indicator on, reasoning is shown live in its block rather
-        // than streamed into the scrollback.
-        display_state.capture_thinking =
-            progress_enabled && show_thinking != ShowThinkingMode::Hidden;
-        display_state.theme = theme;
-        // Where the cursor stands after the last displayed event; the indicator
-        // may only paint from column 0 of a fresh row.
-        let mut at_line_start = true;
-        let mut ticker = tokio::time::interval(TICK_INTERVAL);
-        // A tick missed while the task was busy must not produce a burst of
-        // catch-up repaints.
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            let ev = tokio::select! {
-                ev = event_rx.recv() => match ev {
-                    Some(ev) => ev,
-                    None => break,
-                },
-                _ = ticker.tick() => {
-                    lock_indicator(&display_indicator).tick();
-                    continue;
-                }
-            };
-            let is_idle = matches!(ev, AgentEvent::Done | AgentEvent::Error { .. });
-            // The turn-in-flight flag the input loop's cancel sites read:
-            // a normal turn occupies the agent exactly between its TurnStart
-            // and its terminal event; on a suppressed (cancelled) tail the
-            // consuming terminal clears the flag the same way.
-            display_turn_flag.store(matches!(ev, AgentEvent::TurnStart), Ordering::SeqCst);
-            // While a cancelled turn is still draining, its remaining events are
-            // dropped and its terminal event yields no idle notification (it
-            // must not release a *later* turn from Pending).
-            let (drop_event, notify_idle, outstanding) =
-                suppression_decision(is_idle, display_suppress.load(Ordering::SeqCst));
-            display_suppress.store(outstanding, Ordering::SeqCst);
-            {
-                // The guard covers only synchronous terminal writes; it is
-                // dropped before the idle notification is awaited.
-                let mut ind = lock_indicator(&display_indicator);
-                // Nothing may be printed on top of the indicator's rows.
-                ind.clear();
-                if !drop_event {
-                    if matches!(ev, AgentEvent::TurnStart) {
-                        ind.start();
-                    }
-                    if display_state.capture_thinking {
-                        if let AgentEvent::Thinking { text } = &ev {
-                            ind.push_thinking(text);
-                        }
-                    }
-                    let mark = match &ev {
-                        AgentEvent::Error { .. } => Mark::Err,
-                        _ => Mark::Ok,
-                    };
-                    at_line_start = event_ends_at_line_start(
-                        &ev,
-                        show_thinking,
-                        display_state.capture_thinking,
-                        at_line_start,
-                    );
-                    display_event(ev, show_thinking, &mut display_state);
-                    if is_idle {
-                        ind.finish(mark);
-                    } else {
-                        ind.paint(at_line_start);
-                    }
-                } else {
-                    // The cancelled turn's output is discarded, so it gets no
-                    // completion line either.
-                    ind.abandon_run();
-                    if is_idle {
-                        // The cancelled turn ended: start the next one from a clean slate.
-                        display_state.reset();
-                        at_line_start = true;
-                    }
-                }
-            }
-            if notify_idle {
-                let _ = agent_idle_tx.send(()).await;
-            }
-        }
-    });
+    let display_task = tokio::spawn(run_display_task(
+        event_rx,
+        agent_idle_tx,
+        display_indicator,
+        display_suppress,
+        display_turn_flag,
+        show_thinking,
+        theme,
+        progress_enabled,
+        stdin_is_tty(),
+    ));
 
     // Block until shutdown notification (convergence point for multiple routes)
     {
@@ -1536,6 +1460,122 @@ fn is_cancel_key(key_event: &KeyEvent) -> bool {
 /// event channel is FIFO and every turn emits exactly one terminal event, this
 /// suppresses precisely the cancelled turn's remainder — even when a new prompt
 /// was already submitted.
+/// The interactive display loop, extracted from `run` (testable): consumes
+/// agent events, paints them, and on an unsuppressed terminal — `Done` or
+/// `Error`, the same "idle" set that treats a Provider failure without a
+/// `Done` defensively — releases the input loop's Pending wait with the idle
+/// notification (FR-03-2).
+///
+/// The notification is BEST-EFFORT (`try_send`, never an awaited send):
+/// peer-prompt turns run while the user sits at an idle prompt (nobody is
+/// Pending), so every such terminal deposits a notification nobody receives.
+/// After eight of them the 8-slot channel is full, and an awaited send would
+/// park this task there. A parked display task stops draining `event_rx`; the
+/// event channel then backs up (64 slots) and the agent parks mid-turn with
+/// its remaining queue intact — acked peer prompts stop being dequeued until
+/// a manually typed prompt happens to drain the idle channel at submit and
+/// revive the pipeline. Dropping the ninth notification is the safe outcome:
+/// a full channel already holds eight unwatched terminals, so no Pending
+/// waiter can be waiting on it, and the submit-time drains clear the stale
+/// ones.
+#[allow(clippy::too_many_arguments)]
+async fn run_display_task(
+    mut event_rx: mpsc::Receiver<AgentEvent>,
+    agent_idle_tx: mpsc::Sender<()>,
+    display_indicator: Arc<std::sync::Mutex<StatusIndicator>>,
+    display_suppress: Arc<AtomicUsize>,
+    display_turn_flag: Arc<AtomicBool>,
+    show_thinking: ShowThinkingMode,
+    theme: Theme,
+    progress_enabled: bool,
+    has_tty: bool,
+) {
+    let mut display_state = DisplayState::new(has_tty);
+    // With the indicator drawing right beneath it, a tool call is described
+    // on a single row instead of dumping its raw arguments.
+    display_state.compact_output = progress_enabled;
+    // With the indicator on, reasoning is shown live in its block rather
+    // than streamed into the scrollback.
+    display_state.capture_thinking = progress_enabled && show_thinking != ShowThinkingMode::Hidden;
+    display_state.theme = theme;
+    // Where the cursor stands after the last displayed event; the indicator
+    // may only paint from column 0 of a fresh row.
+    let mut at_line_start = true;
+    let mut ticker = tokio::time::interval(TICK_INTERVAL);
+    // A tick missed while the task was busy must not produce a burst of
+    // catch-up repaints.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let ev = tokio::select! {
+            ev = event_rx.recv() => match ev {
+                Some(ev) => ev,
+                None => break,
+            },
+            _ = ticker.tick() => {
+                lock_indicator(&display_indicator).tick();
+                continue;
+            }
+        };
+        let is_idle = matches!(ev, AgentEvent::Done | AgentEvent::Error { .. });
+        // The turn-in-flight flag the input loop's cancel sites read:
+        // a normal turn occupies the agent exactly between its TurnStart
+        // and its terminal event; on a suppressed (cancelled) tail the
+        // consuming terminal clears the flag the same way.
+        display_turn_flag.store(matches!(ev, AgentEvent::TurnStart), Ordering::SeqCst);
+        // While a cancelled turn is still draining, its remaining events are
+        // dropped and its terminal event yields no idle notification (it
+        // must not release a *later* turn from Pending).
+        let (drop_event, notify_idle, outstanding) =
+            suppression_decision(is_idle, display_suppress.load(Ordering::SeqCst));
+        display_suppress.store(outstanding, Ordering::SeqCst);
+        {
+            // The guard covers only synchronous terminal writes; it is
+            // dropped before the idle notification sends.
+            let mut ind = lock_indicator(&display_indicator);
+            // Nothing may be printed on top of the indicator's rows.
+            ind.clear();
+            if !drop_event {
+                if matches!(ev, AgentEvent::TurnStart) {
+                    ind.start();
+                }
+                if display_state.capture_thinking {
+                    if let AgentEvent::Thinking { text } = &ev {
+                        ind.push_thinking(text);
+                    }
+                }
+                let mark = match &ev {
+                    AgentEvent::Error { .. } => Mark::Err,
+                    _ => Mark::Ok,
+                };
+                at_line_start = event_ends_at_line_start(
+                    &ev,
+                    show_thinking,
+                    display_state.capture_thinking,
+                    at_line_start,
+                );
+                display_event(ev, show_thinking, &mut display_state);
+                if is_idle {
+                    ind.finish(mark);
+                } else {
+                    ind.paint(at_line_start);
+                }
+            } else {
+                // The cancelled turn's output is discarded, so it gets no
+                // completion line either.
+                ind.abandon_run();
+                if is_idle {
+                    // The cancelled turn ended: start the next one from a clean slate.
+                    display_state.reset();
+                    at_line_start = true;
+                }
+            }
+        }
+        if notify_idle {
+            let _ = agent_idle_tx.try_send(());
+        }
+    }
+}
+
 fn suppression_decision(is_terminal: bool, outstanding: usize) -> (bool, bool, usize) {
     if outstanding == 0 {
         (false, is_terminal, 0)
@@ -4478,6 +4518,48 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
+
+    /// The parked-pipeline pin: turn terminals that end while nobody is
+    /// Pending (peer-prompt turns, the user sitting at an idle prompt)
+    /// deposit idle notifications nobody receives. With the awaited send,
+    /// the ninth terminal parked this display task; its event loop then
+    /// backed the agent up mid-turn, and acked peer prompts stopped being
+    /// dequeued until a manually typed prompt drained the idle channel at
+    /// submit — the reported "peer prompt never starts; typing a prompt
+    /// revives it" shape. The best-effort notify must keep the display task
+    /// consuming forever: eight notifications fit, the surplus drops, and
+    /// every event is still seen.
+    #[tokio::test]
+    async fn a_display_task_survives_more_unwatched_terminals_than_the_idle_channel_holds() {
+        let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
+        let (agent_idle_tx, mut agent_idle_rx) = mpsc::channel::<()>(8);
+        let handle = tokio::spawn(run_display_task(
+            event_rx,
+            agent_idle_tx,
+            Arc::new(std::sync::Mutex::new(StatusIndicator::disabled())),
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            ShowThinkingMode::Hidden,
+            Theme::plain(),
+            false,
+            false,
+        ));
+        // Twelve terminals, no Pending consumer ever armed.
+        for _ in 0..12 {
+            event_tx.send(AgentEvent::Done).await.unwrap();
+        }
+        drop(event_tx); // the display task must run dry on its own
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the display task must not park on unwatched terminals")
+            .expect("the display task must not panic");
+        // The eight slots held; the surplus dropped instead of parking.
+        let mut delivered = 0usize;
+        while agent_idle_rx.try_recv().is_ok() {
+            delivered += 1;
+        }
+        assert_eq!(delivered, 8, "eight unwatched terminals fit; the rest drop");
+    }
 
     /// InputState unit tests (FR-03 / FR-04: history navigation and draft preservation).
     #[test]

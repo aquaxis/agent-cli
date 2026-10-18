@@ -1,10 +1,45 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::error::Result;
 use crate::tools::{Tool, ToolCtx, ToolOutput};
+
+/// Bound for one websearch exchange (connect, response and body read) — the
+/// same total-duration shape `webfetch` uses. The turn model is strictly
+/// serial, so an unbounded HTTP call here parks the agent's whole queue: a
+/// search endpoint that accepts and then stalls forever would surface as the
+/// "peer prompt never starts processing" field shape instead of a timed-out
+/// tool result.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// One POST to the search endpoint and the response read, bounded by
+/// `timeout` across all of it. Error texts are the tool's caller-facing ones
+/// ("websearch request failed", "websearch read failed").
+async fn search_exchange(
+    endpoint: &str,
+    req_body: Value,
+    timeout: Duration,
+) -> std::result::Result<(reqwest::StatusCode, String), String> {
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .post(endpoint)
+        .json(&req_body)
+        .send()
+        .await
+        .map_err(|e| format!("websearch request failed: {e}"))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("websearch read failed: {e}"))?;
+    Ok((status, text))
+}
 
 pub struct WebSearchTool {
     cfg: Config,
@@ -76,7 +111,6 @@ impl Tool for WebSearchTool {
         };
 
         let provider = ws.provider.clone().unwrap_or_else(|| "tavily".to_string());
-        let client = reqwest::Client::new();
         let req_body = match provider.as_str() {
             "tavily" => json!({
                 "api_key": api_key,
@@ -91,14 +125,9 @@ impl Tool for WebSearchTool {
             }
         };
 
-        let resp = match client.post(&endpoint).json(&req_body).send().await {
-            Ok(r) => r,
-            Err(e) => return Ok(ToolOutput::err(format!("websearch request failed: {e}"))),
-        };
-        let status = resp.status();
-        let text = match resp.text().await {
-            Ok(t) => t,
-            Err(e) => return Ok(ToolOutput::err(format!("websearch read failed: {e}"))),
+        let (status, text) = match search_exchange(&endpoint, req_body, SEARCH_TIMEOUT).await {
+            Ok(ok) => ok,
+            Err(message) => return Ok(ToolOutput::err(message)),
         };
         if !status.is_success() {
             return Ok(ToolOutput::err(format!(
@@ -173,5 +202,82 @@ enabled = ["websearch"]
             .unwrap();
         assert!(!out.ok);
         assert!(out.content.contains("not configured"));
+    }
+
+    /// The pin for the search bound's reason to exist: the turn model is
+    /// strictly serial, so a search endpoint that accepts and then stalls
+    /// forever must end the exchange with the bound firing instead of holding
+    /// the head of the queue immortally — the shape webfetch's bound closed
+    /// in v0.27.0; websearch was the one tool wait left unbounded.
+    ///
+    /// The stub first READS a request byte (an immediate write would race
+    /// hyper's still-in-flight request and can cancel the connection before
+    /// the bound can matter), then declares a body length it never finishes
+    /// writing: the body read — the thing the bound exists for — is the only
+    /// way out. Two assertions make the test impossible to satisfy by luck:
+    /// the exchange must last at least ~the bound window (an instant error
+    /// means the bound never mattered) and must end inside the wall-clock
+    /// fence (the pre-bound behavior was an immortal call), plus the
+    /// caller-facing error text must survive.
+    #[tokio::test]
+    async fn search_exchange_times_out_on_a_stalled_endpoint() {
+        use std::io::{Read, Write};
+        use std::time::Instant;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            // Wait for the request before answering (no early-response race).
+            let mut first = [0u8; 1];
+            let _ = sock.read(&mut first);
+            sock.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{\"res",
+            )
+            .unwrap();
+            sock.flush().unwrap();
+            // Hold the rest of the declared body forever: the thread parks
+            // rather than shuts down, so the client's bound — not this
+            // thread's death — is what ends the exchange. Never joined; one
+            // parked thread for the test binary's lifetime.
+            loop {
+                std::thread::park();
+            }
+        });
+        let _ = server;
+        let started = Instant::now();
+        // The 10 s fence turns the pre-bound shape (an immortal call) into a
+        // test failure instead of a hung run.
+        let out = tokio::time::timeout(
+            Duration::from_secs(10),
+            search_exchange(
+                &format!("http://127.0.0.1:{port}/"),
+                json!({"api_key": "k", "query": "q"}),
+                Duration::from_secs(1),
+            ),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        let out = out.expect("the exchange must end inside the wall-clock fence");
+        // The 1 s window here is 60x smaller than the production constant;
+        // the floor excludes instant errors (the bound never fired), the
+        // generous ceiling excludes scheduling jitter, not a hang.
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "expected the bound to fire, not an instant error; took {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "expected the bounded timeout, took {elapsed:?}"
+        );
+        let message = if let Err(e) = out {
+            e
+        } else {
+            panic!("expected the stalled endpoint to fail, not succeed")
+        };
+        assert!(
+            message.contains("websearch request failed")
+                || message.contains("websearch read failed"),
+            "the caller-facing text must survive: {message}"
+        );
     }
 }

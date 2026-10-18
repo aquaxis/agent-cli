@@ -362,6 +362,18 @@ after the one before it ends. The diagnostic ladder, read from the top:
   gate is the session's genuine stopping state, so a cancelled turn
   cannot strand the queue — if you still see skips, the session really is
   stopping (check the front-door `[error] agent is stopping` answer).
+- **Parked behind a full idle-notification channel** — the peer's log shows
+  a `peer_prompt` record and nothing after it: no new turn, no skip, no
+  error, and the sender saw the delivery succeed. The culprit was
+  interactive only: every turn that ends while the user sits at an idle
+  prompt (peer-driven turns) leaves an idle notification in an 8-slot
+  channel; once eight sit there the display task parked on the ninth
+  (an awaited send), stopped consuming agent events, and the agent parked
+  mid-turn with the queue intact. Typing any prompt drains the stale
+  notifications at submit and revives the queue — which is exactly why a
+  manually typed prompt looked like the cure. Since this fix the
+  notification is best-effort and can never park the display task; if you
+  still see this shape, check for a binary older than this version.
 - **Not actually a wedge** — a `[error]`/`[error] decoding` line and its
   `[error]` print means the turn ended; `WARN failed to send PromptReply`
   on the peer means the asker left before the reply arrived (a late
