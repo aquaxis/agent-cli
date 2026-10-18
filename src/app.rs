@@ -118,6 +118,11 @@ pub(crate) struct ReplState {
     /// yet. The display task drops the events (and the idle notification) of
     /// those turns so the cancelled tail cannot print over the fresh prompt.
     suppress: Arc<AtomicUsize>,
+    /// Set by the display task on `TurnStart` and cleared on a terminal event:
+    /// the only signal that a normal turn is actually running. `begin_cancel`
+    /// consults it so a cancellation raised while the agent is idle cannot arm
+    /// a suppression counter that no terminal event would consume.
+    turn_in_flight: Arc<AtomicBool>,
     /// Progress indicator for the running turn, shared with the display task.
     /// The input loop suspends it before writing at the bottom of the screen,
     /// so the two writers never interleave escape sequences.
@@ -308,6 +313,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // display task how many cancelled turns are still draining.
     let cancel = Arc::new(CancelToken::default());
     let suppress = Arc::new(AtomicUsize::new(0));
+    let turn_in_flight = Arc::new(AtomicBool::new(false));
     // Progress indicator for the running turn. Shared with the input loop so it
     // can clear the block before writing at the bottom of the screen itself.
     // Only ever drawn on an interactive terminal.
@@ -390,6 +396,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         permissions: permissions.clone(),
         cancel: cancel.clone(),
         suppress: suppress.clone(),
+        turn_in_flight: turn_in_flight.clone(),
         indicator: indicator.clone(),
         commands_dir,
         commands: RwLock::new(initial_commands),
@@ -519,6 +526,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // getting stuck in Pending forever if Provider construction fails without a `Done`.
     let show_thinking = config.ui.show_thinking_mode();
     let display_suppress = suppress.clone();
+    let display_turn_flag = turn_in_flight.clone();
     let display_indicator = indicator.clone();
     let display_task = tokio::spawn(async move {
         let mut display_state = DisplayState::new(stdin_is_tty());
@@ -549,6 +557,11 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
                 }
             };
             let is_idle = matches!(ev, AgentEvent::Done | AgentEvent::Error { .. });
+            // The turn-in-flight flag the input loop's cancel sites read:
+            // a normal turn occupies the agent exactly between its TurnStart
+            // and its terminal event; on a suppressed (cancelled) tail the
+            // consuming terminal clears the flag the same way.
+            display_turn_flag.store(matches!(ev, AgentEvent::TurnStart), Ordering::SeqCst);
             // While a cancelled turn is still draining, its remaining events are
             // dropped and its terminal event yields no idle notification (it
             // must not release a *later* turn from Pending).
@@ -615,6 +628,15 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
             }
         }
     }
+    // Shutdown begins. Like the headless path below, the server must reject
+    // further prompts instead of acking them into a queue that is about to be
+    // destroyed: an acked message is gone without a reply or a log otherwise,
+    // and its sender waits out its whole ask bound for an answer that can
+    // never come.
+    ipc_server
+        .stopping()
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
     // Stop input routes
     stdin_task.abort();
     let _ = stdin_task.await;
@@ -1514,11 +1536,30 @@ fn suppression_decision(is_terminal: bool, outstanding: usize) -> (bool, bool, u
     }
 }
 
-/// Book-keeping for a forced return to the prompt: raise the cancellation and
-/// record that one more turn is now draining. Returns the new outstanding count.
-fn begin_cancel(cancel: &CancelToken, suppress: &AtomicUsize) -> usize {
+/// Book-keeping for a forced return to the prompt: raise the cancellation and,
+/// when a turn is actually in flight, record that one more turn is now
+/// draining. Returns the armed outstanding count.
+///
+/// The turn-in-flight guard is load-bearing: raising the token while the agent
+/// is idle (no `TurnStart` seen yet, or its terminal event already passed)
+/// would otherwise arm a counter no terminal event ever consumes, and the
+/// next turn — a peer prompt's, specifically — would then be displayed as
+/// nothing at all: every event, including the "[info] peer prompt received"
+/// line and the terminal `Done`, dropped and the queue apparently frozen.
+/// The `suppress == 0` guard covers a second `Esc`/`Ctrl-C` pressed while the
+/// first cancellation is still draining: the turn emits exactly one terminal,
+/// so a second increment would be left over for that same wrong turn.
+fn begin_cancel(
+    cancel: &CancelToken,
+    suppress: &AtomicUsize,
+    turn_in_flight: &AtomicBool,
+) -> usize {
     cancel.cancel();
-    suppress.fetch_add(1, Ordering::SeqCst) + 1
+    if turn_in_flight.load(Ordering::SeqCst) && suppress.load(Ordering::SeqCst) == 0 {
+        suppress.fetch_add(1, Ordering::SeqCst) + 1
+    } else {
+        suppress.load(Ordering::SeqCst)
+    }
 }
 
 /// Handle a single key event in interactive (raw-mode) editing.
@@ -2282,7 +2323,7 @@ async fn run_input_loop_raw(
                                 // queueing an `AgentInput::Cancel` here would only be
                                 // read once the turn had already ended, and would then
                                 // print over the freshly drawn prompt.
-                                begin_cancel(&state.cancel, &state.suppress);
+                                begin_cancel(&state.cancel, &state.suppress, &state.turn_in_flight);
                                 // Take the bottom rows back from the indicator
                                 // before printing over them.
                                 lock_indicator(&state.indicator).suspend();
@@ -2306,7 +2347,7 @@ async fn run_input_loop_raw(
                             if let PromptState::AwaitingApproval(resp_tx) = prev {
                                 let _ = resp_tx.send(false);
                             }
-                            begin_cancel(&state.cancel, &state.suppress);
+                            begin_cancel(&state.cancel, &state.suppress, &state.turn_in_flight);
                             lock_indicator(&state.indicator).suspend();
                             renderer.clear_block(&mut stdout);
                             raw_eprintln(true, &state.theme.err(Role::Cancelled, "[cancelled]"));
@@ -4574,6 +4615,7 @@ mod tests {
             permissions: Arc::new(crate::permissions::Ruleset::default()),
             cancel: Arc::new(CancelToken::default()),
             suppress: Arc::new(AtomicUsize::new(0)),
+            turn_in_flight: Arc::new(AtomicBool::new(false)),
             indicator: Arc::new(std::sync::Mutex::new(StatusIndicator::disabled())),
             commands_dir: dir.to_path_buf(),
             commands: RwLock::new(Vec::new()),
@@ -6133,13 +6175,32 @@ mod tests {
     }
 
     #[test]
-    fn begin_cancel_raises_the_token_and_counts_the_outstanding_turn() {
+    fn begin_cancel_arms_the_suppression_only_while_a_turn_is_in_flight() {
         let cancel = CancelToken::default();
         let suppress = AtomicUsize::new(0);
-        assert_eq!(begin_cancel(&cancel, &suppress), 1);
+        let turn = AtomicBool::new(true);
+
+        // A turn is running: the cancellation arms the suppression so the
+        // cancelled tail cannot print over the fresh prompt.
+        assert_eq!(begin_cancel(&cancel, &suppress, &turn), 1);
         assert!(cancel.is_cancelled());
-        assert_eq!(begin_cancel(&cancel, &suppress), 2);
-        assert_eq!(suppress.load(Ordering::SeqCst), 2);
+        assert_eq!(suppress.load(Ordering::SeqCst), 1);
+
+        // A second cancel while the first is still draining does NOT arm a
+        // second counter: the turn emits exactly one terminal, so an extra
+        // increment would suppress the whole NEXT turn instead.
+        cancel.reset();
+        assert_eq!(begin_cancel(&cancel, &suppress, &turn), 1);
+        assert_eq!(suppress.load(Ordering::SeqCst), 1);
+
+        // Cancel while the agent is idle (no TurnStart, or the terminal event
+        // already passed): the token rises but no suppression is armed, so the
+        // next turn — a peer prompt's — still displays.
+        turn.store(false, Ordering::SeqCst);
+        suppress.store(0, Ordering::SeqCst);
+        assert_eq!(begin_cancel(&cancel, &suppress, &turn), 0);
+        assert!(cancel.is_cancelled());
+        assert_eq!(suppress.load(Ordering::SeqCst), 0);
     }
 
     #[test]

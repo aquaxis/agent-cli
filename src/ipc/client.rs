@@ -18,7 +18,15 @@ pub async fn send(socket: &Path, msg: &IpcMessage) -> Result<IpcMessage> {
     write_half.write_all(b"\n").await?;
     write_half.shutdown().await.ok();
     let mut reader = BufReader::new(read_half).lines();
-    if let Some(line) = reader.next_line().await? {
+    // The reply line is bounded like the connect is: a peer that accepted and
+    // then never writes an Ack (the message was not even parsed) must surface
+    // as an error instead of hanging the sender indefinitely — the sender
+    // tier (tool/CLI) bounds its own wait well above this.
+    if let Some(line) = tokio::time::timeout(Duration::from_secs(10), reader.next_line())
+        .await
+        .map_err(|_| AppError::ipc("timed out waiting for the peer's reply"))?
+        .map_err(|e| AppError::ipc(format!("read {} failed: {e}", socket.display())))?
+    {
         let resp: IpcMessage = serde_json::from_str(&line)?;
         Ok(resp)
     } else {

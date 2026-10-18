@@ -655,9 +655,13 @@ impl Agent {
                 };
 
                 if !skip_approval && !self.auto_approve.load(Ordering::SeqCst) {
-                    let approved =
-                        request_approval(self.approval_tx.as_ref(), name.clone(), args.clone())
-                            .await;
+                    let approved = request_approval(
+                        self.approval_tx.as_ref(),
+                        name.clone(),
+                        args.clone(),
+                        &self.cancel,
+                    )
+                    .await;
                     if !approved {
                         let output = "user denied tool execution";
                         if let Some(l) = log {
@@ -872,6 +876,7 @@ async fn request_approval(
     approval_tx: Option<&mpsc::Sender<ApprovalRequest>>,
     tool_name: String,
     args: Value,
+    cancel: &CancelToken,
 ) -> bool {
     let Some(tx) = approval_tx else {
         return false;
@@ -885,7 +890,17 @@ async fn request_approval(
     if tx.send(req).await.is_err() {
         return false;
     }
-    resp_rx.await.unwrap_or(false)
+    // The wait is cancellable on purpose. A request nobody can answer (the
+    // interactive session left unattended mid-turn) otherwise wedges the turn
+    // — and, because the agent's input is strictly serial, every input queued
+    // behind it never processes at all. On a raised cancellation the call is
+    // denied and the turn unwinds through the normal cancelled path, which
+    // frees the queue.
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => false,
+        r = resp_rx => r.unwrap_or(false),
+    }
 }
 
 #[cfg(test)]
@@ -1753,6 +1768,98 @@ mod tests {
         }
         assert!(tool_denied, "tool result should reflect user denial");
         assert!(saw_done);
+
+        drop(in_tx);
+        let _ = handle.await;
+    }
+
+    /// An approval request nobody answers must not park the turn forever.
+    /// The agent's input is strictly serial: a wedged turn here would leave
+    /// every later input — a peer prompt's turn, specifically — unprocessed
+    /// for as long as the wait lasted. A raised cancellation denies the call,
+    /// unwinds the turn through the normal cancelled path, and lets the queue
+    /// advance to the prompt that was waiting behind it.
+    #[tokio::test]
+    async fn cancellation_frees_an_unanswered_approval() {
+        let scripts = vec![vec![
+            ProviderEvent::ToolUse {
+                id: "call-stuck".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command": "echo blocked"}),
+            },
+            ProviderEvent::Done,
+        ]];
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let (mut agent, cancel) = build_test_agent_with_cancel(scripts, history);
+        agent.auto_approve = Arc::new(AtomicBool::new(false));
+        // Approval wire present, but NOTHING ever answers it — the unattended
+        // session shape.
+        let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(4);
+        agent.approval_tx = Some(approval_tx);
+        std::mem::forget(approval_rx);
+
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+
+        in_tx
+            .send(AgentInput::UserPrompt("stuck on approval".into()))
+            .await
+            .unwrap();
+        // The second input queues behind the first, i.e. behind the
+        // unanswered approval, until the cancellation frees the turn.
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: None,
+                text: "queued behind the wedge".into(),
+                reply_to: None,
+            })
+            .await
+            .unwrap();
+
+        // Wait until the turn is visibly parked on the approval (the tool
+        // call announced, no result yet), then cancel it.
+        let mut saw_tool_call = false;
+        let mut saw_denial = false;
+        let mut saw_queue_advance = false;
+        let mut saw_cancelled_turn = false;
+        while let Some(ev) = ev_rx.recv().await {
+            match ev {
+                AgentEvent::ToolCall { .. } => {
+                    saw_tool_call = true;
+                    cancel.cancel();
+                }
+                AgentEvent::ToolResult { ok, output, .. } => {
+                    saw_denial = !ok && output.contains("user denied tool execution");
+                }
+                AgentEvent::Info { message } => {
+                    if message.contains("skipped: agent is stopping") {
+                        saw_queue_advance = true;
+                    }
+                }
+                AgentEvent::Done => {
+                    saw_cancelled_turn = true;
+                    // Do not break: the queued peer prompt is dequeued AFTER
+                    // this terminal event, so keep collecting until it is
+                    // visibly processed.
+                }
+                _ => {}
+            }
+            if saw_queue_advance {
+                break;
+            }
+        }
+        assert!(saw_tool_call, "the turn should reach the approval gate");
+        assert!(
+            saw_denial,
+            "the cancelled approval should be denied, not hung on"
+        );
+        assert!(
+            saw_queue_advance,
+            "the prompt queued behind the wedge should process after the unwind"
+        );
+        assert!(saw_cancelled_turn, "the first turn should close as cancelled");
 
         drop(in_tx);
         let _ = handle.await;

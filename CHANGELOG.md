@@ -4,6 +4,46 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.27.0]
+
+### Fixed
+
+- **A peer prompt can no longer be parked forever by a turn waiting for an
+  approval nobody will give.** The agent's input is strictly serial — one
+  multi-tool turn at a time — so anything that wedged the current turn
+  wedged the whole queue: the prompt another agent had already delivered
+  sat unprocessed with no visible marker while its asker burned out its
+  120 s reply window. Three wedges had no bound at all and are now closed:
+  - `webfetch` built its HTTP client without any timeout, so a server
+    that accepted and then stalled forever parked the turn immortally;
+    the fetch is now bounded end to end (connect, response, streamed
+    body — 60 s).
+  - `request_approval` waited on a bare oneshot forever; a raised
+    cancellation (Esc / Ctrl-C / `/cancel`) now denies the parked call
+    and unwinds the turn through the normal cancelled path, letting the
+    queue advance (and the queued peer prompt's turn to run).
+  - A cancellation raised while the agent is idle (a second Esc during a
+    draining one, or one pressed after the turn had already ended)
+    armed a suppression counter no terminal event would ever consume,
+    so the NEXT turn — typically the peer prompt's — was displayed as
+    nothing at all: its `[info] peer prompt received` line and terminal
+    `Done` both dropped, the queue looking frozen while it ran. The
+    suppression is now armed only while a turn is actually in flight
+    (tracked by the display task between `TurnStart` and the terminal).
+- **Shutdown stops swallowing prompts.** The interactive `run` path never
+  raised the server's stopping flag (only the headless `serve` path did),
+  so prompts socket-acked during the shutdown window were acked into a
+  queue that was destroyed unread — the sender waiting out its whole
+  reply bound for an answer that could never come, and no trace in the
+  log. The server now rejects prompts with `[error] agent is stopping`
+  during the same window. (Prompts already sitting in the queue at the
+  moment the interactive shutdown starts are a narrower residual race;
+  the headless path drains them with a truthful reply.)
+- **The IPC client bounds its read.** `ipc::client::send` bounded only the
+  connect; a peer that accepted and never wrote its ack line hung the
+  sender indefinitely. The reply-line read is now timed out, matching
+  the sender tiers' own bounds.
+
 ## [0.26.0]
 
 ### Added

@@ -327,6 +327,35 @@ Behaviour below was observed with Claude Code `2.1.233`.
 - Insufficient permissions on `registry_dir`. Create it with `mkdir -p` and verify `chmod 0700`.
 - If a socket was created by root, ownership issues can occur. Clean up and recreate.
 
+### A peer prompt was accepted but the peer never answers / never starts
+
+A prompt that is socket-acked is queued, not started: each agent processes
+exactly one multi-tool turn at a time and the prompt's turn begins only
+after the one before it ends. The diagnostic ladder, read from the top:
+
+- **Queued behind an in-flight turn** — the peer's conversation log still
+  shows the previous turn (thinking/assistant/tool lines) and no new
+  `peer_prompt` line yet. Nothing is lost: the prompt runs at the next
+  turn boundary, where the peer also prints
+  `[info] peer prompt received from <id>`. A long turn can hold the queue
+  for its whole duration (each provider request is bounded by
+  `request_timeout_secs`, default 900 s, per iteration, and tool calls
+  have their own timeouts) — longer than the asker's 120 s reply window,
+  so the asker may time out while the peer eventually processes the
+  prompt. Two quick probes on the peer process: `pgrep -af` for a
+  tool-child process, or `ss -tnp` for a held connection to the provider.
+- **Parked on an unanswerable approval** — the interactive session was
+  left mid-turn and the next tool call needs a y/N. The log ends with a
+  `tool_call` that has no matching `tool_result`. Cancelling the turn
+  (`Esc`, `Ctrl-C`, or `/cancel`) now denies the parked call and unwinds
+  the turn, freeing the queue.
+- **Shutting down** — once a shutdown begins, prompts are answered with
+  `[error] agent is stopping` instead of being acked into a dying queue.
+- **Not actually a wedge** — a `[error]`/`[error] decoding` line and its
+  `[error]` print means the turn ended; `WARN failed to send PromptReply`
+  on the peer means the asker left before the reply arrived (a late
+  reply, not a lost turn).
+
 ## REPL Issues
 
 ### Nothing is pasted after selecting the log with the mouse
