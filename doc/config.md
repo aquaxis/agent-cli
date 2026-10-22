@@ -123,9 +123,9 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
-| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"claude-code"` / `"codex"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
+| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"claude-code"` / `"codex"` / `"strata"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
 
-### `[provider.claude]` / `[provider.codex]` / `[provider.ollama]` / `[provider.opencode]` / `[provider."llama.cpp"]`
+### `[provider.claude]` / `[provider.codex]` / `[provider.strata]` / `[provider.ollama]` / `[provider.opencode]` / `[provider."llama.cpp"]`
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
@@ -162,7 +162,8 @@ Per-backend defaults:
 | kind | model default | base_url default | api_key_env default |
 |------|-----------|---------------|-------------------|
 | claude | `claude-opus-4-7` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
-| codex | `gpt-4.1` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| codex | `gpt-4.1` | `https://api.openai.com/v1` | `OPENAI_API_KEY` (omitting `api_key_env` is now keyless: no header is sent) |
+| strata | `strata` | `http://127.0.0.1:8080/v1` | (none — keyless by default) |
 | ollama | `glm-5.1:cloud` | `http://127.0.0.1:11434` | (not needed) |
 | opencode | `claude-sonnet-4-5` | `http://127.0.0.1:4096` (local) / `https://opencode.ai/zen/v1` (when key set) | (none = local; set = cloud, e.g. `OPENCODE_API_KEY`) |
 | opencode-go | `qwen3.8-max` (also defaults `api = "openai"`) | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
@@ -207,6 +208,8 @@ Two consequences worth knowing before choosing a mode:
   `disallowed_tools`.
 
 `opencode` runs in two modes selected by **API-key presence**: no resolved key → **local** mode against a running `opencode serve` (native session API); key resolved → **cloud** mode against OpenCode Zen (OpenAI-compatible). `opencode-go` is a convenience alias that sets `base_url` to the Go endpoint, `api` to `"openai"`, `model` to one the Go endpoint serves, and `api_key_env` to `"OPENCODE_API_KEY"`. It still uses `[provider.opencode]` for overrides. See [`doc/providers/opencode.md`](providers/opencode.md).
+
+`strata` runs the same OpenAI Chat Completions wire as `codex` against the **Strata** local engine with no key: `kind = "strata"` normalizes to `[provider.codex]` with `base_url` `http://127.0.0.1:8080/v1` and `model` `strata` prefilled; `api_key_env` stays unset, so no `Authorization` header is sent (keyless). A `[provider.strata]` table, if present, overrides field by field; keyless defaults fill only the fields it leaves unset. Strata binds to loopback by default, and the server must be running before the session starts — a down engine surfaces as a connection error on the first request. See [`doc/providers/strata.md`](providers/strata.md).
 
 ### `[runtime]`
 

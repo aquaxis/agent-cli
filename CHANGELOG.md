@@ -4,6 +4,49 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.30.0]
+
+### Added
+
+- **Strata, the local inference engine, is a connection target.** Strata
+  (github.com/Niko1221/Strata) runs the Qwen3.8-Flash-Next model on a
+  gaming PC behind an OpenAI-compatible API at
+  `http://127.0.0.1:8080/v1`, needing no account and no cloud. Setting
+  `kind = "strata"` connects to it out of the box — a convenience alias
+  of the codex provider with Strata's defaults (`base_url`
+  `http://127.0.0.1:8080/v1`, `model` `strata`) filled in, and **no API
+  key configured, so no `Authorization` header is sent at all**. A
+  `[provider.strata]` table overrides field by field (`model`,
+  `base_url`, `api_key_env`, `temperature`, `request_timeout_secs`), the
+  same shape `opencode-go` uses against `[provider.opencode]`. Exposing
+  the engine beyond loopback (Strata's `--host 0.0.0.0 --api-key`) opts
+  into the keyed path by naming an `api_key_env`. See
+  [`doc/providers/strata.md`](doc/providers/strata.md).
+- **Keyless OpenAI-API connections are a capability of the codex
+  provider.** `[provider.codex]` **without `api_key_env`** now connects
+  with **no `Authorization` header** and no key material resolved —
+  useful for any OpenAI-compatible server that requires no
+  authentication.
+
+### Changed
+
+- **A `[provider.codex]` with no `api_key_env` no longer falls back to
+  reading the `OPENAI_API_KEY` environment variable.** That silent
+  fallback meant a bare codex config connected (or failed) depending on
+  an env var the config never named; now an unspecified key is keyless
+  by design, and a **configured** `api_key_env` whose variable is
+  missing keeps failing construction with the same missing-key error as
+  before — a typo'd variable name cannot become a silent unauthenticated
+  request. Configs that set `api_key_env` explicitly (the documented
+  shape) are unaffected.
+
+### Fixed
+
+- **A `[provider.strata]` table in a config file is no longer silently
+  discarded.** Unknown `[provider.<x>]` tables were swallowed by a
+  catch-all extras map without an error or a warning; the strata table
+  now has a typed slot and is honored field by field.
+
 ## [0.29.0]
 
 ### Fixed

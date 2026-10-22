@@ -9,8 +9,8 @@
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Provider: the AI backend. Only one `kind` is active at a time.
-# Supported: "claude" | "claude-code" | "codex" | "ollama" | "opencode" |
-#            "opencode-go" | "llama.cpp"
+# Supported: "claude" | "claude-code" | "codex" | "strata" | "ollama" |
+#            "opencode" | "opencode-go" | "llama.cpp"
 # ─────────────────────────────────────────────────────────────────────────────
 [provider]
 kind = "claude"
@@ -49,6 +49,11 @@ thinking    = true
 # model       = "gpt-4.1"
 # api_key_env = "OPENAI_API_KEY"
 # base_url    = "https://api.openai.com/v1"
+
+# --- Strata (local OpenAI-compatible engine) ---
+# [provider.strata]
+# model    = "strata"
+# base_url = "http://127.0.0.1:8080/v1"
 
 # --- Ollama (local or cloud tag, OpenAI-compatible /api/chat) ---
 # [provider.ollama]

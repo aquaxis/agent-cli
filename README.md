@@ -8,7 +8,7 @@
 
 - Standalone — no tmux required. Just run `agent-cli` (the no-arg form is equivalent to `agent-cli run`).
 - Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch — the REPL and tools never call out to the `claude` CLI. (Driving that CLI is available separately, as the opt-in `claude-code` backend below.)
-- Seven backends: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
+- Eight backends: `claude` / `claude-code` / `codex` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>` (a report that costs the peer no turn, or an ask that waits for its answer, with `--report` / `--ask`).
 - Detached agents — `agent-cli spawn` (or `/spawn`) creates a headless peer in its own session that outlives the launcher; stop it with `agent-cli stop <peer>` (or `/stop`).
 - Groups — tag a launched cohort with `--group <id>` (detached children inherit it); filter with `agent-cli list --group <id>` and discover running cohorts with `agent-cli groups`.
@@ -43,6 +43,7 @@
 | claude | Anthropic Claude (Messages, SSE) | `claude-opus-4-7` |
 | claude-code | Local Claude Code CLI as a child process (no API key) | Claude Code's own |
 | codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
+| strata | OpenAI Chat Completions (SSE, keyless local engine) | `strata` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
 | opencode | OpenCode — dual mode (see below) | `claude-sonnet-4-5` |
 | opencode-go | OpenCode Go cloud (auto-configured shortcut) | `claude-sonnet-4-5` |
@@ -70,6 +71,18 @@ already filled in. Set `kind = "opencode-go"` and `api_key_env` only — the
 models only (`claude-*` is on `.../zen/v1`); list what it serves with
 `GET {base_url}/models`. You can still override any field in
 `[provider.opencode]`. See the configuration example below.
+
+**`strata`** is a convenience alias for the codex provider with the defaults of
+the Strata local inference engine (github.com/Niko1221/Strata) — an
+OpenAI-compatible server on your own PC. Set `kind = "strata"` only —
+`base_url` (`http://127.0.0.1:8080/v1`) and `model` (`strata`) are
+auto-populated, and **no API key is configured**: the loopback endpoint needs
+no key. **No key is sent at all** (no `Authorization` header), which also makes
+keyless OpenAI-compatible servers usable through plain `[provider.codex]` with
+no `api_key_env`. A Strata bound to a non-loopback host with a key passes its
+own `api_key_env`; the keyed codex path serves it. The Strata server must be
+running before the session starts. You can still override any field in
+`[provider.strata]`. See [`doc/providers/strata.md`](doc/providers/strata.md).
 
 **`claude-code`** runs the Claude Code CLI installed on the machine and adapts
 it to the provider interface, so `agent-cli` wraps it with personas, peer IPC,
@@ -615,7 +628,7 @@ Full frontmatter reference, validation rules, and operational scenarios are in [
 - [`doc/tools.md`](doc/tools.md) — built-in tool specifications
 - [`doc/architecture.md`](doc/architecture.md) — architecture overview
 - [`doc/troubleshooting.md`](doc/troubleshooting.md) — known failures and fixes
-- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
+- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`strata.md`](doc/providers/strata.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development guide
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
 

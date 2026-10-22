@@ -131,7 +131,7 @@ pub struct RunArgs {
     #[arg(long, global = true)]
     pub group: Option<String>,
 
-    /// AI backend (claude / claude-code / codex / ollama / opencode / opencode-go / llama.cpp)
+    /// AI backend (claude / claude-code / codex / strata / ollama / opencode / opencode-go / llama.cpp)
     #[arg(long, global = true)]
     pub provider: Option<String>,
 

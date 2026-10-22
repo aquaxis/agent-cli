@@ -38,7 +38,7 @@ agent-cli [--config <path>] <subcommand>
 | Option | Description |
 |--------|-------------|
 | `--name <name>` | Agent display name |
-| `--provider <kind>` | Override backend: `claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp` |
+| `--provider <kind>` | Override backend: `claude` / `claude-code` / `codex` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp` |
 | `--model <model>` | Override model |
 | `--persona <path>` | Explicit persona file path |
 | `--group <id>` | Group this agent joins; detached children inherit it. Overrides the `[runtime] group` config key. See [Groups](#groups) |

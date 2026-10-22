@@ -14,7 +14,13 @@ use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 
 pub struct CodexProvider {
-    pub api_key: String,
+    /// Key material for the `Authorization: Bearer` header, resolved at
+    /// construction. `None` means a keyless connection: no `api_key_env`
+    /// is configured, so no auth header is sent at all (a keyless backend
+    /// such as the Strata engine, or any OpenAI-compatible server without
+    /// authentication). A *configured* `api_key_env` whose variable is
+    /// missing still fails construction with the missing-key error.
+    pub api_key: Option<String>,
     pub base_url: String,
     pub model: String,
     pub temperature: Option<f32>,
@@ -29,19 +35,23 @@ impl CodexProvider {
             .codex
             .as_ref()
             .ok_or_else(|| AppError::provider("codex", "[provider.codex] missing"))?;
-        let key_env = entry
-            .api_key_env
-            .clone()
-            .unwrap_or_else(|| "OPENAI_API_KEY".to_string());
-        let api_key_raw = std::env::var(&key_env);
-        let context =
-            ProviderContext::new(source, Some(key_env.clone()), api_key_raw.as_deref().ok());
-        let api_key = api_key_raw.map_err(|_| {
-            ProviderError::new("codex")
-                .with_body(format!("env var {key_env} not set"))
-                .with_context(&context)
-                .into_app_error()
-        })?;
+        // Keyless when NO `api_key_env` is configured: no default env var is
+        // invented and no header is sent. A configured-but-unset variable
+        // keeps the missing-key construction error, verbatim.
+        let api_key = match &entry.api_key_env {
+            None => None,
+            Some(env) => Some(std::env::var(env).map_err(|_| {
+                ProviderError::new("codex")
+                    .with_body(format!("env var {env} not set"))
+                    .with_context(&ProviderContext::new(source, Some(env.clone()), None))
+                    .into_app_error()
+            })?),
+        };
+        let context = ProviderContext::new(
+            source,
+            entry.api_key_env.clone(),
+            api_key.as_deref(),
+        );
         let base_url = entry
             .base_url
             .clone()
@@ -131,14 +141,19 @@ impl Provider for CodexProvider {
         }
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let resp = self
+        let request = self
             .client
             .post(url)
-            .bearer_auth(&self.api_key)
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+            .header("content-type", "application/json");
+        // No `api_key_env` configured => a keyless endpoint (e.g. a local
+        // Strata engine): no Authorization header at all. A configured env
+        // var keeps the missing-key construction error and the bearer header.
+        let request = if let Some(key) = &self.api_key {
+            request.bearer_auth(key)
+        } else {
+            request
+        };
+        let resp = request.json(&body).send().await?;
         if !resp.status().is_success() {
             let status = resp.status();
             let headers = resp.headers().clone();
@@ -368,5 +383,98 @@ mod tests {
         let outcome = handle_codex_frame("not-json", &mut state);
         assert!(outcome.events.is_empty());
         assert!(!outcome.done);
+    }
+
+    fn provider_from(toml_src: &str) -> CodexProvider {
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        CodexProvider::from_config(&cfg, &ConfigSource::default()).unwrap()
+    }
+
+    /// Accept one HTTP request on an ephemeral port and return its header
+    /// block — the only way to prove a negative about what the client sends.
+    fn capture_one_request(listener: std::net::TcpListener) -> std::thread::JoinHandle<String> {
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n",
+            );
+            let _ = stream.flush();
+            raw
+        })
+    }
+
+    fn user_msg(text: &str) -> Message {
+        Message::User {
+            content: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn missing_api_key_error_exists_only_when_api_key_env_is_configured() {
+        // No `api_key_env` => keyless: construction succeeds even though no
+        // env var exists, with no key material and no default key env implied.
+        std::env::remove_var("OPENAI_API_KEY");
+        let p = provider_from("[provider]\nkind = \"codex\"\n\n[provider.codex]\n");
+        assert!(p.api_key.is_none(), "no api_key_env means no key");
+        // `api_key_env` configured but its variable unset => the construction
+        // error, verbatim (a typo'd env name must not become a silent open).
+        let src_missing = "[provider]\nkind = \"codex\"\n\n[provider.codex]\napi_key_env = \"AGENT_CLI_NO_SUCH_VAR\"\n";
+        let cfg: Config = toml::from_str(src_missing).unwrap();
+        let outcome = CodexProvider::from_config(&cfg, &ConfigSource::default());
+        let err = match outcome {
+            Ok(_) => panic!("configured-unset key must abort construction"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("env var AGENT_CLI_NO_SUCH_VAR not set"),
+            "configured-unset key must still abort: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn keyless_codex_sends_no_authorization_and_keyed_does() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let captured = capture_one_request(listener);
+        let p = provider_from(&format!(
+            "[provider]\nkind = \"codex\"\n\n[provider.codex]\nbase_url = \"http://127.0.0.1:{port}/v1\"\n"
+        ));
+        // The canned reply is not a valid SSE stream, so the call ends after
+        // the header block — whose contents are what this pin is about.
+        let _ = p.complete_stream(&[user_msg("hi")], &[]).await;
+        let raw = captured.join().unwrap().to_ascii_lowercase();
+        assert!(
+            raw.contains("post /v1/chat/completions"),
+            "unexpected request line: {raw}"
+        );
+        assert!(
+            !raw.contains("authorization:"),
+            "keyless codex must not send an authorization header: {raw}"
+        );
+    }
+
+    #[tokio::test]
+    async fn keyed_codex_sends_the_bearer_header() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let captured = capture_one_request(listener);
+        // The key is resolved at construction, so the variable must exist
+        // before the provider is built.
+        std::env::set_var("AGENT_CLI_TEST_KEY_ENV", "strata-pin-key");
+        let p = provider_from(&format!(
+            "[provider]\nkind = \"codex\"\n\n[provider.codex]\nbase_url = \"http://127.0.0.1:{port}/v1\"\napi_key_env = \"AGENT_CLI_TEST_KEY_ENV\"\n"
+        ));
+        let _ = p.complete_stream(&[user_msg("hi")], &[]).await;
+        std::env::remove_var("AGENT_CLI_TEST_KEY_ENV");
+        let raw = captured.join().unwrap();
+        let lower = raw.to_ascii_lowercase();
+        assert!(
+            lower.contains("authorization: bearer strata-pin-key"),
+            "keyed codex must keep the bearer header on the wire: {raw}"
+        );
     }
 }

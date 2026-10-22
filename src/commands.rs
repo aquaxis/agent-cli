@@ -436,12 +436,12 @@ pub async fn providers(cfg: &Config) -> Result<()> {
             .and_then(|e| e.model.clone())
             .unwrap_or_else(|| "-".into());
         let key_status = match (*kind, entry) {
-            ("claude", Some(e)) | ("codex", Some(e)) => match &e.api_key_env {
+            ("claude", Some(e)) | ("codex", Some(e)) | ("strata", Some(e)) => match &e.api_key_env {
                 Some(env) => match std::env::var(env) {
                     Ok(_) => format!("env {env}: set"),
                     Err(_) => format!("env {env}: NOT set"),
                 },
-                None => "no api_key_env configured".into(),
+                None => "no api_key_env configured (keyless)".into(),
             },
             ("ollama", Some(_)) | ("llama.cpp", Some(_)) => "local server".into(),
             // No API key of its own: it runs the Claude Code CLI, which brings
@@ -541,6 +541,8 @@ pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
 
     // Normalize opencode-go → opencode with Go defaults before further checks
     cfg.apply_opencode_go_defaults();
+    // Normalize strata → codex with Strata defaults before further checks
+    cfg.apply_strata_defaults();
 
     // Claude Code check: this backend has no api_key_env — it drives the
     // `claude` CLI, which carries its own authentication. Check the binary.
@@ -597,7 +599,7 @@ pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
                 Ok(_) => println!("set"),
                 Err(_) => {
                     println!("NOT set");
-                    if matches!(kind, "claude" | "codex") {
+                    if matches!(kind, "claude" | "codex" | "strata") {
                         all_ok = false;
                     }
                 }
@@ -718,6 +720,7 @@ pub async fn selftest(
         cfg.apply_overrides(Some(p), None);
     }
     cfg.apply_opencode_go_defaults();
+    cfg.apply_strata_defaults();
     let mut all_ok = true;
     let mut stage1_ok = false;
 

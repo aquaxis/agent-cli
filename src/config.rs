@@ -9,8 +9,8 @@ use crate::theme::ColorMode;
 const DEFAULT_CONFIG: &str = r#"# agent-cli configuration
 
 [provider]
-# Backend to use: "claude" | "claude-code" | "codex" | "ollama" | "opencode" |
-# "opencode-go" | "llama.cpp"
+# Backend to use: "claude" | "claude-code" | "codex" | "strata" | "ollama" |
+# "opencode" | "opencode-go" | "llama.cpp"
 kind = "claude"
 
 [provider.claude]
@@ -44,6 +44,13 @@ thinking    = true
 model       = "gpt-4.1"
 api_key_env = "OPENAI_API_KEY"
 base_url    = "https://api.openai.com/v1"
+# Keyless OpenAI-compatible endpoints need no api_key_env: with none set,
+# agent-cli sends no Authorization header at all. A shortcut exists for the
+# Strata local engine (github.com/Niko1221/Strata):
+# --- Strata (locom) ---
+# Shortcut: set kind = "strata" above — base_url (`http://127.0.0.1:8080/v1`)
+# and model (`strata`) are auto-populated and no key is configured. Override
+# any field in [provider.strata] (it is applied to the codex entry).
 
 [provider.ollama]
 model    = "glm-5.1:cloud"
@@ -269,6 +276,8 @@ pub struct ProviderRoot {
     pub claude_code: Option<ProviderEntry>,
     #[serde(default)]
     pub codex: Option<ProviderEntry>,
+    #[serde(default)]
+    pub strata: Option<ProviderEntry>,
     #[serde(default)]
     pub ollama: Option<ProviderEntry>,
     #[serde(default)]
@@ -1204,6 +1213,7 @@ impl Config {
                     .get_or_insert_with(Default::default),
             ),
             "codex" => Some(self.provider.codex.get_or_insert_with(Default::default)),
+
             "ollama" => Some(self.provider.ollama.get_or_insert_with(Default::default)),
             "opencode" | "opencode-go" => Some(self.provider.opencode.get_or_insert_with(Default::default)),
             "llama.cpp" => Some(self.provider.llamacpp.get_or_insert_with(Default::default)),
@@ -1259,6 +1269,51 @@ impl Config {
             entry.api_key_env = Some("OPENCODE_API_KEY".to_string());
         }
         self.provider.kind = "opencode".to_string();
+    }
+
+    /// When `provider.kind` is `"strata"`, apply Strata-specific defaults to
+    /// the `[provider.codex]` entry (filling `None` fields) and normalize the
+    /// kind to `"codex"`. When the kind is not `"strata"`, this is a no-op.
+    ///
+    /// Strata (local OpenAI-compatible engine) connects with the same
+    /// Chat Completions wire codex speaks, over its documented endpoint
+    /// `http://127.0.0.1:8080/v1`, and needs no API key: the loopback
+    /// server rejects nothing (`api_key_env` stays `None`), and the model
+    /// id is name-agnostic — any name is served, the docs use `strata`.
+    pub fn apply_strata_defaults(&mut self) {
+        if self.provider.kind != "strata" {
+            return;
+        }
+        // A user-written `[provider.strata]` overrides field by field; the
+        // defaults fill only what the table (or the codex entry) leaves unset.
+        // `api_key_env` is never defaulted — the loopback endpoint needs none,
+        // and a keyed exposure is opted into by naming an env var explicitly.
+        if let Some(strata) = self.provider.strata.take() {
+            let entry = self.provider.codex.get_or_insert_with(Default::default);
+            if strata.model.is_some() {
+                entry.model = strata.model;
+            }
+            if strata.base_url.is_some() {
+                entry.base_url = strata.base_url;
+            }
+            if strata.temperature.is_some() {
+                entry.temperature = strata.temperature;
+            }
+            if strata.request_timeout_secs.is_some() {
+                entry.request_timeout_secs = strata.request_timeout_secs;
+            }
+            if strata.api_key_env.is_some() {
+                entry.api_key_env = strata.api_key_env;
+            }
+        }
+        let entry = self.provider.codex.get_or_insert_with(Default::default);
+        if entry.base_url.is_none() {
+            entry.base_url = Some("http://127.0.0.1:8080/v1".to_string());
+        }
+        if entry.model.is_none() {
+            entry.model = Some("strata".to_string());
+        }
+        self.provider.kind = "codex".to_string();
     }
 }
 
@@ -2297,6 +2352,26 @@ api         = "openai"
         assert_eq!(entry.model.as_deref(), Some("gpt-5"));
         assert_eq!(entry.base_url.as_deref(), Some("https://custom.example.com/v1"));
         assert_eq!(entry.api.as_deref(), Some("openai"));
+    }
+
+    // ── The strata alias (kind = "strata" → codex with Strata defaults) ──────
+
+    #[test]
+    fn apply_strata_defaults_minimal_config() {
+        let toml_src = r#"
+[provider]
+kind = "strata"
+"#;
+        let mut cfg: Config = toml::from_str(toml_src).unwrap();
+        cfg.apply_strata_defaults();
+        assert_eq!(cfg.provider.kind, "codex");
+        let entry = cfg.provider.codex.as_ref().unwrap();
+        assert_eq!(entry.base_url.as_deref(), Some("http://127.0.0.1:8080/v1"));
+        assert_eq!(entry.model.as_deref(), Some("strata"));
+        assert_eq!(
+            entry.api_key_env, None,
+            "a strata connection carries no key by default"
+        );
     }
 
     #[test]

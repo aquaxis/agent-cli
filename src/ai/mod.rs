@@ -131,6 +131,7 @@ pub trait Provider: Send + Sync {
 
 pub fn build(cfg: &mut Config, source: &ConfigSource) -> Result<Box<dyn Provider>> {
     cfg.apply_opencode_go_defaults();
+    cfg.apply_strata_defaults();
     let kind = cfg.provider.kind.as_str();
     match kind {
         "claude" => Ok(Box::new(claude::ClaudeProvider::from_config(cfg, source)?)),
@@ -156,6 +157,7 @@ pub const SUPPORTED: &[&str] = &[
     "ollama",
     "opencode",
     "opencode-go",
+    "strata",
     "llama.cpp",
 ];
 

@@ -52,7 +52,7 @@ impl Tool for SpawnTool {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Display name for the new agent."},
-                "provider": {"type": "string", "description": "Backend override (claude / claude-code / codex / ollama / opencode / opencode-go / llama.cpp)."},
+                "provider": {"type": "string", "description": "Backend override (claude / claude-code / codex / strata / ollama / opencode / opencode-go / llama.cpp)."},
                 "model": {"type": "string", "description": "Model override."},
                 "persona": {"type": "string", "description": "Persona file path."},
                 "group": {"type": "string", "description": "Group id for the new agent. Omit to inherit this agent's group."},

@@ -65,7 +65,7 @@ It is the tool-level equivalent of the `agent-cli spawn` subcommand /
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `name` | string | No | Display name for the new agent |
-| `provider` | string | No | Backend override (`claude` / `claude-code` / `codex` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`) |
+| `provider` | string | No | Backend override (`claude` / `claude-code` / `codex` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`) |
 | `model` | string | No | Model override |
 | `persona` | string | No | Persona file path |
 | `group` | string | No | Group id for the new agent; omit to inherit this agent's group (see [`usage.md`](usage.md) "Groups") |
