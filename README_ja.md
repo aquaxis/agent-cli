@@ -10,7 +10,7 @@
 - ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（REPL とツール自体は `claude` CLI を呼び出しません）。なお `claude` CLI を駆動する方法は、後述の `claude-code` バックエンドとして別途選択できます。
 - 8 つのバックエンド: `claude` / `claude-code` / `codex` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
 - マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します（`--report` でターンなしのレポート、`--ask` で回答を待つ ask も指定可能）。
-- デタッチドエージェント — `agent-cli spawn`（または `/spawn`）は、起動元プロセスに依存せず独自セッションで動くヘッドレスなピアを作成します。`agent-cli stop <peer>`（または `/stop`）で停止します。
+- デタッチドエージェント — `agent-cli spawn`（または `/spawn`）は、起動元プロセスに依存せず独自セッションで動くヘッドレスなピアを作成します。`agent-cli stop <peer>`（または `/stop`）で停止します。自分が起動したピアが稼働中の間、REPL には実行状態（名前と経過時間、稼働中の子ごとに 1 行、新しいものが下端に近い）が最下行ブロックの**上**に積まれ（スピナーの時計は画面最下行のまま）、ピアが終わるとその行は消えます。
 - グループ — 起動したコホートを `--group <id>` でタグ付け（デタッチドな子が継承）。`agent-cli list --group <id>` で絞り込み、`agent-cli groups` で稼働中のコホートを検出します。
 - ペルソナファイル（YAML フロントマター + Markdown 本文）でロール、スキル、ツールの許可/拒否リスト、モデル、temperature を定義します。
 - ツール呼び出し単位の権限ルール — `config.toml` の `[permissions]` に `tool(pattern)` 形式の `deny` / `allow` を書けるので、「git は可、`rm -rf ~` は不可」を y/N プロンプトに毎回答える代わりに設定として残せます。`deny` は `--auto-approve-tools` や `/auto on` より優先されるため、ヘッドレスな `serve` エージェントに対しても効く唯一のゲートになります。有効なルールは `/permissions` で確認できます。これはミスに対するガードレールであって、サンドボックスではありません。

@@ -72,6 +72,12 @@ agent-cli stop worker                    # ask it to shut down cleanly
   hang-up. Stop it with `agent-cli stop <peer>` / `/stop <peer>` (a graceful
   IPC shutdown, falling back to `SIGTERM`), or with an OS signal. A crashed
   detached agent is reaped lazily from the registry like any other peer.
+- **You can see the children a REPL spawned.** While a peer you spawned from
+  that REPL is alive, the REPL stacks a row per live child — its name and
+  operating time (`peer worker · 1m05s`), newest nearest the bottom — directly
+  above the bottom block, on the scrolled screen and the prompt screen alike;
+  the spinner's clock stays the screen's bottom row. When the peer finishes,
+  its row is gone at the next render.
 
 From inside a REPL the same is available as `/spawn [name] [provider]` and
 `/stop <peer>`.
@@ -313,7 +319,7 @@ When stdin is a terminal, the prompt runs in raw mode and supports in-place line
 | `Ctrl+A` / `Home` | Move to the start of the line |
 | `Ctrl+E` / `End` | Move to the end of the line |
 | `Backspace` / `Delete` | Delete the character before / at the cursor |
-| `Esc` | While the agent is working, stop the turn and return to the prompt at once; while a `!` command is running, stop it; while the log is scrolled, return to the live view (the next press does the above); at the approval prompt, deny the pending tool; at an idle prompt, leave history browsing or clear the line |
+| `Esc` | While the agent is working, stop the turn and return to the prompt at once; while a `!` command is running, stop it; while the log is scrolled, return to the live view with the prompt re-displayed, whatever the REPL's state (the next press does the above); at the approval prompt, deny the pending tool; at an idle prompt, leave history browsing or clear the line |
 | `Ctrl+C` | While the agent is working, same as `Esc`; at an idle prompt, clear the line, and on an empty line, exit — **including at the approval prompt**, where it keeps that exit meaning rather than denying the tool |
 | `Ctrl+D` | Exit on an empty line; ignored otherwise |
 | `Tab` | Complete the slash command being typed (see below) |
@@ -409,7 +415,7 @@ What `!` is not for: it has no terminal of its own, so interactive and full-scre
 Turn the mouse wheel up and the session log scrolls behind the prompt: the prompt line stays exactly where it is, still showing what you had typed and where the cursor was, and stays editable while you read. Turn the wheel back down to return; reaching the bottom puts the live view back, and so does pressing `Esc`. `Enter` returns to the live view and then sends the line as usual, and `Ctrl+C` / `Ctrl+D` return to it and then mean what they always mean.
 
 - **The keyboard is unchanged.** `↑` / `↓` still move through the input history, the arrows still move within the line you are typing, and `Esc` / `Ctrl+C` still cancel a running turn once the view is back at the bottom. Only the wheel scrolls.
-- **It works during a turn.** While the agent is streaming an answer or running a tool you can scroll back over what it has already written; output arriving meanwhile is kept but does not move the view, and the spinner with its elapsed time is pinned at the bottom of the screen so you can see the turn is still going. The pinned clock is never scrolled off: each beat's row is part of the log, so the view around it can move without taking the time display with it, and a turn that ends while you are scrolled leaves its `✔ <elapsed>` line in the log. Everything appears in place when you return to the live view.
+- **It works during a turn.** While the agent is streaming an answer or running a tool you can scroll back over what it has already written; output arriving meanwhile is kept but does not move the view, and the spinner with its elapsed time is pinned at the bottom of the screen so you can see the turn is still going. The pinned clock is never scrolled off: each beat's row is part of the log, so the view around it can move without taking the time display with it, and a turn that ends while you are scrolled leaves its `✔ <elapsed>` line in the log. Everything appears in place when you return to the live view. On both screens the pinned block keeps the bottom row: any running subagents you spawned are stacked directly *above* it, one row per live child, newest nearest the block, and the wheel's range ends above the topmost of those rows.
 - **The log is what agent-cli printed**, up to `[ui] scrollback_lines` lines (2000 by default) — the banner, your submitted lines, answers, tool calls and results, and each turn's `✔ <elapsed>`. The progress block itself is not part of it: it is erased and redrawn while a turn runs.
 - **Selecting text is agent-cli's own** — drag over the log and it is copied on release (see below). The terminal's own selection, and its own scrollback, are still available under the override your terminal uses, usually holding `Shift`; `[ui] mouse_scroll = false` gives the mouse back to the terminal entirely.
 - Scrolling is drawn on the terminal's alternate screen, so returning to the live view restores the screen — and the terminal's own scrollback — exactly as it was.

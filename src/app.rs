@@ -998,11 +998,21 @@ fn layout_cursor(
 struct PromptRenderer {
     /// Physical row offset of the cursor from the top of the last rendered block.
     cursor_row: u16,
+    /// Rows the subagent status block occupies above the rendered block (or
+    /// above the suggestion row when one is shown). They are part of the
+    /// tracked region, so `clear_block` erases them together with the block
+    /// and a finished subagent's row vanishes at the next render rather than
+    /// leaving a stale line on the live screen.
+    peer_rows: u16,
 }
+
 
 impl PromptRenderer {
     fn new() -> Self {
-        Self { cursor_row: 0 }
+        Self {
+            cursor_row: 0,
+            peer_rows: 0,
+        }
     }
 
     /// Mark the cursor as being on a fresh, empty line (no previous block above).
@@ -1010,6 +1020,7 @@ impl PromptRenderer {
     /// or printing an out-of-band message).
     fn reset(&mut self) {
         self.cursor_row = 0;
+        self.peer_rows = 0;
     }
 
     fn terminal_width() -> usize {
@@ -1021,12 +1032,17 @@ impl PromptRenderer {
     /// resets the tracked row to 0.
     fn clear_block(&mut self, stdout: &mut std::io::Stdout) {
         use crossterm::cursor::{MoveToColumn, MoveUp};
-        if self.cursor_row > 0 {
-            let _ = stdout.execute(MoveUp(self.cursor_row));
+        // The whole tracked region: the peer rows, the block's rows above the
+        // cursor, and the rows between. `Clear(FromCursorDown)` from the region
+        // top erases the rest.
+        let rows = self.peer_rows + self.cursor_row;
+        if rows > 0 {
+            let _ = stdout.execute(MoveUp(rows));
         }
         let _ = stdout.execute(MoveToColumn(0));
         let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
         self.cursor_row = 0;
+        self.peer_rows = 0;
         let _ = stdout.flush();
     }
 
@@ -1063,7 +1079,10 @@ impl PromptRenderer {
     /// live slash-command completion), so the line being typed always stays at
     /// the bottom of the block where the eye already is. The hint occupies one
     /// extra row at the top of the block, which `clear_block` removes on the
-    /// next render (it moves to the block top and clears downward).
+    /// next render (it moves to the block top and clears downward). The
+    /// subagent status rows (`peer_lines`, FR-23) print above the whole
+    /// tracked region and are erased with it.
+    #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
         stdout: &mut std::io::Stdout,
@@ -1072,6 +1091,7 @@ impl PromptRenderer {
         prompt: &str,
         state: &InputState,
         suggestion: Option<&str>,
+        peer_lines: &[String],
     ) {
         use crossterm::cursor::{MoveDown, MoveToColumn, MoveUp};
         use crossterm::style::Print;
@@ -1081,7 +1101,20 @@ impl PromptRenderer {
         // 1. Clear the previous block (handles multi-row renders + suggestion).
         self.clear_block(stdout);
 
-        // 2. Print the candidate hint first, on its own row above the prompt.
+        // 2. Print the subagent status rows above the block's rows, oldest
+        //    first (the painter works downward), so the newest stands on the
+        //    row nearest the block — the instruction's bottom-up ordering
+        //    (FR-23, AS-26). The block owns the screen's bottom rows, so these
+        //    stack from the row above it.
+        for line in peer_lines {
+            let _ = stdout.execute(Print(theme.err(Role::Peer, line)));
+            // CR+LF is required in raw mode; this lands at column 0 of the
+            // next row, where the following peer line or the block begins.
+            let _ = stdout.execute(Print("\r\n"));
+        }
+        self.peer_rows = peer_lines.len() as u16;
+
+        // 3. Print the candidate hint first, on its own row above the prompt block.
         //    Skipped when the terminal is too narrow to be useful (e.g. a pty
         //    with no reported size), so we never render a lone ellipsis.
         let sug_rows = suggestion_rows(suggestion, width);
@@ -1093,11 +1126,11 @@ impl PromptRenderer {
             let _ = stdout.execute(Print("\r\n"));
         }
 
-        // 3. Print prompt + line; the terminal auto-wraps long content.
+        // 4. Print prompt + line; the terminal auto-wraps long content.
         let _ = stdout.execute(Print(theme.out(prompt_role, prompt)));
         let _ = stdout.execute(Print(theme.out(Role::InputText, &state.line)));
 
-        // 4. Compute the target cursor position within the prompt rows. The
+        // 5. Compute the target cursor position within the prompt rows. The
         //    measurements are taken from the *plain* text: a style adds no
         //    printable column, but its escape sequence would be counted.
         let prompt_cols = crate::editor::str_display_width(prompt);
@@ -1106,9 +1139,9 @@ impl PromptRenderer {
         let (end_row, cursor_row, cursor_col) =
             layout_cursor(prompt_cols, cursor_cols, total_cols, width);
 
-        // 5. Move from the post-print position (end_row) to the cursor row.
+        // 6. Move from the post-print position (end_row) to the cursor row.
         //    Both are relative to the prompt row, so the hint above does not
-        //    change this step — only the block-relative bookkeeping in 6.
+        //    change this step — only the block-relative bookkeeping in 7.
         if end_row > cursor_row {
             let _ = stdout.execute(MoveUp((end_row - cursor_row) as u16));
         } else if cursor_row > end_row {
@@ -1118,8 +1151,9 @@ impl PromptRenderer {
         }
         let _ = stdout.execute(MoveToColumn(cursor_col as u16));
 
-        // 6. Remember where the cursor ended up for the next render, counting
-        //    the hint row so `clear_block` moves all the way back to the top.
+        // 7. Remember where the cursor ended up for the next render, counting
+        //    the hint row so `clear_block` moves all the way back to the top
+        //    of the tracked region (the peer rows included).
         self.cursor_row = sug_rows + cursor_row as u16;
         let _ = stdout.flush();
     }
@@ -1384,8 +1418,15 @@ fn live_children_states(
     registry_dir: &Path,
     self_id: &crate::id::AgentId,
 ) -> Vec<(String, std::time::Duration)> {
-    crate::ipc::registry::children_of(registry_dir, self_id)
-        .unwrap_or_default()
+    let mut children = crate::ipc::registry::children_of(registry_dir, self_id)
+        .unwrap_or_default();
+    // The rows stack from the bottom line upward with the newest nearest the
+    // bottom (AS-26), and the painter walks downward over this list, so it is
+    // the spawn order itself: the registry's read order is the filesystem's,
+    // not the spawn order — sort oldest-first, which puts the newest on the
+    // row just above the block (or the clock) that holds the bottom.
+    children.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    children
         .into_iter()
         .map(|e| {
             let age = chrono::Utc::now()
@@ -1498,35 +1539,82 @@ fn draw_scroll_overlay(
             suggestion,
             ..
         } => {
-            renderer.render(stdout, theme, role, prompt, input, suggestion);
+            renderer.render(
+                stdout,
+                theme,
+                role,
+                prompt,
+                input,
+                suggestion,
+                &peer_lines,
+            );
         }
         ScrollBottom::Status { row, .. } => {
             // The pinned clock is the user's visible history of the turn, so it
             // belongs to the transcript as its own line (recorded once per
             // draw); the wheel carries the earlier beats as the view climbs.
             crate::scroll::record_line(&theme.err(Role::Progress, &row));
+            // The clock stays the screen's bottom row; the subagent rows stack
+            // above it, one per live child, oldest on top and the newest just
+            // above the clock (FR-23, AS-26: 下から順番に — from the bottom). The
+            // rows are transient state, never recorded into the transcript
+            // (FR-20), and `body` already shrank by exactly this count, so the
+            // slice cannot reach past the topmost row.
+            let plan = subagent_row_plan(body, peer_lines.len());
+            for (i, line) in peer_lines.iter().enumerate() {
+                let _ = crossterm::queue!(
+                    stdout,
+                    MoveTo(0, plan.peers[i]),
+                    terminal::Clear(ClearType::UntilNewLine),
+                    Print(theme.err(Role::Peer, line))
+                );
+            }
             let _ = crossterm::queue!(
                 stdout,
+                MoveTo(0, plan.bottom),
                 terminal::Clear(ClearType::UntilNewLine),
                 Print(theme.err(Role::Progress, &row))
             );
             let _ = stdout.flush();
         }
     }
-    // The subagent rows paint beneath whichever block is pinned; they are
-    // transient state, never recorded into the transcript (FR-20).
-    if !peer_lines.is_empty() {
-        for (i, line) in peer_lines.iter().enumerate() {
-            let _ = crossterm::queue!(
-                stdout,
-                MoveTo(0, (body + i + 1) as u16),
-                terminal::Clear(ClearType::UntilNewLine),
-                Print(theme.err(Role::Peer, line))
-            );
-        }
-        let _ = stdout.flush();
-    }
     overlay.last_draw = std::time::Instant::now();
+}
+
+/// What the scrolled-view Esc-return redraws the prompt with, per input-loop
+/// state (FR-24).
+///
+/// The repair is the seam, not the arm: the arm's `Esc` branch redraws with
+/// whatever this answers, so the fold check — reinstating the shipped
+/// `!is_pending()` gate (`None` for `Pending`) — fails the pin while the
+/// shipped gate stands, and passes with the repair. Every state redraws:
+/// mid-turn the prompt draws beneath the streamed output while the turn keeps
+/// running, the clock coming back with the screen through the tick's in-place
+/// repaint.
+fn esc_return_redraw(prompt_state: &PromptState) -> Option<(Role, &'static str)> {
+    if prompt_state.is_awaiting_approval() {
+        Some((Role::Confirm, APPROVAL_PROMPT))
+    } else {
+        Some((Role::PromptSymbol, PROMPT))
+    }
+}
+
+/// Row geometry for the pinned zone's subagent rows (FR-23, D-24): the stack
+/// sits above whichever block holds the screen's bottom row. `body` is the
+/// zone's first row and `n` the number of live children; rows are numbered
+/// from the top of the stack, so a downward painter takes `peers[i]` in the
+/// composer's order (spawn order, oldest first) and the bottom block takes
+/// `clock`. Pure so the drawer's geometry is pin-bound without a terminal.
+struct SubagentRowPlan {
+    peers: Vec<u16>,
+    bottom: u16,
+}
+
+fn subagent_row_plan(body: usize, n: usize) -> SubagentRowPlan {
+    SubagentRowPlan {
+        peers: (0..n).map(|i| (body + i) as u16).collect(),
+        bottom: (body + n) as u16,
+    }
 }
 
 /// Classify whether a key event should trigger a cancel during the Pending state
@@ -2458,8 +2546,18 @@ async fn run_input_loop_raw(
                                 lock_indicator(&state.indicator).resume();
                                 renderer.reset();
                                 if key_event.code == KeyCode::Esc {
-                                    if !prompt_state.is_pending() {
-                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, if prompt_state.is_awaiting_approval() { Role::Confirm } else { Role::PromptSymbol }, if prompt_state.is_awaiting_approval() { APPROVAL_PROMPT } else { PROMPT }, &state, &input_state).await;
+                                    // The prompt returns in every state (FR-24):
+                                    // the line the user was typing is kept,
+                                    // the approval prompt is re-shown as it
+                                    // was, and mid-turn the prompt draws
+                                    // beneath the streamed output while the
+                                    // turn keeps running. The indicator's
+                                    // clock comes back with the screen: the
+                                    // next tick repaints the block in place,
+                                    // so the elapsed time never lands over the
+                                    // redrawn prompt.
+                                    if let Some((role, prompt)) = esc_return_redraw(&prompt_state) {
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, role, prompt, &state, &input_state).await;
                                     }
                                     continue;
                                 }
@@ -4057,6 +4155,14 @@ async fn render_prompt(
     } else {
         role
     };
+    // The subagent rows are composed once per read and shown on both screens
+    // (FR-23, D-25): pinned beside the block on the scrolled screen, rendered
+    // in the prompt block's tracked region on the live screen.
+    let peers = live_peer_lines(
+        &state.registry_dir,
+        &state.id,
+        PromptRenderer::terminal_width(),
+    );
     if overlay.is_active() {
         draw_scroll_overlay(
             overlay,
@@ -4068,15 +4174,19 @@ async fn render_prompt(
                 prompt,
                 input: input_state,
                 suggestion: sug.as_deref(),
-                peer_lines: live_peer_lines(
-                    &state.registry_dir,
-                    &state.id,
-                    PromptRenderer::terminal_width(),
-                ),
+                peer_lines: peers.clone(),
             },
         );
     } else {
-        renderer.render(stdout, &state.theme, role, prompt, input_state, sug.as_deref());
+        renderer.render(
+            stdout,
+            &state.theme,
+            role,
+            prompt,
+            input_state,
+            sug.as_deref(),
+            &peers,
+        );
     }
 }
 
@@ -4112,7 +4222,11 @@ async fn draw_scrolled(
                 &state.theme,
                 ScrollBottom::Status {
                     row,
-                    peer_lines: Vec::new(),
+                    peer_lines: live_peer_lines(
+                        &state.registry_dir,
+                        &state.id,
+                        PromptRenderer::terminal_width(),
+                    ),
                 },
             );
             return;
@@ -4174,8 +4288,9 @@ async fn handle_repl_command(
             raw_println(raw_mode, "                              terminal instead ([ui] mouse_select, copy_command).");
             raw_println(raw_mode, "  Esc                         Stop a running turn or shell command; at the tool-approval");
             raw_println(raw_mode, "                              prompt, deny the pending tool. The prompt is re-displayed.");
-            raw_println(raw_mode, "  Bottom line                 Each running subagent shows its name and operating");
-            raw_println(raw_mode, "                              time under the pinned block; the line goes when it ends.");
+            raw_println(raw_mode, "  Subagents                   Each running subagent shows its name and operating");
+            raw_println(raw_mode, "                              time stacked above the bottom block; the row goes when");
+            raw_println(raw_mode, "                              the subagent ends, and the clock stays the bottom row.");
             raw_println(raw_mode, "");
             raw_println(raw_mode, "Tool approval can be skipped via:");
             raw_println(raw_mode, "  - REPL command  : /auto on  (toggleable at runtime)");
@@ -5791,6 +5906,96 @@ mod tests {
         };
         assert_eq!(role(false).1, PROMPT);
         assert_eq!(role(true).1, APPROVAL_PROMPT);
+    }
+
+    #[test]
+    fn esc_return_redraws_the_prompt_in_every_state() {
+        // FR-24's mechanism: the seam answers a redraw for every input-loop
+        // state, Pending included — the shipped gate skipped exactly that one,
+        // leaving a mid-turn Esc-return with a blockless bottom. Fold check:
+        // reinstating the gate (`None` for `Pending`) fails this pin.
+        assert!(esc_return_redraw(&PromptState::Ready).is_some());
+        assert!(esc_return_redraw(&PromptState::Pending).is_some());
+        assert!(esc_return_redraw(&PromptState::Shell).is_some());
+        let (tx, _rx) = oneshot::channel::<bool>();
+        assert!(esc_return_redraw(&PromptState::AwaitingApproval(tx)).is_some());
+        // What the redraw paints: the approval prompt while awaiting, the
+        // input prompt otherwise (the same pair the shipped redraw used).
+        assert_eq!(
+            esc_return_redraw(&PromptState::AwaitingApproval(
+                oneshot::channel::<bool>().0
+            ))
+            .unwrap()
+            .1,
+            APPROVAL_PROMPT
+        );
+        assert_eq!(esc_return_redraw(&PromptState::Ready).unwrap().1, PROMPT);
+    }
+
+    #[test]
+    fn the_clock_stays_the_bottom_row_with_subagents_pinned() {
+        // FR-22 with FR-23 present: the pinned zone's bottom block is the
+        // screen's last row whatever the live children count, the subagent
+        // stack fills the rows from the zone's first row downward (the newest
+        // nearest the clock, AS-26), and the wheel's range ends above the
+        // topmost row. Fold check: the shipped beneath-the-block shape (peers
+        // at `body + 1 + i`, the clock at `body`) fails the bottom-row pin.
+        let height = 24usize;
+        for n in 0..4u16 {
+            let body = crate::scroll::body_rows(height, 1 + n);
+            let plan = subagent_row_plan(body, n as usize);
+            assert_eq!(
+                plan.bottom, (height - 1) as u16,
+                "with {n} subagent(s) the clock is still the screen's bottom row"
+            );
+            assert_eq!(
+                plan.peers.first().copied().unwrap_or(plan.bottom),
+                body as u16,
+                "the stack begins at the zone's first row, outside the wheel's range"
+            );
+        }
+        // Row order: a downward painter takes the composer's list top-down, so
+        // the first row is the oldest child and the last is the newest — the
+        // one nearest the clock.
+        let body = crate::scroll::body_rows(height, 3);
+        let plan = subagent_row_plan(body, 2);
+        assert!(plan.peers[0] < plan.peers[1] && plan.peers[1] < plan.bottom);
+    }
+
+    #[test]
+    fn the_prompt_renderer_tracks_the_subagent_rows_it_paints() {
+        // The live screen's FR-23 rows live in the tracked region: the erase
+        // covers them together with the prompt block, so a reap between
+        // renders (or a submit) leaves no stale line. The bookkeeping drives
+        // `clear_block`'s MoveUp; the erase resets both counters.
+        let mut renderer = PromptRenderer::new();
+        assert_eq!(renderer.peer_rows, 0);
+        let mut stdout = std::io::stdout();
+        renderer.render(
+            &mut stdout,
+            &Theme::plain(),
+            Role::PromptSymbol,
+            PROMPT,
+            &InputState::new(),
+            None,
+            &[
+                "peer alpha · 1.0s".to_string(),
+                "peer beta · 2.0s".to_string(),
+            ],
+        );
+        assert_eq!(
+            renderer.peer_rows, 2,
+            "the rows are part of the tracked region"
+        );
+        // An empty one-row prompt block tracks cursor row 0 (the shipped
+        // `prompt_block_rows` pin's shape); the peers above it are what makes
+        // the erase climb — `clear_block` moves back over the whole region.
+        assert_eq!(renderer.cursor_row, 0);
+        renderer.clear_block(&mut stdout);
+        assert_eq!(renderer.peer_rows, 0, "the erase resets the region");
+        assert_eq!(renderer.cursor_row, 0);
+        renderer.reset();
+        assert_eq!(renderer.peer_rows, 0);
     }
 
     #[test]

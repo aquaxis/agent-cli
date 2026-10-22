@@ -4,6 +4,42 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.32.0]
+
+### Added
+
+- **Subagent status rows, stacked above the bottom block.** While your
+  spawned subagents run, the REPL shows one row per live child — its name
+  and operating time (`peer <name> · <elapsed>`), stacked directly above
+  the bottom block on both screens, the newest nearest the block. A row
+  that a child's reap retires vanishes at the next beat; the rows are
+  transient state and are never recorded into the transcript. The
+  spawned-at-order is the registry's read, sorted oldest-first, so the
+  stack reads bottom-up (the newest just above the block).
+
+### Fixed
+
+- **The clock keeps the screen's bottom row when subagents show.** The
+  subagent rows used to paint beneath the pinned clock on the scrolled
+  screen, and the live screen had none at all; the pinned zone is now
+  laid out by one pure arithmetic (`subagent_row_plan`) that fills the
+  zone top-down with the peer rows and gives the bottom block the zone's
+  last row — whatever the live children count, the spinner-and-elapsed
+  clock stays the screen's bottom row, with the wheel's range ending
+  above the topmost peer row (and the live screen's prompt block tracks
+  the peer rows in its erase region, so a reaped child leaves no stale
+  line at the prompt).
+- **Prompt re-displayed on Esc return from the scrolled view at any
+  state.** The `!is_pending()` gate the v0.31.0 record left open stood
+  in `app.rs:2461`: a mid-turn Esc-return redrawed nothing until the
+  next agent event, leaving the bottom blockless for as long as the
+  turn kept streaming. The redraw now runs in every prompt state
+  (a pure seam `esc_return_redraw`, fold-verified by reinstating the
+  gate), drawing the input prompt (or the approval prompt) beneath the
+  streamed output while the turn keeps running, and the resumed
+  indicator's clock comes back with the screen through FR-18's shipped
+  tracked-turn consult.
+
 ## [0.31.0]
 
 ### Fixed
