@@ -29,6 +29,15 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
   above the topmost peer row (and the live screen's prompt block tracks
   the peer rows in its erase region, so a reaped child leaves no stale
   line at the prompt).
+- **The wheel's scrollable history no longer accumulates the pinned
+  spinner's beat rows.** The v0.31.0 pin recorded the fresh
+  spinner-and-elapsed row into the transcript on every scrolled draw, so
+  each beat of a running turn stacked up as "history" the wheel carried —
+  the log filled with spinner rows reading the same elapsed time again
+  and again. The pinned clock is display-only: it is erased and redrawn
+  with the pinned screen and never recorded, so the scrollable history
+  holds the turn's output only. What the log keeps of the clock is each
+  turn's final `✔ <elapsed>` outcome line.
 - **Prompt re-displayed on Esc return from the scrolled view at any
   state.** The `!is_pending()` gate the v0.31.0 record left open stood
   in `app.rs:2461`: a mid-turn Esc-return redrawed nothing until the

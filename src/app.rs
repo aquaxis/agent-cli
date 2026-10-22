@@ -1550,10 +1550,11 @@ fn draw_scroll_overlay(
             );
         }
         ScrollBottom::Status { row, .. } => {
-            // The pinned clock is the user's visible history of the turn, so it
-            // belongs to the transcript as its own line (recorded once per
-            // draw); the wheel carries the earlier beats as the view climbs.
-            crate::scroll::record_line(&theme.err(Role::Progress, &row));
+            // The pinned clock is display-only: it is erased and redrawn with
+            // the screen and is NOT recorded into the transcript, so the
+            // wheel's scrollable history holds the turn's output — not the
+            // spinner beats. The outcome line (`✔ <elapsed>`, recorded by the
+            // indicator's `finish`) is the clock the log keeps.
             // The clock stays the screen's bottom row; the subagent rows stack
             // above it, one per live child, oldest on top and the newest just
             // above the clock (FR-23, AS-26: 下から順番に — from the bottom). The
@@ -6092,11 +6093,12 @@ mod tests {
             frame: 0,
         });
         // A wheel notch up mid-turn: the scrolled screen's draw pins the
-        // status row, and the pin is recorded into the transcript first, so
-        // the clock is a line the scrolled view itself can show — and the
-        // next draw of the same view contains it as history.
-        let row = ind.overlay_status_row().expect("a tracked turn has a row");
-        crate::scroll::record_line(&row);
+        // status row on screen, and the pinned clock is display-only — the
+        // draw never records its beat rows, so the wheel's scrollable
+        // history holds the turn's output, not the spinner beats. The fold:
+        // reinstating the old record-in-the-draw behaviour (recording the
+        // row as this test did before the fix) FAILS the negative pin.
+        let _row = ind.overlay_status_row().expect("a tracked turn has a row");
         let texts: Vec<String> = crate::scroll::with(|t| {
             crate::scroll::marked_rows(t, 80, 10, 0)
                 .into_iter()
@@ -6105,9 +6107,11 @@ mod tests {
         })
         .unwrap();
         assert!(
-            texts.iter().any(|t| t.contains("0.0s")),
-            "the pinned clock row must be in the scrollable history: {texts:?}"
+            !texts.iter().any(|t| t.contains("0.0s")),
+            "the pinned clock's beat rows stay out of the scrollable history: {texts:?}"
         );
+        // The turn's output the log does keep, still in place.
+        assert_eq!(texts[9], "log line 29", "the log's own lines are intact");
         crate::scroll::uninstall();
     }
 
