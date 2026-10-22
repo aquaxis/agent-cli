@@ -139,6 +139,7 @@ pub fn build(cfg: &mut Config, source: &ConfigSource) -> Result<Box<dyn Provider
             cfg, source,
         )?)),
         "codex" => Ok(Box::new(codex::CodexProvider::from_config(cfg, source)?)),
+        "strata" => Ok(Box::new(codex::CodexProvider::from_config(cfg, source)?)),
         "ollama" => Ok(Box::new(ollama::OllamaProvider::from_config(cfg, source)?)),
         "opencode" => Ok(Box::new(opencode::OpenCodeProvider::from_config(
             cfg, source,

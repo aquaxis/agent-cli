@@ -71,6 +71,18 @@
 `GET {base_url}/models` で確認できます。`[provider.opencode]`
 で個別に上書きすることもできます。下記の設定例を参照してください。
 
+**`strata`** は codex プロバイダのエイリアスで、Strata ローカル推論エンジン
+(github.com/Niko1221/Strata — 自分の PC 上で動く OpenAI 互換サーバ)のデフォルト値を
+埋めたものです。`kind = "strata"` だけで接続できます — `base_url`
+(`http://127.0.0.1:8080/v1`) と `model`(`strata`)は自動設定され、**API キーは
+設定されません**: ループバックのエンドポイントはキーを要求しないため、
+**`Authorization` ヘッダーは一切送信されません**。プロバイダの表示は常に
+**`strata`** です — 起動バナー、`agent-cli providers`、`selftest`、プロバイダ
+エラーのいずれでも、載っている codex ワイヤではなく `strata` と表示されます。
+非ループバックホストにキー付きで公開した Strata には、自分の `api_key_env`
+を渡します。`[provider.strata]` で各フィールドを上書きすることもできます。
+[`doc/providers/strata.md`](doc/providers/strata.md) を参照してください。
+
 **`claude-code`** は、マシンにインストール済みの Claude Code CLI を子プロセスとして
 起動し、プロバイダー抽象に適合させます。`agent-cli` の REPL・ペルソナ・
 エージェント間 IPC・ログ・カスタムスラッシュコマンドが、そのまま Claude Code を

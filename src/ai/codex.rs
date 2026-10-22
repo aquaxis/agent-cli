@@ -26,22 +26,49 @@ pub struct CodexProvider {
     pub temperature: Option<f32>,
     pub client: reqwest::Client,
     pub context: ProviderContext,
+    /// The configured kind this provider serves. The codex wire backs two
+    /// kinds — `"codex"` and the `"strata"` convenience alias (the Strata
+    /// local engine, served over the same Chat Completions wire) — and the
+    /// provider reports which one the user actually configured, so banner
+    /// rows, registry entries and diagnostics name it truthfully.
+    kind_label: &'static str,
 }
 
 impl CodexProvider {
     pub fn from_config(cfg: &Config, source: &ConfigSource) -> Result<Self> {
-        let entry = cfg
-            .provider
-            .codex
-            .as_ref()
-            .ok_or_else(|| AppError::provider("codex", "[provider.codex] missing"))?;
+        // The codex wire backs two kinds. `kind = "strata"` (the Strata local
+        // engine) is served from the `[provider.strata]` slot with its own
+        // defaults — a `[provider.codex]` table in the same file is never
+        // consulted, so the alias cannot inherit the other kind's key
+        // material. The provider keeps the configured kind as its label so
+        // banner rows, `selftest`, and the provider-error prefixes name what
+        // the user actually configured.
+        let (kind_label, entry) = match cfg.provider.kind.as_str() {
+            "strata" => {
+                let mut entry = cfg.provider.strata.clone().unwrap_or_default();
+                if entry.base_url.is_none() {
+                    entry.base_url = Some("http://127.0.0.1:8080/v1".to_string());
+                }
+                if entry.model.is_none() {
+                    entry.model = Some("strata".to_string());
+                }
+                ("strata", entry)
+            }
+            _ => (
+                "codex",
+                cfg.provider
+                    .codex
+                    .clone()
+                    .ok_or_else(|| AppError::provider("codex", "[provider.codex] missing"))?,
+            ),
+        };
         // Keyless when NO `api_key_env` is configured: no default env var is
         // invented and no header is sent. A configured-but-unset variable
         // keeps the missing-key construction error, verbatim.
         let api_key = match &entry.api_key_env {
             None => None,
             Some(env) => Some(std::env::var(env).map_err(|_| {
-                ProviderError::new("codex")
+                ProviderError::new(kind_label)
                     .with_body(format!("env var {env} not set"))
                     .with_context(&ProviderContext::new(source, Some(env.clone()), None))
                     .into_app_error()
@@ -69,6 +96,7 @@ impl CodexProvider {
             temperature: entry.temperature,
             client,
             context,
+            kind_label,
         })
     }
 }
@@ -108,7 +136,7 @@ fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
 #[async_trait]
 impl Provider for CodexProvider {
     fn name(&self) -> &'static str {
-        "codex"
+        self.kind_label
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -160,7 +188,7 @@ impl Provider for CodexProvider {
             let text = resp.text().await.unwrap_or_default();
             tracing::debug!(target: "agent_cli::ai::codex", status = %status, body = %text, "provider HTTP error");
             let request_id = extract_request_id(&headers, &text);
-            return Err(ProviderError::new("codex")
+            return Err(ProviderError::new(self.kind_label)
                 .with_http(
                     status.as_u16(),
                     status.canonical_reason().unwrap_or("").to_string(),
@@ -194,7 +222,11 @@ impl Provider for CodexProvider {
                     }
                     Err(e) => {
                         yield ProviderEvent::Error {
-                            message: crate::ai::stream_mid_body("codex", &self.model, &e.to_string()),
+                            message: crate::ai::stream_mid_body(
+                                self.kind_label,
+                                &self.model,
+                                &e.to_string(),
+                            ),
                         };
                         return;
                     }
@@ -433,6 +465,23 @@ mod tests {
             err.contains("env var AGENT_CLI_NO_SUCH_VAR not set"),
             "configured-unset key must still abort: {err}"
         );
+    }
+
+    #[test]
+    fn strata_configured_reports_strata_everywhere_codex_reports_codex() {
+        // The alias keeps its own name on every surface that shows a kind:
+        // the provider's identity (`name()`), the codex wire's stream-error
+        // message, and its HTTP-error prefix. Only the kind configured in
+        // the file may appear there — never the internal backing provider's.
+        let strata = provider_from("[provider]\nkind = \"strata\"\n\n[provider.strata]\n");
+        assert_eq!(strata.name(), "strata");
+        let mid = crate::ai::stream_mid_body(strata.name(), strata.model(), "err");
+        assert!(
+            mid.contains("provider strata,"),
+            "stream errors must name the configured kind: {mid}"
+        );
+        let codex = provider_from("[provider]\nkind = \"codex\"\n\n[provider.codex]\n");
+        assert_eq!(codex.name(), "codex");
     }
 
     #[tokio::test]

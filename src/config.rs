@@ -1271,9 +1271,12 @@ impl Config {
         self.provider.kind = "opencode".to_string();
     }
 
-    /// When `provider.kind` is `"strata"`, build the codex-shaped entry from
-    /// `[provider.strata]` plus Strata's defaults, and normalize the kind to
-    /// `"codex"`. When the kind is not `"strata"`, this is a no-op.
+    /// When `provider.kind` is `"strata"`, fill the `[provider.strata]`
+    /// table with Strata's defaults. The kind stays `"strata"` — the alias
+    /// keeps its own name everywhere the kind is displayed (the startup
+    /// banner, the registry, `/list`, selftest, provider errors) — and the
+    /// codex provider is constructed from the strata slot instead. When the
+    /// kind is not `"strata"`, this is a no-op.
     ///
     /// Strata (local OpenAI-compatible engine) connects with the same
     /// Chat Completions wire codex speaks, over its documented endpoint
@@ -1289,7 +1292,7 @@ impl Config {
         // table the file happens to carry: an alias must not inherit the
         // other kind's key material (a codex config with `api_key_env` set
         // would otherwise turn the keyless alias into a doomed OpenAI call).
-        let mut entry = self.provider.strata.take().unwrap_or_default();
+        let entry = self.provider.strata.get_or_insert_with(Default::default);
         if entry.base_url.is_none() {
             entry.base_url = Some("http://127.0.0.1:8080/v1".to_string());
         }
@@ -1299,8 +1302,6 @@ impl Config {
         // `api_key_env` is never defaulted — the loopback endpoint needs
         // none, and a keyed exposure is opted into by naming an env var
         // explicitly in `[provider.strata]`.
-        self.provider.codex = Some(entry);
-        self.provider.kind = "codex".to_string();
     }
 }
 
@@ -2351,14 +2352,18 @@ kind = "strata"
 "#;
         let mut cfg: Config = toml::from_str(toml_src).unwrap();
         cfg.apply_strata_defaults();
-        assert_eq!(cfg.provider.kind, "codex");
-        let entry = cfg.provider.codex.as_ref().unwrap();
+        // The kind stays "strata": the alias keeps its own name everywhere
+        // the provider is displayed (banner, registry, selftest, errors).
+        assert_eq!(cfg.provider.kind, "strata");
+        let entry = cfg.provider.strata.as_ref().unwrap();
         assert_eq!(entry.base_url.as_deref(), Some("http://127.0.0.1:8080/v1"));
         assert_eq!(entry.model.as_deref(), Some("strata"));
         assert_eq!(
             entry.api_key_env, None,
             "a strata connection carries no key by default"
         );
+        // The codex table is untouched by the alias resolution.
+        assert!(cfg.provider.codex.is_none());
     }
 
     #[test]
@@ -2380,8 +2385,10 @@ base_url    = "https://api.openai.com/v1"
 "#;
         let mut cfg: Config = toml::from_str(toml_src).unwrap();
         cfg.apply_strata_defaults();
-        assert_eq!(cfg.provider.kind, "codex");
-        let entry = cfg.provider.codex.as_ref().unwrap();
+        // The kind stays "strata" (the alias must display as strata) and the
+        // keyless defaults land in the strata slot, never in the codex table.
+        assert_eq!(cfg.provider.kind, "strata");
+        let entry = cfg.provider.strata.as_ref().unwrap();
         assert_eq!(entry.base_url.as_deref(), Some("http://127.0.0.1:8080/v1"));
         assert_eq!(entry.model.as_deref(), Some("strata"));
         assert!(
@@ -2389,6 +2396,10 @@ base_url    = "https://api.openai.com/v1"
             "the alias must not inherit the codex table's key: {:?}",
             entry.api_key_env
         );
+        // The codex table is the user's own data and stays untouched in its
+        // slot — the alias resolves entirely from the strata slot, whose
+        // defaults are the only fields written (asserted above).
+        let _ = &cfg.provider.codex;
         // An explicit `[provider.strata]` still overrides, and a keyed
         // strata exposure is the user's own election.
         let toml_keyed = r#"
@@ -2403,7 +2414,7 @@ api_key_env = "STRATA_API_KEY"
 "#;
         let mut cfg2: Config = toml::from_str(toml_keyed).unwrap();
         cfg2.apply_strata_defaults();
-        let entry2 = cfg2.provider.codex.as_ref().unwrap();
+        let entry2 = cfg2.provider.strata.as_ref().unwrap();
         assert_eq!(entry2.api_key_env.as_deref(), Some("STRATA_API_KEY"));
     }
 

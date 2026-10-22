@@ -4,6 +4,25 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.30.2]
+
+### Fixed
+
+- **A `strata` session now displays as `strata` everywhere, not as the codex
+  wire it rides on.** The alias used to rewrite `kind` to `"codex"` during
+  provider construction, so the startup banner's provider row, the registry
+  entry other agents see in `agent-cli list`, the selftest stage report and
+  provider error prefixes all named `codex` for a user who configured
+  `kind = "strata"`. The kind is no longer rewritten: the codex provider
+  serves the `[provider.strata]` slot (with the keyless Strata defaults)
+  when the kind is `strata`, keeps the configured kind as its label, and
+  reports it through `Provider::name` and every provider-error prefix — so
+  the banner, `agent-cli providers`, `selftest`, `/list`, and the
+  `provider error (...)` lines all read `strata`. A `[provider.codex]`
+  table in the same file is never consulted by the alias (the v0.30.1 fix's
+  guarantee, now structural: the slots are separate). Configs that set
+  `kind = "codex"` are unaffected.
+
 ## [0.30.1]
 
 ### Fixed

@@ -72,17 +72,17 @@ models only (`claude-*` is on `.../zen/v1`); list what it serves with
 `GET {base_url}/models`. You can still override any field in
 `[provider.opencode]`. See the configuration example below.
 
-**`strata`** is a convenience alias for the codex provider with the defaults of
+**`strata`** is a convenience alias of the codex provider with the defaults of
 the Strata local inference engine (github.com/Niko1221/Strata) — an
 OpenAI-compatible server on your own PC. Set `kind = "strata"` only —
 `base_url` (`http://127.0.0.1:8080/v1`) and `model` (`strata`) are
 auto-populated, and **no API key is configured**: the loopback endpoint needs
-no key. **No key is sent at all** (no `Authorization` header), which also makes
-keyless OpenAI-compatible servers usable through plain `[provider.codex]` with
-no `api_key_env`. A Strata bound to a non-loopback host with a key passes its
-own `api_key_env`; the keyed codex path serves it. The Strata server must be
-running before the session starts. You can still override any field in
-`[provider.strata]`. See [`doc/providers/strata.md`](doc/providers/strata.md).
+no key, so **no `Authorization` header is sent at all**. The provider is
+**displayed as `strata` everywhere** — the startup banner, `agent-cli
+providers`, `selftest`, and provider errors — not as the `codex` wire it
+rides on. A Strata bound to a non-loopback host with a key passes its own
+`api_key_env`. You can still override any field in `[provider.strata]`. See
+[`doc/providers/strata.md`](doc/providers/strata.md).
 
 **`claude-code`** runs the Claude Code CLI installed on the machine and adapts
 it to the provider interface, so `agent-cli` wraps it with personas, peer IPC,

@@ -26,7 +26,7 @@ That is the whole configuration. `kind = "strata"` is a convenience alias of the
 | `model` | `strata` | The engine serves **any model name** — the id is name-agnostic; the quant/family (`--model iq2_xs`, `--family coder`) is chosen at engine launch, not per request |
 | `api_key_env` | *(none)* | **No `Authorization` header is sent at all.** Strata's loopback endpoint accepts any key, so none is configured |
 
-Using the alias keeps the codex wire and diagnostics; after normalization agent-cli's kind becomes `codex` internally, so `agent-cli providers` displays strata's entry state under `[provider.codex]`-family checks.
+The alias keeps the codex wire and diagnostics, and **agent-cli keeps calling the kind `strata` everywhere it is displayed** — the startup banner's `provider` row, the registry and `/list`, selftest and the `providers` listing, and the `provider error (strata)` prefixes. Internally the codex provider serves the `[provider.strata]` slot (defaults and overrides as above), and a `[provider.codex]` table in the file is never consulted.
 
 ## Explicit table / overrides
 
