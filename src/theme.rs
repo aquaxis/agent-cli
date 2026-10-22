@@ -79,14 +79,19 @@ pub enum Role {
     /// dim cyan so it reads as a companion of the progress display rather
     /// than as a log line.
     Peer,
+    /// The scrolled view's marker row (「Message below」, `app.rs`'s
+    /// `SCROLLED_MARK`): reverse video like `Selection`, so the label reads
+    /// inverted against the block the view sits over.
+    Scrolled,
 }
 
 /// SGR parameters of a role: the foreground colour code (ANSI 16 only — 30–37
 /// and 90–97) and the attributes applied with it (`1` bold, `2` dim).
 ///
-/// No background colour and no `reverse`: only the foreground is set, so the
-/// terminal's own palette decides the shades and the scheme stays readable on
-/// both light and dark backgrounds.
+/// `Role::Selection` and `Role::Scrolled` set the `REVERSE` attribute with no
+/// colour of their own; every other role sets the foreground only, so the
+/// terminal's palette decides the shades and the scheme stays readable on both
+/// light and dark backgrounds.
 fn sgr(role: Role) -> (Option<u8>, &'static [u8]) {
     const BOLD: &[u8] = &[1];
     const DIM: &[u8] = &[2];
@@ -115,6 +120,7 @@ fn sgr(role: Role) -> (Option<u8>, &'static [u8]) {
         Role::Failure => (Some(RED), BOLD),
         Role::Info => (Some(BLUE), NONE),
         Role::Selection => (None, REVERSE),
+        Role::Scrolled => (None, REVERSE),
         Role::Confirm => (Some(YELLOW), BOLD),
         Role::Cancelled => (Some(BRIGHT_BLACK), DIM),
         Role::Hint => (Some(YELLOW), NONE),
@@ -312,7 +318,7 @@ mod tests {
     use super::*;
 
     /// Every role, so the palette table itself is covered.
-    const ALL_ROLES: [Role; 17] = [
+    const ALL_ROLES: [Role; 18] = [
         Role::PromptSymbol,
         Role::InputText,
         Role::HistoryEntry,
@@ -330,6 +336,7 @@ mod tests {
         Role::Hint,
         Role::Banner,
         Role::BannerDetail,
+        Role::Scrolled,
     ];
 
     #[test]
@@ -364,6 +371,9 @@ mod tests {
         assert_eq!(paint(Role::Success, "✔"), "\u{1b}[1;32m✔\u{1b}[0m");
         assert_eq!(paint(Role::Failure, "✗"), "\u{1b}[1;31m✗\u{1b}[0m");
         assert_eq!(paint(Role::Info, "i"), "\u{1b}[34mi\u{1b}[0m");
+        // The scrolled-view marker is reverse video, like the selection
+        // highlight: the label reads inverted, no colour of its own.
+        assert_eq!(paint(Role::Scrolled, "x"), "\u{1b}[7mx\u{1b}[0m");
         assert_eq!(paint(Role::Confirm, "y/N"), "\u{1b}[1;33my/N\u{1b}[0m");
         assert_eq!(paint(Role::Banner, "b"), "\u{1b}[1;35mb\u{1b}[0m");
         // The startup detail rows carry the terminal's default foreground, so

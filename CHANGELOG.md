@@ -4,6 +4,25 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.33.0]
+
+### Changed
+
+- **The scroll marker reads `Message below` in inverted text and
+  background.** While you are scrolled back from the log's bottom, the
+  screen's bottom line — the pinned clock's row while a turn runs, a
+  one-row block beneath the pinned prompt line at an idle prompt — shows
+  `Message below` styled in reverse video (the mouse-selection's shipped
+  mechanism) instead of the spinner-and-elapsed display, which is
+  withheld while the view is off the bottom and returns with it. The
+  marker replaces the interim `▼スクロール中` face.
+
+### Fixed
+
+- The scrolled-marker test that asserted an impossible narrow-width
+  cut (`▼スクロ...` at width 8): the shipped truncation yields
+  `Messag…`, and the assertion now says so.
+
 ## [0.32.0]
 
 ### Added
