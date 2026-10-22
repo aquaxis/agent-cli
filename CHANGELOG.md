@@ -4,6 +4,56 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.31.0]
+
+### Fixed
+
+- **The running turn's spinner-and-elapsed clock no longer disappears when
+  you scroll.** Two mechanisms, both repaired. The scrolled view used to pin
+  the clock only while the prompt was *Pending* — a turn running at an idle
+  prompt (a peer's prompt, a `/send --ask`) had no clock anywhere on the
+  scrolled screen — and the pinned row was painted directly on the terminal,
+  erased by any redraw. The pin now rides in the transcript: the scrolled
+  view appends the fresh spinner-and-elapsed row to the session log it
+  scrolls, so one wheel notch up moves the older beats as history while the
+  newest is always pinned at the bottom of the screen — for as long as a
+  turn runs, whatever the prompt state. The log's scrollable range ends
+  above the clock row.
+- **A turn that ends while you are scrolled now leaves its outcome line.**
+  `finish` used to return before recording when its block was suspended
+  (the scrolled view owning the screen), so returning to the bottom showed
+  no `✔/✗ <elapsed>` row at all. The outcome row is now always recorded; a
+  suspended finish writes nothing to the live screen — the overlay's body
+  would repair over it — and the record is what the live view shows on
+  return.
+- **A mouse-drag selection finishes to a clipboard copy.** The copied text
+  is resolved against the view offset at release, so a running turn's
+  streamed output between press and release can no longer shift the copied
+  range away from what was highlighted; and a press on the painted
+  indicator block no longer consumes the press a drag was meant to start
+  with (the toggle keeps its behaviour for a genuine hit). The `[clip]`
+  report, the OSC 52 route and the empty-gesture silence are unchanged.
+
+### Added
+
+- **A spawned subagent reports its run state on the terminal's bottom
+  line.** While agent-cli waits at the prompt, each of its live direct
+  children adds one row beneath the prompt (or beneath the pinned clock, on
+  the scrolled screen): the peer's name (id when unnamed), its provider and
+  its operating time, refreshed at the display's own beat. The line is
+  decided by the registry's liveness — a child that exits is reaped from the
+  next render, no completion line, and a re-spawn reusing the name is a
+  fresh row — and it is never written to the session log (a log line for a
+  peer's state would outlive the peer and misreport liveness). The clock's
+  row and the prompt's rows are never taken by the line; it is additive.
+- **Pressing `Esc` always leaves the prompt displayed.** Returning to the
+  live view from a scrolled screen mid-turn used to leave the bottom of the
+  screen empty (the redraw was skipped while a turn ran, and the resumed
+  progress indicator does not paint until the next agent event). The
+  return now re-displays the prompt in every state — idle, pending,
+  approval — reusing the redraw the other paths already make; the turn's
+  clock resumes on the live screen through its standing path.
+
 ## [0.30.2]
 
 ### Fixed

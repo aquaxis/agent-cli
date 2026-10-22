@@ -74,6 +74,11 @@ pub enum Role {
     /// information, left in the terminal's default foreground so it reads as
     /// ordinary text rather than as something to skim past.
     BannerDetail,
+    /// The detached subagents' run-state line at the bottom of the screen
+    /// (name / id, provider, elapsed): a transient status row, set apart in
+    /// dim cyan so it reads as a companion of the progress display rather
+    /// than as a log line.
+    Peer,
 }
 
 /// SGR parameters of a role: the foreground colour code (ANSI 16 only — 30–37
@@ -115,6 +120,7 @@ fn sgr(role: Role) -> (Option<u8>, &'static [u8]) {
         Role::Hint => (Some(YELLOW), NONE),
         Role::Banner => (Some(MAGENTA), BOLD),
         Role::BannerDetail => (None, NONE),
+        Role::Peer => (Some(CYAN), DIM),
     }
 }
 

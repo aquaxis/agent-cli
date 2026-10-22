@@ -313,7 +313,7 @@ provider    = "tavily"
 | `color` | string | `"auto"` | Colour the output: `"auto"` (colour a stream only when it is an interactive terminal and `NO_COLOR` is unset), `"always"`, `"never"`. See "UI Display Mode" below |
 | `mouse_scroll` | bool | `true` | Scroll the session log with the mouse wheel, keeping the prompt line pinned. Only active when stdin and stderr are both terminals; see "UI Display Mode" below |
 | `scrollback_lines` | integer | `2000` | Lines of session output kept for scrolling back. `0` keeps none, which also disables the wheel scrollback |
-| `mouse_select` | bool | `true` | Drag the left button over the log to select it; the selection is copied to the clipboard on release. Only active while `mouse_scroll` is on |
+| `mouse_select` | bool | `true` | Drag the left button over the log to select it; the selection is copied to the clipboard on release. The copied range is what was highlighted at release, and a turn streaming lines under the drag does not shift it. Only active while `mouse_scroll` is on |
 | `copy_command` | string | `""` | Command a copied selection is piped to (e.g. `"wl-copy"`, `"xclip -selection clipboard"`). Empty writes it to the terminal as OSC 52, which works over SSH — inside tmux both the bare and the passthrough form are written, and `agent-cli doctor` reports which tmux settings deliver each |
 
 ### `[shell]`

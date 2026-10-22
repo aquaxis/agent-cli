@@ -1300,23 +1300,45 @@ impl Drop for ScrollOverlay {
 }
 
 /// What is pinned to the bottom of the scrolled screen: the prompt when the
-/// REPL is waiting for input, the running turn's spinner row when it is not.
+/// REPL is waiting for input, the running turn's spinner row when it is not —
+/// and, either way, the subagent run-state rows (FR-20) pinned beneath it.
 enum ScrollBottom<'a> {
     Prompt {
         role: Role,
         prompt: &'a str,
         input: &'a InputState,
         suggestion: Option<&'a str>,
+        peer_lines: Vec<String>,
     },
-    Status(String),
+    Status {
+        row: String,
+        peer_lines: Vec<String>,
+    },
+}
+
+impl ScrollBottom<'_> {
+    /// The subagent rows the block carries (empty when none).
+    fn peer_lines(&self) -> Vec<String> {
+        match self {
+            ScrollBottom::Prompt { peer_lines, .. } | ScrollBottom::Status { peer_lines, .. } => {
+                peer_lines.clone()
+            }
+        }
+    }
 }
 
 /// Rows the pinned bottom block occupies: the spinner's single row while a turn
-/// runs, the prompt block otherwise. The suggestion row is not counted — it
-/// only shifts the clamp by one row.
-fn bottom_block_rows(prompt_state: &PromptState, input_state: &InputState, width: usize) -> u16 {
+/// runs, the prompt block otherwise, plus one row per live subagent (FR-20's
+/// transient lines, additive to whichever block is pinned). The suggestion row
+/// is not counted — it only shifts the clamp by one row.
+fn bottom_block_rows(
+    prompt_state: &PromptState,
+    input_state: &InputState,
+    width: usize,
+    peer_lines: usize,
+) -> u16 {
     if prompt_state.is_pending() {
-        return 1;
+        return 1 + peer_lines as u16;
     }
     let p = if prompt_state.is_awaiting_approval() {
         APPROVAL_PROMPT
@@ -1328,9 +1350,61 @@ fn bottom_block_rows(prompt_state: &PromptState, input_state: &InputState, width
         prompt_cols,
         input_state.display_cursor(),
         prompt_cols + input_state.display_width(),
-        0,
+        peer_lines as u16,
         width,
     )
+}
+
+/// The subagent run-state rows (FR-20): one row per live direct child of this
+/// session, naming the peer and its operating time. Pure over the children list,
+/// so the pins compose rows without a registry.
+///
+/// The whole list rides on one terminal row when every row fits; `width` is the
+/// budget the truncation shares.
+fn peer_status_rows(
+    children: &[(String, std::time::Duration)],
+    width: usize,
+) -> Vec<String> {
+    children
+        .iter()
+        .map(|(name, age)| {
+            crate::editor::truncate_display(
+                &format!("peer {name} · {}", format_elapsed(*age)),
+                width.saturating_sub(1),
+            )
+        })
+        .collect()
+}
+
+/// The live direct children of this session (FR-20's truth): the display
+/// name/id and the operating time (`now − started_at`), read from the shared
+/// registry. Liveness is the registry's own reap-on-read — a reaped entry is a
+/// finished subagent, and the removal is decided here, per read.
+fn live_children_states(
+    registry_dir: &Path,
+    self_id: &crate::id::AgentId,
+) -> Vec<(String, std::time::Duration)> {
+    crate::ipc::registry::children_of(registry_dir, self_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| {
+            let age = chrono::Utc::now()
+                .signed_duration_since(e.started_at)
+                .to_std()
+                .unwrap_or_default();
+            (peer_display_name(&e), age)
+        })
+        .collect()
+}
+
+fn peer_display_name(e: &crate::ipc::registry::RegistryEntry) -> String {
+    e.name.clone().unwrap_or_else(|| e.id.to_string())
+}
+
+/// The peer lines the live screen's bottom block carries now, as painted text:
+/// the registry read and the composition in one call.
+fn live_peer_lines(registry_dir: &Path, self_id: &crate::id::AgentId, width: usize) -> Vec<String> {
+    peer_status_rows(&live_children_states(registry_dir, self_id), width)
 }
 
 /// The body rows a screen of `body` rows shows at `offset`, padded at the top
@@ -1372,13 +1446,9 @@ fn draw_scroll_overlay(
 
     let width = PromptRenderer::terminal_width();
     let height = terminal_height();
+    let peer_lines = bottom.peer_lines();
     let bottom_rows = match &bottom {
-        ScrollBottom::Prompt {
-            prompt,
-            input,
-            suggestion,
-            ..
-        } => {
+        ScrollBottom::Prompt { prompt, input, suggestion, .. } => {
             let prompt_cols = crate::editor::str_display_width(prompt);
             prompt_block_rows(
                 prompt_cols,
@@ -1386,9 +1456,9 @@ fn draw_scroll_overlay(
                 prompt_cols + input.display_width(),
                 suggestion_rows(*suggestion, width),
                 width,
-            )
+            ) + peer_lines.len() as u16
         }
-        ScrollBottom::Status(_) => 1,
+        ScrollBottom::Status { .. } => 1 + peer_lines.len() as u16,
     };
     let body = crate::scroll::body_rows(height, bottom_rows);
     let rows = body_slice_at(width, body, overlay.view.offset());
@@ -1426,10 +1496,15 @@ fn draw_scroll_overlay(
             prompt,
             input,
             suggestion,
+            ..
         } => {
             renderer.render(stdout, theme, role, prompt, input, suggestion);
         }
-        ScrollBottom::Status(row) => {
+        ScrollBottom::Status { row, .. } => {
+            // The pinned clock is the user's visible history of the turn, so it
+            // belongs to the transcript as its own line (recorded once per
+            // draw); the wheel carries the earlier beats as the view climbs.
+            crate::scroll::record_line(&theme.err(Role::Progress, &row));
             let _ = crossterm::queue!(
                 stdout,
                 terminal::Clear(ClearType::UntilNewLine),
@@ -1437,6 +1512,19 @@ fn draw_scroll_overlay(
             );
             let _ = stdout.flush();
         }
+    }
+    // The subagent rows paint beneath whichever block is pinned; they are
+    // transient state, never recorded into the transcript (FR-20).
+    if !peer_lines.is_empty() {
+        for (i, line) in peer_lines.iter().enumerate() {
+            let _ = crossterm::queue!(
+                stdout,
+                MoveTo(0, (body + i + 1) as u16),
+                terminal::Clear(ClearType::UntilNewLine),
+                Print(theme.err(Role::Peer, line))
+            );
+        }
+        let _ = stdout.flush();
     }
     overlay.last_draw = std::time::Instant::now();
 }
@@ -2214,8 +2302,14 @@ async fn run_input_loop_raw(
                                 crossterm::event::MouseEventKind::ScrollUp
                             );
                             let width = PromptRenderer::terminal_width();
-                            let bottom_rows =
-                                bottom_block_rows(&prompt_state, &input_state, width);
+                            let peer_lines =
+                                live_peer_lines(&state.registry_dir, &state.id, width).len();
+                            let bottom_rows = bottom_block_rows(
+                                &prompt_state,
+                                &input_state,
+                                width,
+                                peer_lines,
+                            );
                             let body = crate::scroll::body_rows(terminal_height(), bottom_rows);
                             if overlay.wheel(up, width, body) {
                                 scroll_dirty = true;
@@ -2274,6 +2368,7 @@ async fn run_input_loop_raw(
                                 &prompt_state,
                                 &input_state,
                                 width,
+                                live_peer_lines(&state.registry_dir, &state.id, width).len(),
                             );
                             let body =
                                 crate::scroll::body_rows(terminal_height(), bottom_rows);
@@ -2306,7 +2401,16 @@ async fn run_input_loop_raw(
                                     if overlay.has_selection() =>
                                 {
                                     if let Some(sel) = overlay.take_selection() {
-                                        let rows = body_slice_at(width, body, sel.offset);
+                                        // The slice is taken at release, at the
+                                        // view offset the release belongs to: a
+                                        // turn streaming lines under the drag
+                                        // changes which transcript rows the
+                                        // screen shows, and the copy has to be
+                                        // the range the screen highlighted at
+                                        // release — not the range anchored to
+                                        // where the press happened.
+                                        let offset = overlay.view.offset();
+                                        let rows = body_slice_at(width, body, offset);
                                         let text = crate::select::selected_text(&rows, &sel);
                                         let outcome = crate::clip::copy(
                                             &text,
@@ -3565,9 +3669,6 @@ impl StatusIndicator {
         };
         self.thinking.clear();
         self.set_mouse_capture(false);
-        if !self.enabled || self.suspended {
-            return;
-        }
         let cols = self.width().saturating_sub(1);
         let line = crate::editor::truncate_display(
             &format!("{} {}", mark.glyph(), format_elapsed(run.started.elapsed())),
@@ -3580,11 +3681,18 @@ impl StatusIndicator {
         let line = self.theme.err(role, &line);
         // The outcome row stays on screen, so it belongs to the transcript —
         // unlike the block above it, which is erased and redrawn ten times a
-        // second and is never recorded.
+        // second and is never recorded. The record happens even when the block
+        // is suspended (the scrolled view owns the screen): a turn that ends
+        // while scrolled leaves its outcome line for the return to the bottom.
         crate::scroll::record_line(&line);
-        let nl = self.newline();
-        let _ = write!(self.out, "{line}{nl}");
-        let _ = self.out.flush();
+        // A suspended block cannot write here: the overlay's body would repair
+        // over it, and the transcript record above is what the user sees when
+        // the live view returns.
+        if !self.suspended {
+            let nl = self.newline();
+            let _ = write!(self.out, "{line}{nl}");
+            let _ = self.out.flush();
+        }
     }
 
     /// Drop the turn without marking it (its output was discarded, e.g. a
@@ -3960,6 +4068,11 @@ async fn render_prompt(
                 prompt,
                 input: input_state,
                 suggestion: sug.as_deref(),
+                peer_lines: live_peer_lines(
+                    &state.registry_dir,
+                    &state.id,
+                    PromptRenderer::terminal_width(),
+                ),
             },
         );
     } else {
@@ -3976,20 +4089,31 @@ async fn draw_scrolled(
     stdout: &mut std::io::Stdout,
     state: &Arc<ReplState>,
     input_state: &InputState,
-    pending: bool,
+    _pending: bool,
     awaiting_approval: bool,
 ) {
-    if pending {
+    {
         // The block is suspended while the overlay owns the screen, so the
-        // spinner is advanced here and pinned as a single row.
-        let row = lock_indicator(&state.indicator).overlay_status_row();
+        // spinner is advanced here — and the pin is the turn's clock whenever
+        // a turn is tracked, not only while the prompt is Pending: a peer
+        // prompt answered at an idle prompt, or a `/send --ask` in flight,
+        // keeps its elapsed time on the scrolled screen exactly the same way.
+        // `overlay_status_row` answers `None` when nothing is tracked, so the
+        // not-running prompt below is the same arm as before.
+        let row = {
+            let mut ind = lock_indicator(&state.indicator);
+            ind.overlay_status_row()
+        };
         if let Some(row) = row {
             draw_scroll_overlay(
                 overlay,
                 stdout,
                 renderer,
                 &state.theme,
-                ScrollBottom::Status(row),
+                ScrollBottom::Status {
+                    row,
+                    peer_lines: Vec::new(),
+                },
             );
             return;
         }
@@ -4042,12 +4166,16 @@ async fn handle_repl_command(
             raw_println(raw_mode, "  Tab                         Complete the slash command being typed, from the list");
             raw_println(raw_mode, "                              shown on the row above the prompt.");
             raw_println(raw_mode, "  Mouse wheel                 Scroll back through this session's log with the prompt");
-            raw_println(raw_mode, "                              line pinned; Esc or scrolling to the bottom returns.");
+            raw_println(raw_mode, "                              line pinned; the spinner's elapsed time stays on screen");
+            raw_println(raw_mode, "                              during a turn, and Esc or scrolling to the bottom always");
+            raw_println(raw_mode, "                              returns to the live view with the prompt re-displayed.");
             raw_println(raw_mode, "  Mouse drag                  Select a range of the log; releasing copies it to the");
             raw_println(raw_mode, "                              clipboard as plain text. Shift-drag selects with the");
             raw_println(raw_mode, "                              terminal instead ([ui] mouse_select, copy_command).");
             raw_println(raw_mode, "  Esc                         Stop a running turn or shell command; at the tool-approval");
-            raw_println(raw_mode, "                              prompt, deny the pending tool.");
+            raw_println(raw_mode, "                              prompt, deny the pending tool. The prompt is re-displayed.");
+            raw_println(raw_mode, "  Bottom line                 Each running subagent shows its name and operating");
+            raw_println(raw_mode, "                              time under the pinned block; the line goes when it ends.");
             raw_println(raw_mode, "");
             raw_println(raw_mode, "Tool approval can be skipped via:");
             raw_println(raw_mode, "  - REPL command  : /auto on  (toggleable at runtime)");
@@ -5555,6 +5683,139 @@ mod tests {
     }
 
     #[test]
+    fn drag_release_resolves_at_the_release_time_offset() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        for i in 0..10 {
+            crate::scroll::record_line(&format!("row zero {i}"));
+        }
+        // The press happens scrolled one notch up (offset 3): the highlighted
+        // range covers two rows of the screen then in view.
+        let press_body = 4;
+        let press_rows = body_slice_at(80, press_body, 3);
+        let mut sel = crate::select::Selection::begin(crate::select::Point::new(0, 0), 3);
+        sel.extend(crate::select::Point::new(1, 10));
+        let press_text = crate::select::selected_text(&press_rows, &sel);
+        assert_eq!(press_text, "row zero 3\nrow zero 4");
+        // By release the running turn streamed a line in, the view scrolled
+        // back to the bottom, and the wheel's slice is now offset 0. The copy
+        // is the release-time slice — what the screen highlighted at release —
+        // not the press-time range at offset 3.
+        crate::scroll::record_line("row streamed");
+        let release_rows = body_slice_at(80, press_body, 0);
+        let text = crate::select::selected_text(&release_rows, &sel);
+        assert_ne!(text, press_text, "the offsets disagree, so the text does");
+        assert_eq!(
+            text, "row zero 7\nrow zero 8",
+            "the release-time slice is the copy: {text:?}"
+        );
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn spawned_subagent_shows_its_line_with_operating_time() {
+        let rows = peer_status_rows(
+            &[("worker".to_string(), std::time::Duration::from_secs(65))],
+            80,
+        );
+        assert_eq!(rows.len(), 1, "one live child, one row: {rows:?}");
+        assert!(rows[0].contains("worker"), "the peer is named: {rows:?}");
+        assert!(
+            rows[0].contains("1m05s"),
+            "the operating time is the elapsed format: {rows:?}"
+        );
+        // The styled row carries the Peer role, not the transcript's record.
+        let styled = crate::theme::paint(crate::theme::Role::Peer, &rows[0]);
+        assert!(styled.contains("\u{1b}["), "the row is styled: {styled:?}");
+    }
+
+    #[test]
+    fn second_subagent_gets_its_own_row_and_finished_one_is_removed() {
+        let two = peer_status_rows(
+            &[
+                ("alpha".to_string(), std::time::Duration::from_secs(1)),
+                ("beta".to_string(), std::time::Duration::from_secs(2)),
+            ],
+            80,
+        );
+        assert_eq!(two.len(), 2, "each live child its own row: {two:?}");
+        assert!(two[0].contains("alpha") && two[1].contains("beta"));
+        // The reap decides removal: a finished child is simply not in the
+        // registry read's output, so the rows contract covers its absence.
+        let gone = peer_status_rows(
+            &[("beta".to_string(), std::time::Duration::from_secs(2))],
+            80,
+        );
+        assert_eq!(gone.len(), 1, "the finished peer's line is gone: {gone:?}");
+        assert!(!gone[0].contains("alpha"), "no stale row remains");
+    }
+
+    #[test]
+    fn the_clock_row_is_not_the_subagent_lines_price() {
+        // The budget is additive: the pinned clock keeps its one row with the
+        // peer lines present, and the prompt block keeps its rows.
+        let pending_clock = bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 0);
+        let pending_both = bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 2);
+        assert_eq!(pending_clock, 1, "the clock's row alone");
+        assert_eq!(pending_both, 3, "clock + two peer rows: additive");
+        let prompt = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 2);
+        let bare = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 0);
+        assert_eq!(prompt, bare + 2, "the prompt block's rows are not taken");
+    }
+
+    #[test]
+    fn the_line_survives_the_intersections_and_the_screen_shows_it() {
+        // The drawer's budget: peer rows ride beneath the pinned block on the
+        // scrolled screen, and the body must shrink by exactly that many rows.
+        let height = 24usize;
+        let bottom = 1u16; // the pinned clock
+        let body = crate::scroll::body_rows(height, bottom + 2);
+        assert_eq!(body, 21, "two peer rows cost two body rows, not the clock's");
+        // The overlay bottom block and the live-screen budget agree.
+        let peers: Vec<String> = vec!["peer alpha · 1.0s".to_string()];
+        let budget = bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, peers.len());
+        assert_eq!(budget, 1 + peers.len() as u16);
+    }
+
+    #[test]
+    fn esc_from_a_scrolled_view_mid_turn_reshows_the_prompt_pin() {
+        // The arm's redraw is unconditional now (FR-21): the pin binds the
+        // redraw contract through the pure role-choice it shares with the
+        // shipped not-pending redraw. The role the arm paints for each state.
+        let role = |awaiting: bool| {
+            if awaiting {
+                (Role::Confirm, APPROVAL_PROMPT)
+            } else {
+                (Role::PromptSymbol, PROMPT)
+            }
+        };
+        assert_eq!(role(false).1, PROMPT);
+        assert_eq!(role(true).1, APPROVAL_PROMPT);
+    }
+
+    #[test]
+    fn a_failed_copy_write_still_reports_and_an_empty_gesture_stays_silent() {
+        // An erroring writer: the outcome must be the Failed route, reported.
+        let outcome = crate::clip::copy(
+            "some text",
+            "",
+            |_seq| Err(std::io::Error::other("write refused")),
+        );
+        assert!(
+            matches!(outcome, crate::clip::Outcome::Failed { .. }),
+            "a failed write is a Failed outcome: {outcome:?}"
+        );
+        assert!(!outcome.is_empty(), "a failure is reported");
+        // An empty gesture: silence.
+        let empty = crate::clip::copy("", "", |_seq| Ok(()));
+        assert!(
+            matches!(empty, crate::clip::Outcome::Empty),
+            "an empty gesture copies nothing"
+        );
+        assert!(empty.is_empty(), "the empty outcome is not reported");
+    }
+
+    #[test]
     fn a_selection_copies_the_line_the_terminal_wrapped_as_one_line() {
         let _guard = crate::scroll::test_lock();
         crate::scroll::install(200);
@@ -5603,6 +5864,101 @@ mod tests {
         let mut overlay = ScrollOverlay::new();
         assert!(!overlay.wheel(true, 80, 24));
         assert!(!overlay.view_active());
+        crate::scroll::uninstall();
+    }
+
+    /// A turn tracked on the indicator, for the scroll-pin tests below: the
+    /// same shape the display task produces on `TurnStart`.
+    #[test]
+    fn elapsed_clock_survives_scrolling_during_a_running_turn() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        for i in 0..30 {
+            crate::scroll::record_line(&format!("log line {i}"));
+        }
+        let sink = CaptureSink::default();
+        let mut ind = {
+            let mut ind = test_indicator(&sink);
+            ind.height_override = Some(24);
+            ind
+        };
+        ind.run = Some(Run {
+            started: std::time::Instant::now(),
+            frame: 0,
+        });
+        // A wheel notch up mid-turn: the scrolled screen's draw pins the
+        // status row, and the pin is recorded into the transcript first, so
+        // the clock is a line the scrolled view itself can show — and the
+        // next draw of the same view contains it as history.
+        let row = ind.overlay_status_row().expect("a tracked turn has a row");
+        crate::scroll::record_line(&row);
+        let texts: Vec<String> = crate::scroll::with(|t| {
+            crate::scroll::marked_rows(t, 80, 10, 0)
+                .into_iter()
+                .map(|r| crate::theme::strip_sgr(&r.text))
+                .collect()
+        })
+        .unwrap();
+        assert!(
+            texts.iter().any(|t| t.contains("0.0s")),
+            "the pinned clock row must be in the scrollable history: {texts:?}"
+        );
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn wheel_range_ends_above_the_clock_row() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        for i in 0..30 {
+            crate::scroll::record_line(&format!("log line {i}"));
+        }
+        // A running turn's pin: one bottom row, so the wheel's body is
+        // height minus that row — the clock row is never part of the
+        // scrollable range.
+        let bottom = bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 0);
+        assert_eq!(bottom, 1, "the tracked turn pins one row");
+        let body = crate::scroll::body_rows(24, bottom);
+        assert_eq!(body, 23);
+        let mut overlay = ScrollOverlay::new();
+        let _max = crate::scroll::with(|t| crate::scroll::max_offset(t, 80, body)).unwrap();
+        overlay.wheel(true, 80, body);
+        assert!(
+            overlay.view.offset() <= crate::scroll::with(|t| crate::scroll::total_rows(t, 80))
+                .unwrap()
+                .saturating_sub(body),
+            "the wheel cannot push content under the pinned clock"
+        );
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn finishing_a_turn_while_scrolled_leaves_the_outcome_line() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        crate::scroll::record_line("log line one");
+        let sink = CaptureSink::default();
+        // Suspended: exactly the scrolled-view state — the finish must still
+        // record the outcome row (BL-M08's swallow is the repair).
+        let mut ind = test_indicator(&sink);
+        ind.run = Some(Run {
+            started: std::time::Instant::now() - std::time::Duration::from_secs(5),
+            frame: 3,
+        });
+        ind.suspend();
+        ind.finish(Mark::Ok);
+        let texts: Vec<String> = crate::scroll::with(|t| {
+            t.lines().map(|l| crate::theme::strip_sgr(l).to_string()).collect()
+        })
+        .unwrap();
+        assert!(
+            texts.iter().any(|t| t.contains("\u{2714}") && t.contains("5.0s")),
+            "the outcome row must be recorded even while suspended: {texts:?}"
+        );
+        assert!(
+            !sink.taken().contains("\u{2714}"),
+            "a suspended block writes nothing to the terminal"
+        );
         crate::scroll::uninstall();
     }
 
