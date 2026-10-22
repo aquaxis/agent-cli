@@ -4,6 +4,24 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.30.1]
+
+### Fixed
+
+- **`kind = "strata"` no longer inherits the `[provider.codex]` table.**
+  The strata alias built its connection on the existing codex entry,
+  merging field by field — so a config whose `[provider.codex]` names
+  `api_key_env = "OPENAI_API_KEY"` (the documented shape) turned the
+  keyless alias into a doomed OpenAI call: the session started as
+  `codex` against `https://api.openai.com/v1` and failed at
+  construction with `env var OPENAI_API_KEY not set`, no matter that
+  strata needs no key. The alias is now composed from
+  `[provider.strata]` alone plus the keyless defaults
+  (`base_url http://127.0.0.1:8080/v1`, `model strata`, no key
+  material), and an explicit `[provider.strata] api_key_env` still opts
+  into the keyed path. Pinned by
+  `strata_alias_never_inherits_the_codex_table_s_key`.
+
 ## [0.30.0]
 
 ### Added

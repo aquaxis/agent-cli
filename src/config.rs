@@ -1271,48 +1271,35 @@ impl Config {
         self.provider.kind = "opencode".to_string();
     }
 
-    /// When `provider.kind` is `"strata"`, apply Strata-specific defaults to
-    /// the `[provider.codex]` entry (filling `None` fields) and normalize the
-    /// kind to `"codex"`. When the kind is not `"strata"`, this is a no-op.
+    /// When `provider.kind` is `"strata"`, build the codex-shaped entry from
+    /// `[provider.strata]` plus Strata's defaults, and normalize the kind to
+    /// `"codex"`. When the kind is not `"strata"`, this is a no-op.
     ///
     /// Strata (local OpenAI-compatible engine) connects with the same
     /// Chat Completions wire codex speaks, over its documented endpoint
     /// `http://127.0.0.1:8080/v1`, and needs no API key: the loopback
-    /// server rejects nothing (`api_key_env` stays `None`), and the model
-    /// id is name-agnostic — any name is served, the docs use `strata`.
+    /// server rejects nothing (`api_key_env` stays `None` unless
+    /// `[provider.strata]` names one), and the model id is name-agnostic.
     pub fn apply_strata_defaults(&mut self) {
         if self.provider.kind != "strata" {
             return;
         }
-        // A user-written `[provider.strata]` overrides field by field; the
-        // defaults fill only what the table (or the codex entry) leaves unset.
-        // `api_key_env` is never defaulted — the loopback endpoint needs none,
-        // and a keyed exposure is opted into by naming an env var explicitly.
-        if let Some(strata) = self.provider.strata.take() {
-            let entry = self.provider.codex.get_or_insert_with(Default::default);
-            if strata.model.is_some() {
-                entry.model = strata.model;
-            }
-            if strata.base_url.is_some() {
-                entry.base_url = strata.base_url;
-            }
-            if strata.temperature.is_some() {
-                entry.temperature = strata.temperature;
-            }
-            if strata.request_timeout_secs.is_some() {
-                entry.request_timeout_secs = strata.request_timeout_secs;
-            }
-            if strata.api_key_env.is_some() {
-                entry.api_key_env = strata.api_key_env;
-            }
-        }
-        let entry = self.provider.codex.get_or_insert_with(Default::default);
+        // The strata connection is built from `[provider.strata]` alone plus
+        // the keyless strata defaults — never from a `[provider.codex]`
+        // table the file happens to carry: an alias must not inherit the
+        // other kind's key material (a codex config with `api_key_env` set
+        // would otherwise turn the keyless alias into a doomed OpenAI call).
+        let mut entry = self.provider.strata.take().unwrap_or_default();
         if entry.base_url.is_none() {
             entry.base_url = Some("http://127.0.0.1:8080/v1".to_string());
         }
         if entry.model.is_none() {
             entry.model = Some("strata".to_string());
         }
+        // `api_key_env` is never defaulted — the loopback endpoint needs
+        // none, and a keyed exposure is opted into by naming an env var
+        // explicitly in `[provider.strata]`.
+        self.provider.codex = Some(entry);
         self.provider.kind = "codex".to_string();
     }
 }
@@ -2372,6 +2359,52 @@ kind = "strata"
             entry.api_key_env, None,
             "a strata connection carries no key by default"
         );
+    }
+
+    #[test]
+    fn strata_alias_never_inherits_the_codex_table_s_key() {
+        // The reported failure: a file that carries `[provider.codex]` with
+        // `api_key_env` (the documented codex shape) plus `kind = "strata"`
+        // built the alias on top of the codex table, so the keyless alias
+        // inherited `OPENAI_API_KEY` and died at the OpenAI key gate. The
+        // alias composes from `[provider.strata]` plus the strata defaults
+        // only — no field of a `[provider.codex]` table may leak in.
+        let toml_src = r#"
+[provider]
+kind = "strata"
+
+[provider.codex]
+model       = "gpt-4.1"
+api_key_env = "OPENAI_API_KEY"
+base_url    = "https://api.openai.com/v1"
+"#;
+        let mut cfg: Config = toml::from_str(toml_src).unwrap();
+        cfg.apply_strata_defaults();
+        assert_eq!(cfg.provider.kind, "codex");
+        let entry = cfg.provider.codex.as_ref().unwrap();
+        assert_eq!(entry.base_url.as_deref(), Some("http://127.0.0.1:8080/v1"));
+        assert_eq!(entry.model.as_deref(), Some("strata"));
+        assert!(
+            entry.api_key_env.is_none(),
+            "the alias must not inherit the codex table's key: {:?}",
+            entry.api_key_env
+        );
+        // An explicit `[provider.strata]` still overrides, and a keyed
+        // strata exposure is the user's own election.
+        let toml_keyed = r#"
+[provider]
+kind = "strata"
+
+[provider.codex]
+api_key_env = "OPENAI_API_KEY"
+
+[provider.strata]
+api_key_env = "STRATA_API_KEY"
+"#;
+        let mut cfg2: Config = toml::from_str(toml_keyed).unwrap();
+        cfg2.apply_strata_defaults();
+        let entry2 = cfg2.provider.codex.as_ref().unwrap();
+        assert_eq!(entry2.api_key_env.as_deref(), Some("STRATA_API_KEY"));
     }
 
     #[test]
