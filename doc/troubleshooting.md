@@ -499,7 +499,7 @@ User-side workarounds (in recommended order):
 
 ### Cancelling a running turn
 
-Press `Esc` (or `Ctrl+C`) while the agent is streaming a response or running a tool: `[cancelled]` is printed and the prompt comes back immediately. At the **tool-approval prompt** press `Esc`, which denies the pending tool and stops the turn — `Ctrl+C` keeps its ordinary exit meaning there and quits agent-cli on an empty line. `/cancel` sends the same signal, which is the way to stop a turn that a peer prompt started while your prompt is idle.
+Press `Esc` (or `Ctrl+C`) while the agent is streaming a response or running a tool: `[info] cancelled by user` is printed and the prompt comes back immediately. At the **tool-approval prompt** press `Esc`, which denies the pending tool and stops the turn — `Ctrl+C` keeps its ordinary exit meaning there and quits agent-cli on an empty line. `/cancel` sends the same signal, which is the way to stop a turn that a peer prompt started while your prompt is idle.
 
 What cancelling does — and does not — do:
 
