@@ -4,6 +4,30 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.34.0]
+
+### Fixed
+
+- **Clicking the progress block no longer surfaces the elapsed display on
+  the wrong row.** Clicking right after scrolling back while a turn runs
+  used to expand the reasoning view one row displaced from the clicked
+  place: the hit test raced the indicator's own in-place repaints through
+  the physical-cursor query. The block's first row — the spinner-and-
+  elapsed row itself — is now excluded from the click rule (toggling the
+  thinking view is for the reasoning rows alone), a one-row block is
+  never a hit, and a query error clicks nothing instead of taking a
+  stale answer at face value.
+
+### Changed
+
+- **A cancelled turn announces itself as `[info] cancelled by user`**
+  instead of the bare `[cancelled]`: the three cancel paths — stopping a
+  `!` command, cancelling a running turn with `Esc`, denying a pending
+  tool at the approval prompt — print the same `[info]`-prefixed, dim
+  grey line that other informational events carry, and each resumes the
+  prompt exactly as before. The `Role::Cancelled` palette entry retires
+  with the change (`agent-cli` keeps no role without a call site).
+
 ## [0.33.0]
 
 ### Changed

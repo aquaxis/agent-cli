@@ -61,8 +61,6 @@ pub enum Role {
     Selection,
     /// Anything asking the user to answer: `[tool approval]` and `approve?`.
     Confirm,
-    /// `[cancelled]`.
-    Cancelled,
     /// The slash-command suggestion row above the prompt.
     ///
     /// Dark yellow, like the other secondary rows: it has to be read to be
@@ -122,7 +120,6 @@ fn sgr(role: Role) -> (Option<u8>, &'static [u8]) {
         Role::Selection => (None, REVERSE),
         Role::Scrolled => (None, REVERSE),
         Role::Confirm => (Some(YELLOW), BOLD),
-        Role::Cancelled => (Some(BRIGHT_BLACK), DIM),
         Role::Hint => (Some(YELLOW), NONE),
         Role::Banner => (Some(MAGENTA), BOLD),
         Role::BannerDetail => (None, NONE),
@@ -318,7 +315,7 @@ mod tests {
     use super::*;
 
     /// Every role, so the palette table itself is covered.
-    const ALL_ROLES: [Role; 18] = [
+    const ALL_ROLES: [Role; 17] = [
         Role::PromptSymbol,
         Role::InputText,
         Role::HistoryEntry,
@@ -332,7 +329,6 @@ mod tests {
         Role::Failure,
         Role::Info,
         Role::Confirm,
-        Role::Cancelled,
         Role::Hint,
         Role::Banner,
         Role::BannerDetail,

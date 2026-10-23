@@ -1196,15 +1196,19 @@ fn suggestion_rows(suggestion: Option<&str>, width: usize) -> u16 {
 }
 
 /// Whether a click at absolute row `row` lands on the progress indicator's
-/// block. While a turn runs the indicator is the last writer, so the cursor
-/// stands on the block's final row and the block covers `painted_rows` rows
-/// ending there. Pure so it can be unit-tested without a terminal.
+/// block, and not on the elapsed display's own row. While a turn runs the
+/// indicator is the last writer, so the cursor stands on the block's final row
+/// and the block covers `painted_rows` rows ending there — but the block's
+/// first row is the spinner-and-elapsed row itself, which the click rule does
+/// not target (FR-27): toggling the thinking view is for the reasoning rows
+/// alone, so a one-row block (the spinner alone) is never a hit and the span
+/// is strict at the top. Pure so it can be unit-tested without a terminal.
 fn click_hits_indicator(painted_rows: u16, cursor_row: u16, row: u16) -> bool {
-    if painted_rows == 0 {
+    if painted_rows <= 1 {
         return false;
     }
     let top = cursor_row.saturating_sub(painted_rows - 1);
-    row >= top && row <= cursor_row
+    row > top && row <= cursor_row
 }
 
 /// The REPL's input prompt, and the prompt that asks for a tool approval.
@@ -2381,7 +2385,7 @@ async fn run_input_loop_raw(
                                     &format!("[shell] timed out after {after_ms} ms"),
                                 ),
                             ),
-                            // The cancel path already printed `[cancelled]`.
+                            // The cancel path already printed `[info] cancelled by user`.
                             ShellStatus::Cancelled => {}
                             ShellStatus::Failed(e) => raw_eprintln(
                                 true,
@@ -2536,14 +2540,16 @@ async fn run_input_loop_raw(
                             // landed, and the question goes to the pump — the
                             // only thread that may touch crossterm's reader —
                             // so it is never asked behind another consumer's
-                            // back. Without an answer in time the click is
-                            // taken at face value, as with a direct query
-                            // error before.
+                            // back. Without an answer in time the click
+                            // changes nothing, so the elapsed display cannot
+                            // surface from a stale answer (FR-27). The test
+                            // itself keeps the elapsed row out of the rule
+                            // (the block's first row, excluded top).
                             let hit = match cursor_position_via_pump(pump_query_tx.as_ref()).await {
                                 Ok((_, cursor_row)) => {
                                     click_hits_indicator(painted, cursor_row, mouse_event.row)
                                 }
-                                Err(_) => painted > 0,
+                                Err(_) => false,
                             };
                             if hit {
                                 lock_indicator(&state.indicator).toggle_expanded();
@@ -2695,7 +2701,10 @@ async fn run_input_loop_raw(
                                 if let Some(run) = shell_run.as_ref() {
                                     run.cancel();
                                 }
-                                raw_eprintln(true, &state.theme.err(Role::Cancelled, "[cancelled]"));
+                                raw_eprintln(
+                                    true,
+                                    &state.theme.err(Role::Info, "[info] cancelled by user"),
+                                );
                             }
                             continue;
                         }
@@ -2714,7 +2723,10 @@ async fn run_input_loop_raw(
                                 // Take the bottom rows back from the indicator
                                 // before printing over them.
                                 lock_indicator(&state.indicator).suspend();
-                                raw_eprintln(true, &state.theme.err(Role::Cancelled, "[cancelled]"));
+                                raw_eprintln(
+                                    true,
+                                    &state.theme.err(Role::Info, "[info] cancelled by user"),
+                                );
                                 prompt_state = PromptState::Ready;
                                 renderer.reset();
                                 render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
@@ -2737,7 +2749,10 @@ async fn run_input_loop_raw(
                             begin_cancel(&state.cancel, &state.suppress, &state.turn_in_flight);
                             lock_indicator(&state.indicator).suspend();
                             renderer.clear_block(&mut stdout);
-                            raw_eprintln(true, &state.theme.err(Role::Cancelled, "[cancelled]"));
+                            raw_eprintln(
+                                true,
+                                &state.theme.err(Role::Info, "[info] cancelled by user"),
+                            );
                             input_state = InputState::new();
                             renderer.reset();
                             render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
@@ -4414,7 +4429,9 @@ async fn handle_repl_command(
             raw_println(raw_mode, "                              clipboard as plain text. Shift-drag selects with the");
             raw_println(raw_mode, "                              terminal instead ([ui] mouse_select, copy_command).");
             raw_println(raw_mode, "  Esc                         Stop a running turn or shell command; at the tool-approval");
-            raw_println(raw_mode, "                              prompt, deny the pending tool. The prompt is re-displayed.");
+            raw_println(raw_mode, "                              prompt, deny the pending tool. After the stop, the line");
+            raw_println(raw_mode, "                              reads [info] cancelled by user and the prompt is");
+            raw_println(raw_mode, "                              re-displayed.");
             raw_println(raw_mode, "  Subagents                   Each running subagent shows its name and operating");
             raw_println(raw_mode, "                              time stacked above the bottom block; the row goes when");
             raw_println(raw_mode, "                              the subagent ends, and the clock stays the bottom row.");
@@ -6941,18 +6958,19 @@ mod tests {
 
     #[test]
     fn click_hits_indicator_covers_exactly_the_painted_block() {
-        // A five-row block whose last row is screen row 20 covers rows 16..=20.
-        assert!(click_hits_indicator(5, 20, 16));
+        // A five-row block whose last row is screen row 20 spans 16..=20; the
+        // elapsed display's own first row (16) is the spinner-and-elapsed row,
+        // which the click rule does not target (FR-27) — a click there is not
+        // a hit.
+        assert!(click_hits_indicator(5, 20, 17));
         assert!(click_hits_indicator(5, 20, 20));
+        assert!(!click_hits_indicator(5, 20, 16));
         assert!(!click_hits_indicator(5, 20, 15));
         assert!(!click_hits_indicator(5, 20, 21));
-        // A single-row block is just the cursor row.
-        assert!(click_hits_indicator(1, 7, 7));
-        assert!(!click_hits_indicator(1, 7, 6));
+        // A one-row block is the spinner row alone: nothing to toggle.
+        assert!(!click_hits_indicator(1, 7, 7));
         // Nothing painted: no click can hit it.
         assert!(!click_hits_indicator(0, 7, 7));
-        // Near the top of the screen the block cannot start above row 0.
-        assert!(click_hits_indicator(5, 2, 0));
     }
 
     #[test]

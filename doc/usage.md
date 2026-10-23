@@ -329,7 +329,7 @@ Notes:
 - **Draft preservation**: the line you were typing is saved when you first press `↑`, and restored when you press `↓` past the newest history entry.
 - **Command candidates**: while the line starts with `/` and contains no space, the matching command names are listed on the line **above** the prompt, so the line you are typing stays put instead of being pushed around. Keep typing to narrow the list, or press `Enter` — prefix resolution is described under "Custom Slash Commands".
 - **Tab completion**: `Tab` completes the command name from that same candidate list. One match completes it and adds a space, ready for an argument (`/sen` → `/send `). Several matches extend the line as far as the candidates agree (`/rel` → `/reload-`), leaving the list on screen to choose from. When there is nothing to add — no match, an already-settled name, or an argument already started — `Tab` does nothing. Built-in and custom commands complete alike.
-- **Stopping a turn**: while the agent is streaming a response or running a tool, `Esc` (or `Ctrl+C`) prints `[cancelled]` and hands the prompt straight back — it does not wait for the model or the tool. The remaining output of that turn is discarded, a tool call cut short is recorded as `cancelled by user`, and the next prompt continues the same conversation. At the **approval prompt**, `Esc` denies the pending tool and stops the turn the same way — but `Ctrl+C` keeps its ordinary meaning there and **exits agent-cli** on an empty line, so use `Esc` (or answer `n`). See "Cancelling a running turn" in [`doc/troubleshooting.md`](troubleshooting.md) for what cancelling does *not* stop.
+- **Stopping a turn**: while the agent is streaming a response or running a tool, `Esc` (or `Ctrl+C`) prints `[info] cancelled by user` and hands the prompt straight back — it does not wait for the model or the tool. The remaining output of that turn is discarded, a tool call cut short is recorded as `cancelled by user`, and the next prompt continues the same conversation. At the **approval prompt**, `Esc` denies the pending tool and stops the turn the same way — but `Ctrl+C` keeps its ordinary meaning there and **exits agent-cli** on an empty line, so use `Esc` (or answer `n`). See "Cancelling a running turn" in [`doc/troubleshooting.md`](troubleshooting.md) for what cancelling does *not* stop.
 - **Display width**: full-width characters (CJK) are counted as two columns, so cursor positioning stays correct in mixed-width lines.
 - **TTY requirement**: raw mode is only enabled when stdin is a terminal. With piped or redirected input the REPL falls back to line-buffered reading, where the editing keys, the candidate list, and `Tab` completion are unavailable — everything else (tools, custom commands, peer messaging) works unchanged. See "Non-interactive / Scripted Use".
 
@@ -350,7 +350,7 @@ On an interactive terminal, the REPL shows what it is doing while a turn runs:
 - The **line above** describes what is being executed. While the indicator is on, a tool call is written on a single line and anything past the terminal width is cut with `…`, so the raw arguments never push the display around. Before the first tool call the line above is simply the question you submitted.
 - The **turn does not have to be one you typed**: a prompt another agent sends you over the socket opens the same spinner while that turn runs (a peer *report* runs no turn, so nothing spins and only its `[info] peer report` receipt appears). It is the same indicator either way, and `Esc` / `/cancel` stop it the same way.
 - The **line below** is redrawn in place about ten times a second: a spinner at the head of the line, then the time elapsed since the turn started (`0.4s`, `12.4s`, `2m03s`).
-- When the turn ends, both are replaced by a single permanent line — `✔ 12.4s` on success, `✗ 12.4s` when the turn ended with an error — and the prompt is drawn beneath it. A turn stopped with `Esc` shows `[cancelled]` instead and leaves no mark.
+- When the turn ends, both are replaced by a single permanent line — `✔ 12.4s` on success, `✗ 12.4s` when the turn ended with an error — and the prompt is drawn beneath it. A turn stopped with `Esc` instead prints `[info] cancelled by user` and leaves no mark.
 - The indicator pauses while a tool-approval prompt is on screen and resumes once you answer.
 - **Reasoning (`thinking`) is shown live below the spinner**, the last 10 rows at a time, with a `… +N more (click to expand)` marker when there is more. **Click the block** with the mouse to switch to as much of the reasoning as the screen can hold, and click again to go back to 10 rows; the choice is remembered for the following turns. The view belongs to the running turn — it is cleared when the turn ends, and the full reasoning is still written to the conversation log.
 - **Tool results are cut to 5 rows** while the indicator is on, ending in `… +N more lines`, so a large `bash` output cannot push the spinner down the screen. The full result is in the conversation log (`[runtime] log_dir`), and the model always receives it in full — only the on-screen copy is shortened.
@@ -378,7 +378,7 @@ On an interactive terminal the output is colour-coded, so the parts you wrote, t
 | `✗ <elapsed>`, `[error]` | red, bold |
 | `[info]`, `[auto]` | blue |
 | `[tool approval]`, `approve? [y/N]:` | yellow, bold |
-| `[cancelled]` | grey, dim |
+| `[info] cancelled by user` | blue |
 | The command hint above the prompt | dark yellow |
 | `/history` entries | dim |
 | `agent-cli ready` banner | magenta, bold |
@@ -519,7 +519,8 @@ The REPL renders `Info` variants of `AgentEvent` with an `[info]` prefix. `Info`
 
 | Message | Trigger | What happens next |
 |---------|---------|-------------------|
-| `[info] cancelled by user` | `/cancel` stopped a turn that was running in the background (e.g. one started by a peer prompt) | The turn stops at its next await point; any tool call without a result is recorded as `cancelled by user` so the conversation stays usable. After `Esc` the same turn ends silently — its output is discarded and only `[cancelled]` is shown |
+| `[info] cancelled by user` | `/cancel` stopped a turn that was running in the background (e.g. one started by a peer prompt), or `Esc`/`Ctrl+C` stopped your own front turn | The turn stops at its next await point; any tool call without a result is recorded as `cancelled by user` so the conversation stays usable, and the prompt comes straight back |
+| `[info] cancelled by user` (from the indicator's ... )
 | `[info] cancel requested` | `/cancel` entered while the agent is idle | Nothing is in flight, so there is nothing to stop |
 | `[info] history persisted (N entries)` | History save trigger (e.g. `/history`) | Flush to input history file complete |
 | `[info] system prompt updated` | `/reload-persona` replaced the system prompt at the head of history | Subsequent responses use the new system prompt |
