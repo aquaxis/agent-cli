@@ -4,6 +4,32 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.37.0]
+
+### Fixed
+
+- **History compaction counts the real payload, and can truncate the kept
+  window's oversized tool results.** A live session could still die with
+  `prompt too long; exceeded max context length` even with `[history]`
+  enabled, for two structural reasons, both fixed: the token estimate
+  counted only each message's content bytes ÷ 4 — an assistant's
+  `tool_calls` argument JSON and its echoed-back `reasoning_content` were
+  invisible, and CJK text (one token per 1–1.5 characters, not per 4) was
+  undercounted by multiples, so a Japanese session blew past the configured
+  budget before the estimate said anything; and the compact pass could
+  summarize and drop only the *old* span, leaving the kept window
+  (`keep_recent_turns`) verbatim — one enormous `ToolResult` in it, a full
+  debug log a single tool call returned, was unremovable and alone exceeded
+  the provider's context window. The estimate now weighs CJK codepoints
+  three-to-one, adds the tool-call argument/name/id and the reasoning
+  content, and adds a 16-unit per-message envelope (err over, never under);
+  when the history is still over budget after summarizing and dropping, the
+  kept window's oversized `ToolResult` contents are truncated to at most
+  half the configured token budget, head kept, with an explicit
+  `… [truncated N characters by history compaction]` marker. Within-budget
+  results and the old span are never touched, and a disabled `[history]`
+  behaves exactly as before.
+
 ## [0.36.0]
 
 ### Added
