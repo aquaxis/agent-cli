@@ -156,7 +156,9 @@ pub(crate) mod tests_support {
             spawn_limits: SpawnLimits {
                 max_children: 4,
                 max_depth: 2,
+                exit_when_idle: true,
             },
+            spawn_exit_when_idle: true,
         }
     }
 }

@@ -66,6 +66,10 @@ pub struct ToolCtx {
     /// this chain plus this agent's own id.
     pub ancestors: Vec<crate::id::AgentId>,
     pub spawn_limits: crate::swarm::SpawnLimits,
+    /// FR-32: the `[spawn] exit_when_idle` value this agent's configuration
+    /// carries — the default for the peers its `spawn` tool creates, which
+    /// the tool call's own `exit_when_idle` argument may override per launch.
+    pub spawn_exit_when_idle: bool,
 }
 
 /// Abstract tool callable by the AI.

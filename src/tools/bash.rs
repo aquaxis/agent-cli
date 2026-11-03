@@ -124,6 +124,7 @@ mod tests {
             event_tx: None,
             ancestors: Vec::new(),
             spawn_limits: crate::swarm::SpawnLimits::default(),
+            spawn_exit_when_idle: true,
         }
     }
 

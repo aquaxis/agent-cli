@@ -834,6 +834,7 @@ async fn stage_bash_tool(cfg: &Config) -> Result<()> {
         event_tx: None,
         ancestors: Vec::new(),
         spawn_limits: crate::swarm::SpawnLimits::from(&cfg.spawn),
+        spawn_exit_when_idle: cfg.spawn.exit_when_idle,
     };
     let out = tool
         .invoke(serde_json::json!({"command": "echo selftest"}), &ctx)

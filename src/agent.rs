@@ -626,6 +626,7 @@ impl Agent {
                 event_tx: Some(event_tx.clone()),
                 ancestors: self.ancestors.clone(),
                 spawn_limits: crate::swarm::SpawnLimits::from(&self.config.spawn),
+                spawn_exit_when_idle: self.config.spawn.exit_when_idle,
             };
             // Index-based so a cancellation can hand the calls that were never
             // executed to `finish_cancelled`.

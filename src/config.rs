@@ -765,6 +765,13 @@ pub struct SpawnConfig {
     /// 0 also disables autonomous spawning.
     #[serde(default = "default_max_depth")]
     pub max_depth: u32,
+    /// FR-32: whether the peers this configuration's `spawn` paths launch end
+    /// their own session when their work is done (`--exit-when-idle`). The
+    /// default is `true` — a fire-and-forget spawn that stands by forever
+    /// would leak a process per spawn — and the explicit tool argument and
+    /// CLI flag can still override it per launch.
+    #[serde(default = "default_spawn_exit_when_idle")]
+    pub exit_when_idle: bool,
 }
 
 impl Default for SpawnConfig {
@@ -772,8 +779,13 @@ impl Default for SpawnConfig {
         Self {
             max_children: default_max_children(),
             max_depth: default_max_depth(),
+            exit_when_idle: default_spawn_exit_when_idle(),
         }
     }
+}
+
+fn default_spawn_exit_when_idle() -> bool {
+    true
 }
 
 fn default_max_children() -> u32 {

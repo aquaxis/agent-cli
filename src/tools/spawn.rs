@@ -35,6 +35,11 @@ struct SpawnArgs {
     /// (fire-and-forget). Use `send_to` for a reply.
     #[serde(default)]
     prompt: Option<String>,
+    /// Whether the new agent ends its own session when its work is done
+    /// (`--exit-when-idle`). Optional: when omitted, the configuration's
+    /// `[spawn] exit_when_idle` decides (true by default).
+    #[serde(default)]
+    exit_when_idle: Option<bool>,
 }
 
 #[async_trait]
@@ -44,7 +49,7 @@ impl Tool for SpawnTool {
     }
 
     fn description(&self) -> &str {
-        "Create a new detached agent-cli peer that runs headless in its own session and does not depend on this process. It shares this agent's config (same registry), so you can reach it afterwards with send_to, see it with list_agents and stop it with stop_agent. The number of live children and the depth of the chain are limited; when a limit is reached this returns an error saying which. Optionally give it a name/provider/model/persona and an initial prompt."
+        "Create a new detached agent-cli peer that runs headless in its own session and does not depend on this process. It shares this agent's config (same registry), so you can reach it afterwards with send_to, see it with list_agents and stop it with stop_agent. The number of live children and the depth of the chain are limited; when a limit is reached this returns an error saying which. The peer exits by itself when its work is done (set exit_when_idle=false to keep it running). Optionally give it a name/provider/model/persona and an initial prompt."
     }
 
     fn schema(&self) -> Value {
@@ -56,7 +61,8 @@ impl Tool for SpawnTool {
                 "model": {"type": "string", "description": "Model override."},
                 "persona": {"type": "string", "description": "Persona file path."},
                 "group": {"type": "string", "description": "Group id for the new agent. Omit to inherit this agent's group."},
-                "prompt": {"type": "string", "description": "Optional initial prompt delivered to the new agent (fire-and-forget)."}
+                "prompt": {"type": "string", "description": "Optional initial prompt delivered to the new agent (fire-and-forget)."},
+                "exit_when_idle": {"type": "boolean", "description": "Whether the new agent ends its own session when its work is done. Omit for the configuration default (true: the peer exits once its queue is quiet)."}
             }
         })
     }
@@ -87,11 +93,14 @@ impl Tool for SpawnTool {
             model: parsed.model,
             persona: parsed.persona.map(std::path::PathBuf::from),
             auto_approve_tools: false,
-            // FR-32: a peer the spawn tool creates exits when its work is
-            // done — the tool's fire-and-forget prompt is the job; standing
-            // by forever afterwards would leak a process per spawn. The
-            // child's own spawn stays available (its limits are its own).
-            exit_when_idle: true,
+            // FR-32: the peer's exit-when-idle follows the configuration
+            // (`[spawn] exit_when_idle`, carried in this agent's ToolCtx;
+            // true by default) unless the tool call said otherwise — a
+            // fire-and-forget spawn that stands by forever would otherwise
+            // leak a process per spawn, and a call can still opt out.
+            exit_when_idle: parsed
+                .exit_when_idle
+                .unwrap_or(ctx.spawn_exit_when_idle),
         };
 
         let mut chain = ctx.ancestors.clone();
@@ -190,6 +199,7 @@ mod tests {
         at_child_limit.spawn_limits = SpawnLimits {
             max_children: 2,
             max_depth: 4,
+            exit_when_idle: true,
         };
         let out = SpawnTool.invoke(json!({}), &at_child_limit).await.unwrap();
         assert!(!out.ok, "{}", out.content);
@@ -202,6 +212,7 @@ mod tests {
         at_depth_limit.spawn_limits = SpawnLimits {
             max_children: 4,
             max_depth: 2,
+            exit_when_idle: true,
         };
         let out = SpawnTool.invoke(json!({}), &at_depth_limit).await.unwrap();
         assert!(!out.ok, "{}", out.content);

@@ -20,6 +20,12 @@ pub struct SpawnLimits {
     /// How deep a chain of spawned agents may go. An agent at this depth may
     /// not spawn, so 0 also forbids it.
     pub max_depth: u32,
+    /// Whether the peers the spawn paths launch end their own session when
+    /// their work is done (`--exit-when-idle`, FR-32). The shipped default is
+    /// `true`: a fire-and-forget spawn that stands by forever would leak a
+    /// process per spawn; an explicit tool argument or CLI flag overrides it
+    /// per launch, and `[spawn] exit_when_idle` governs the configuration.
+    pub exit_when_idle: bool,
 }
 
 impl Default for SpawnLimits {
@@ -35,6 +41,7 @@ impl From<&SpawnConfig> for SpawnLimits {
         Self {
             max_children: cfg.max_children,
             max_depth: cfg.max_depth,
+            exit_when_idle: cfg.exit_when_idle,
         }
     }
 }
@@ -88,6 +95,7 @@ mod tests {
         SpawnLimits {
             max_children,
             max_depth,
+            exit_when_idle: true,
         }
     }
 
@@ -155,6 +163,7 @@ mod tests {
         let cfg = SpawnConfig {
             max_children: 2,
             max_depth: 1,
+            exit_when_idle: true,
         };
         let limits = SpawnLimits::from(&cfg);
         assert_eq!(limits.max_children, 2);

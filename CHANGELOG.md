@@ -4,6 +4,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.36.0]
+
+### Added
+
+- **`[spawn] exit_when_idle`: the auto-exit is configurable, and on by
+  default.** The `[spawn]` configuration section gains the switch (default
+  `true`): peers launched by this configuration spawn themselves out of
+  existence once their work is done — the spawn tool's and the REPL's
+  `/spawn` children leave when the queue is quiet, instead of standing by
+  forever. Set `exit_when_idle = false` to restore the parked behaviour;
+  the `spawn` tool call also accepts an optional `exit_when_idle` argument
+  that overrides the configuration for that one launch. The interactive
+  REPL's own session never auto-exits, `stop` still works before the quiet
+  point, and the shipped teardown (`stopping` gate, drain, registry and
+  socket cleanup) is the exit path.
+
 ## [0.35.0]
 
 ### Added
