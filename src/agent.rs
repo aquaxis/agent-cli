@@ -914,6 +914,35 @@ impl Agent {
                 })
                 .await;
         }
+
+        // Last resort (FR-34): the kept tail itself over the budget — a single
+        // huge ToolResult (a full debug log one tool call returned) can exceed
+        // the provider's whole context window on its own, and neither the
+        // summarize nor the drop above may touch the tail (the
+        // keep_recent_turns contract). Truncate that one message's content to
+        // fit the remainder of the budget: the turn then fits, the tool result
+        // is still present (its head), and nothing else moves. Applies only
+        // when `[history] enabled` — this whole pass is opt-in.
+        if crate::history::estimate_tokens(&self.history) > max {
+            // A single result may consume at most half of the configured
+            // token budget: half of the tokens, in weighted characters
+            // (tokens ≈ weighted chars / 4 — the same rule the counting
+            // walks). `saturating_mul` keeps an extreme `max_context_tokens`
+            // from wrapping. A result over the cutoff is cut, a result at
+            // or under it is left alone.
+            let budget_chars = max.saturating_mul(4) / 2;
+            let before = crate::history::estimate_tokens(&self.history);
+            crate::history::truncate_tail_tool_results(&mut self.history, keep, budget_chars);
+            if crate::history::estimate_tokens(&self.history) < before {
+                let _ = event_tx
+                    .send(AgentEvent::Info {
+                        message:
+                            "history compacted: oversized tool result(s) in the kept window truncated"
+                                .to_string(),
+                    })
+                    .await;
+            }
+        }
     }
 }
 
