@@ -146,6 +146,14 @@ pub struct RunArgs {
     /// Auto-approve tool execution without confirmation
     #[arg(long, global = true)]
     pub auto_approve_tools: bool,
+
+    /// Serve mode: end the session when the work is done — after the last
+    /// processed input, when no further input is queued (FR-32). `agent-cli
+    /// spawn` and the `spawn` tool set this for the peers they launch by
+    /// default; without it a headless agent keeps waiting for the next prompt
+    /// exactly as before.
+    #[arg(long, global = true)]
+    pub exit_when_idle: bool,
 }
 
 #[derive(Subcommand, Debug)]

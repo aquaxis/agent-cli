@@ -86,6 +86,11 @@ pub async fn spawn_detached(
     if args.auto_approve_tools {
         cmd.arg("--auto-approve-tools");
     }
+    // FR-32: the quiet-exit flag rides the child's own argument vector — a
+    // peer launched to finish its work and leave must be told so at launch.
+    if args.exit_when_idle {
+        cmd.arg("--exit-when-idle");
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

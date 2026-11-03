@@ -87,6 +87,11 @@ impl Tool for SpawnTool {
             model: parsed.model,
             persona: parsed.persona.map(std::path::PathBuf::from),
             auto_approve_tools: false,
+            // FR-32: a peer the spawn tool creates exits when its work is
+            // done — the tool's fire-and-forget prompt is the job; standing
+            // by forever afterwards would leak a process per spawn. The
+            // child's own spawn stays available (its limits are its own).
+            exit_when_idle: true,
         };
 
         let mut chain = ctx.ancestors.clone();

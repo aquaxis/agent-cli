@@ -4,6 +4,22 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.35.0]
+
+### Added
+
+- **`--exit-when-idle`: spawned agents end their own session when the work
+  is done.** A peer launched by the `spawn` tool (or `/spawn`, or
+  `agent-cli spawn`) now runs with the flag set: after it finishes the last
+  input queued for it — the channel is empty and closed — its agent loop
+  ends and the serve process takes the shipped teardown (the `stopping`
+  gate's truthful replies, the drain within `SHUTDOWN_DRAIN_TIMEOUT`, the
+  registry entry and socket removed), instead of parking on the shutdown
+  watch forever. The parent needs no `stop` choreography: a fire-and-forget
+  spawn does its work and leaves. The interactive REPL is untouched
+  (`exit_when_idle` is forced `false` there), a `stop` on a peer still
+  works before the quiet point, and the shipped exit seams are unchanged.
+
 ## [0.34.0]
 
 ### Fixed

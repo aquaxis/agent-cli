@@ -376,6 +376,10 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         permissions: permissions.clone(),
         cancel: cancel.clone(),
         stopping: stopping.clone(),
+        // Interactive only: the REPL keeps waiting for the next line after a
+        // turn, so `--exit-when-idle`'s quiet-exit would kill the session
+        // between prompts. Only the headless path sets it (FR-32).
+        exit_when_idle: false,
         approval_tx: Some(approval_tx),
         history,
     };
@@ -718,6 +722,11 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         // (`finish_cancelled`, not a silent drop).
         cancel: cancel.clone(),
         stopping: stopping.clone(),
+        // FR-32: a headless agent launched with the `--exit-when-idle` flag
+        // ends its loop when its work is done (the input channel is empty
+        // after the last processed input); the serve loop's wait below fires
+        // the shipped teardown on the agent task's end.
+        exit_when_idle: args.exit_when_idle,
         approval_tx: None,
         history,
     };
@@ -823,15 +832,35 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         }
     });
 
-    // Block until a shutdown notification arrives (signal or IPC Shutdown).
+    // Block until a shutdown notification arrives (signal or IPC Shutdown) —
+    // or, with `--exit-when-idle` (FR-32), until the agent's own loop ends:
+    // the agent breaks out of its input loop when the work is done and the
+    // input channel has gone quiet, and that quiet end raises the same
+    // shutdown watch here, so the teardown below is exactly the shipped one.
     {
         let mut shutdown_rx = shutdown_rx.clone();
         loop {
             if *shutdown_rx.borrow() {
                 break;
             }
-            if shutdown_rx.changed().await.is_err() {
-                break;
+            tokio::select! {
+                changed = shutdown_rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    if *shutdown_rx.borrow() {
+                        break;
+                    }
+                }
+                // The agent's loop ended on its own (quiet exit). Distinguish
+                // it from an aborted task by waiting for the handle's result.
+                res = &mut agent_handle, if args.exit_when_idle => {
+                    if let Err(e) = res {
+                        tracing::warn!(error = %e, "agent task ended with an error (quiet exit)");
+                    }
+                    let _ = shutdown_tx.send(true);
+                    break;
+                }
             }
         }
     }
@@ -4632,6 +4661,9 @@ async fn spawn_peer(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
         model: None,
         persona: None,
         auto_approve_tools: false,
+        // FR-32: a peer the REPL's /spawn creates exits when its work is done,
+        // matching the spawn tool's children.
+        exit_when_idle: true,
     };
     // A peer the REPL spawns belongs to this session's tree.
     // The child's chain is this session's chain plus this session itself.

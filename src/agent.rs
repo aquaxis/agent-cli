@@ -204,6 +204,14 @@ pub struct Agent {
     /// cancelled turn cannot strand the queue behind a state only a manually
     /// typed prompt would clear.
     pub stopping: Arc<AtomicBool>,
+    /// FR-32: `--exit-when-idle` (headless). After a turn completes, an agent
+    /// with this set checks its input channel; when no input is queued
+    /// (`try_recv` finds the channel empty), the work is done — the loop ends
+    /// instead of waiting forever for the next prompt, and the owner's join
+    /// (or the peer's own process exit) follows. The shipped shutdown path
+    /// (stopping gate, drain, `finish_cancelled`) stays the only exit path:
+    /// nothing here raises a cancellation or skips a queued prompt.
+    pub exit_when_idle: bool,
     /// Channel to send approval requests to the input loop. `None` means approval is not possible, so deny (FR-04-1).
     pub approval_tx: Option<mpsc::Sender<ApprovalRequest>>,
     pub history: Vec<Message>,
@@ -419,8 +427,32 @@ impl Agent {
                         .await;
                 }
             }
+            // FR-32: `--exit-when-idle`. After the input is processed, an agent
+            // so flagged ends its loop when the input channel is empty and the
+            // sender side is gone: the work is done — this was the last input.
+            // The channel closes (this was the only receiver), the agent task
+            // ends, and the owner's join/watch follows the shipped paths.
+            if self.exit_when_idle && Self::input_quiet(&input_rx) {
+                if let Some(l) = &log {
+                    l.write(LogEvent::System {
+                        message: "input quiet: the agent's work is complete; ending the session (exit-when-idle)",
+                    })
+                    .await
+                    .ok();
+                }
+                break;
+            }
         }
         Ok(())
+    }
+
+    /// FR-32: the quiet-check of `--exit-when-idle`. Returns `true` when the
+    /// input channel holds **no** queued input and the sender side is gone or
+    /// idle — the work is done and no other prompt is waiting, so the loop may
+    /// end. A queued input at this instant keeps the loop alive (the input
+    /// stays queued; the next `recv` delivers it).
+    fn input_quiet(rx: &mpsc::Receiver<AgentInput>) -> bool {
+        rx.is_empty() && rx.is_closed()
     }
 
     async fn process_turn(
@@ -1222,10 +1254,163 @@ mod tests {
             permissions: Arc::new(crate::permissions::Ruleset::default()),
             cancel: cancel.clone(),
             stopping: Arc::new(AtomicBool::new(false)),
+            exit_when_idle: false,
             approval_tx: None,
             history,
         };
         (agent, cancel)
+    }
+
+    /// FR-32's pin (the quiet exit): a flagged agent whose input channel goes
+    /// quiet after the last processed turn ends its loop by itself — the task
+    /// finishes with `Ok(())`, which is what a headless owner's wait (or the
+    /// serve loop's quiet-exit arm) needs. Fold-verified by the companion
+    /// test below: without the flag the same input leaves the agent waiting.
+    #[tokio::test]
+    async fn exit_when_idle_ends_the_loop_once_the_work_is_done() {
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = Agent {
+            exit_when_idle: true,
+            ..build_test_agent(
+                vec![vec![ProviderEvent::Done]],
+                history.clone(),
+            )
+        };
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx.send(AgentInput::PeerPrompt {
+            from: AgentId::new(),
+            from_name: Some("parent".into()),
+            text: "do the work".into(),
+            reply_to: None,
+        }).await.unwrap();
+        // Drop the sender: with the turn done and the channel quiet, the
+        // flagged loop has nothing left to wait for.
+        drop(in_tx);
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("the flagged agent must finish on its own")
+            .unwrap();
+        assert!(outcome.is_ok());
+        // The terminal event of the one turn was still delivered.
+        let mut saw_done = false;
+        while let Ok(ev) = ev_rx.try_recv() {
+            if matches!(ev, AgentEvent::Done) {
+                saw_done = true;
+            }
+        }
+        assert!(saw_done, "the last turn's Done must still be emitted");
+    }
+
+    /// FR-32's third pin (the quiet-exit must not fire early): with the flag
+    /// on and **another input already queued**, the agent must not end its
+    /// loop after the first turn — the queued prompt is still owed its turn,
+    /// so the quiet-check that fires the exit must see the channel non-empty
+    /// and keep waiting. Fold-verified against the first pin: the only
+    /// difference in inputs is the queued second prompt, and only that changes
+    /// the outcome.
+    #[tokio::test]
+    async fn a_queued_prompt_keeps_a_flagged_agent_alive() {
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = Agent {
+            exit_when_idle: true,
+            ..build_test_agent(
+                vec![vec![ProviderEvent::Done], vec![ProviderEvent::Done]],
+                history.clone(),
+            )
+        };
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx.send(AgentInput::PeerPrompt {
+            from: AgentId::new(),
+            from_name: Some("parent".into()),
+            text: "first".into(),
+            reply_to: None,
+        })
+        .await
+        .unwrap();
+        in_tx.send(AgentInput::PeerPrompt {
+            from: AgentId::new(),
+            from_name: Some("parent".into()),
+            text: "second".into(),
+            reply_to: None,
+        })
+        .await
+        .unwrap();
+        let _ = in_tx; // the sender stays alive; the queued prompt must be served
+
+        // Two turns must complete (two Done events), then the loop waits on —
+        // the sender is still alive and the check may not have ended things.
+        let mut dones = 0;
+        while dones < 2 {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), ev_rx.recv())
+                .await
+                .expect("the second turn must complete")
+            {
+                Some(AgentEvent::Done) => dones += 1,
+                Some(_) => {}
+                None => panic!("the agent ended its loop before the queued turn was served"),
+            }
+        }
+        let still_running = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            async { let _ = handle.await; },
+        )
+        .await
+        .is_err();
+        assert!(
+            still_running,
+            "a queued prompt at the check must keep the flagged agent alive"
+        );
+    }
+
+    /// FR-32's companion pin: without the flag the shipped behaviour stands —
+    /// a headless agent keeps waiting for the next input after its work, so a
+    /// peer persists afterwards (the measured default this cycle replaces).
+    #[tokio::test]
+    async fn without_the_flag_the_agent_keeps_waiting_after_its_work() {
+        let history = Agent::build_initial_history(&Persona::builtin_default());
+        let agent = Agent {
+            exit_when_idle: false,
+            ..build_test_agent(vec![vec![ProviderEvent::Done]], history.clone())
+        };
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx.send(AgentInput::PeerPrompt {
+            from: AgentId::new(),
+            from_name: Some("parent".into()),
+            text: "do the work".into(),
+            reply_to: None,
+        }).await.unwrap();
+
+        // Wait for the turn's Done, then prove the agent is still parked (a
+        // second recv on the same handle resolves only if the loop ended —
+        // race it with a short timeout and require the timeout).
+        loop {
+            match ev_rx.recv().await {
+                Some(AgentEvent::Done) => break,
+                Some(_) => continue,
+                None => panic!("the unflagged agent must not end its loop"),
+            }
+        }
+        let still_running = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            async { let _ = handle.await; },
+        )
+        .await
+        .is_err();
+        assert!(
+            still_running,
+            "without --exit-when-idle the agent must keep waiting"
+        );
+        drop(in_tx); // release the task for the test framework
     }
 
     #[tokio::test]
