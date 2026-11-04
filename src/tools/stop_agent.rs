@@ -199,6 +199,7 @@ mod tests {
             socket: PathBuf::from("/tmp/x.sock"),
             persona: None,
             ancestors: ancestors.to_vec(),
+            turn: None,
         };
 
         // A direct child and a grandchild are ours, whoever is in between.

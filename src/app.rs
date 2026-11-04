@@ -35,10 +35,15 @@ use crate::tools::ToolRegistry;
 /// the transcript holds the lines as they appear on screen, styling included.
 /// When no transcript is installed (piped input, `serve`, the scrollback turned
 /// off) recording is a no-op and nothing is allocated.
-
+///
 /// Print a string to stdout, replacing LF with CR+LF, then append CR+LF.
 fn raw_println(raw: bool, msg: &str) {
     crate::scroll::record_line(msg);
+    if zone_armed() {
+        // The armed zone owns the screen (D-52/AS-53): the record is the sole
+        // truth and the beat will surface this line with its next repaint.
+        return;
+    }
     if raw {
         let out = msg.replace('\n', "\r\n");
         let _ = std::io::stdout().write_all(out.as_bytes());
@@ -52,6 +57,9 @@ fn raw_println(raw: bool, msg: &str) {
 /// Print a string to stdout, replacing LF with CR+LF (no trailing newline added).
 fn raw_print_str(raw: bool, msg: &str) {
     crate::scroll::record(msg);
+    if zone_armed() {
+        return;
+    }
     if raw {
         let out = msg.replace('\n', "\r\n");
         let _ = std::io::stdout().write_all(out.as_bytes());
@@ -65,6 +73,9 @@ fn raw_print_str(raw: bool, msg: &str) {
 /// Print a string to stderr, replacing LF with CR+LF, then append CR+LF.
 fn raw_eprintln(raw: bool, msg: &str) {
     crate::scroll::record_line(msg);
+    if zone_armed() {
+        return;
+    }
     if raw {
         let out = msg.replace('\n', "\r\n");
         let _ = std::io::stderr().write_all(out.as_bytes());
@@ -78,6 +89,9 @@ fn raw_eprintln(raw: bool, msg: &str) {
 /// Print a string to stderr, replacing LF with CR+LF (no trailing newline added).
 fn raw_eprint(raw: bool, msg: &str) {
     crate::scroll::record(msg);
+    if zone_armed() {
+        return;
+    }
     if raw {
         let out = msg.replace('\n', "\r\n");
         let _ = std::io::stderr().write_all(out.as_bytes());
@@ -292,6 +306,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         socket: socket_path.clone(),
         persona: Some(resolution.persona.summary()),
         ancestors: ancestors.clone(),
+        turn: None,
     };
     let registry_handle = RegistryHandle::register(&registry_dir, &entry).await?;
     let registry_handle = Arc::new(registry_handle);
@@ -675,6 +690,7 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
         socket: socket_path.clone(),
         persona: Some(resolution.persona.summary()),
         ancestors: ancestors.clone(),
+        turn: None,
     };
     let registry_handle = RegistryHandle::register(&registry_dir, &entry).await?;
     let registry_handle = Arc::new(registry_handle);
@@ -1061,6 +1077,16 @@ impl PromptRenderer {
     /// resets the tracked row to 0.
     fn clear_block(&mut self, stdout: &mut std::io::Stdout) {
         use crossterm::cursor::{MoveToColumn, MoveUp};
+        // The armed zone (FR-37a): the beat owns the rows above the span and
+        // the shared cursor is parked on the pinned prompt's caret — the
+        // relative repair (MoveUp + clear downward) would cut into the wrong
+        // rows. The flags reset quietly and the screen is left to the zone;
+        // the next armed render repaints the span in place (D-52/D-53).
+        if zone_armed() {
+            self.cursor_row = 0;
+            self.peer_rows = 0;
+            return;
+        }
         // The whole tracked region: the peer rows, the block's rows above the
         // cursor, and the rows between. `Clear(FromCursorDown)` from the region
         // top erases the rest.
@@ -1088,6 +1114,16 @@ impl PromptRenderer {
         line: &str,
     ) {
         use crossterm::style::Print;
+        // The armed zone (FR-37a): the echo belongs to the record (AS-53) and
+        // the beat surfaces it — writing here would cut into or scroll the
+        // standing shape the zone owns.
+        if zone_armed() {
+            self.clear_block(stdout);
+            let styled_prompt = theme.out(prompt_role, prompt);
+            let styled_line = theme.out(Role::InputText, line);
+            crate::scroll::record_line(&format!("{styled_prompt}{styled_line}"));
+            return;
+        }
         // Remove the interactive render (cursor may be mid-line) before echoing.
         self.clear_block(stdout);
         let styled_prompt = theme.out(prompt_role, prompt);
@@ -1240,6 +1276,34 @@ fn click_hits_indicator(painted_rows: u16, cursor_row: u16, row: u16) -> bool {
     row > top && row <= cursor_row
 }
 
+/// The armed zone's same rule (FR-27): a click lands on the beat's clock block
+/// — never on the spinner row itself and never on the span — so the reasoning
+/// view toggles from the zone's standing shape exactly as the shipped block
+/// allowed. Pure against the zone's bookkeeping; no click changes anything
+/// without a block tall enough to hold a reasoning row.
+fn zone_click_hits_clock(row: u16) -> bool {
+    let guard = lock_zone();
+    let Some(z) = guard.as_ref() else {
+        return false;
+    };
+    if !z.on_screen {
+        return false;
+    }
+    click_hits_clock_block(z.clock_top, z.clock_rows, row)
+}
+
+/// The click rule shared with the shipped indicator's rule (`click_hits_
+/// indicator`): the reasoning view toggles inside the block's reasoning rows
+/// only. `clock_top` is the block's spinner-and-elapsed row on 0-based screen
+/// coordinates, `clock_rows` its painted height — `<= 1` is the spinner row
+/// alone (or nothing painted), which no click targets (FR-27); the span below
+/// is outside the block by construction.
+fn click_hits_clock_block(clock_top: u16, clock_rows: u16, row: u16) -> bool {
+    let top = clock_top.saturating_add(1);
+    let bottom = clock_top.saturating_add(clock_rows);
+    clock_rows > 1 && row >= top && row < bottom
+}
+
 /// How many prompts are waiting in the agent's input channel right now
 /// (FR-35's D-51): the difference between the channel's configured capacity
 /// and its remaining one — Tokio's own sender-side accounting (`capacity()`
@@ -1323,6 +1387,507 @@ fn terminal_height() -> usize {
         .map(|(_, h)| h as usize)
         .unwrap_or(24)
         .max(1)
+}
+
+/// The FR-37a anchor: while a turn runs on the live screen, the prompt block
+/// owns the screen's bottom rows and stands parked at the user's input cursor;
+/// this turn zone re-homes everything the running turn writes to the rows above
+/// that block (FR-36a's mechanism, carried by D-52) and keeps the block
+/// anchored in place (D-53) until the turn's handoff (D-54).
+///
+/// Write ownership. The armed zone is the live screen's sole writer: the raw
+/// writers and the renderer gate their screen writes on it and only record
+/// into the transcript — the record is the one truth the zone's beat renders
+/// from, so there is no second writer to race (the BL-M33 two-writers race is
+/// removed by ownership, not by locking). Once per beat the zone wipes the
+/// rows above the input span and repaints them bottom-up at absolute rows:
+/// the log tail (the record's own rows, the wrap it was written with) ending
+/// at the clock's top, the clock above the peers' band, the peers' band above
+/// the parked span — the instruction's top-down order (log, run display,
+/// subagent rows, prompt). The typed line never moves; no DECSTBM margin, no
+/// SU/SD shifting: the region is re-painted absolutely every beat.
+///
+/// Caret exactness without cursor queries. The renderer (or the arm) tells the
+/// zone where the caret stands after every edit render and how many rows the
+/// block spans now; the zone restores exactly that position after every write.
+/// Streaming under a caret at the end of the block adds a wrapped row and the
+/// renderer reports it as it reports its bookkeeping — no recurring
+/// `cursor::position` traffic and no stale-answer hazard (FR-27 stands).
+struct TurnZone {
+    /// Terminal geometry as of the arm.
+    height: u16,
+    /// Terminal width; reused by the beat's tail wrap and the span render.
+    width: u16,
+    /// The input span's top row (0-based): the prompt block — the parked
+    /// prompt line and whatever the edit wraps/suggests — occupies the rows
+    /// `span_top..=height−1`. It is the beat's floor: every beat erases and
+    /// repaints only the rows above it, so the typed line never moves (D-53).
+    span_top: u16,
+    /// Where the editor's caret stands now, as absolute screen coordinates.
+    /// The renderer's armed paint places it; every zone write ends parked, so
+    /// the caret never wanders while the turn runs.
+    caret_col: u16,
+    caret_row: u16,
+    /// The lowest row the zone has painted (0-based), so far. The beat paints
+    /// from the clock's top down to the span's floor, and the band and the
+    /// clock move with the beat, so this is the disarm's erase floor: a turn
+    /// that ends erases every row the zone ever touched, none it never did.
+    painted_top: u16,
+    /// The run display's block as the last beat painted it: its top row and
+    /// its row count. The thinking-toggle click (FR-27) is judged against this
+    /// extent — the live path's cursor-relative rule has no painted rows to
+    /// judge by while the zone holds the writes.
+    clock_top: u16,
+    clock_rows: u16,
+    /// Whether the zone's own screen is the one being written: the scroll
+    /// overlay's alternate screen hides it, and the screen writes stop while
+    /// hidden (the record keeps running; the overlay draws from the record).
+    on_screen: bool,
+    /// Whether the turn this zone was armed for has reached its terminal event
+    /// while the zone was hidden: the disarm then does not erase the other
+    /// screen's coordinates, and the handoff (the erase, the tail replay and
+    /// the park) is carried out the moment the live screen returns —
+    /// `zone_show` seeing this.
+    closed: bool,
+    /// The session identity the beat composes the subagent rows from, taken
+    /// at the arm so the beat's registry reads need no argument passed in.
+    session: ZoneSession,
+}
+
+/// The zone handle, a process-wide singleton next to the session transcript:
+/// only the interactive session arms it, and every writer (the display task's
+/// events, the input loop's notices) routes through the same helpers.
+static TURN_ZONE: std::sync::Mutex<Option<TurnZone>> = std::sync::Mutex::new(None);
+
+/// The session identity the armed zone composes the subagent rows from, taken
+/// at the arm: the beat reads the shared registry through these, so a peer's
+/// row carries its operating time and its processing content (FR-37b's D-58
+/// registry transport) fresh at every beat without the arm passing rows in.
+#[derive(Clone)]
+struct ZoneSession {
+    registry_dir: std::path::PathBuf,
+    self_id: crate::id::AgentId,
+    theme: Theme,
+}
+
+/// Erase the row at an absolute 0-based position: a CUP to the row's column 0
+/// followed by an entire-row erase, so a beat's repaint never inherits a
+/// longer row's tail from what streamed there a beat ago.
+fn zone_csi_move(col: u16, row: u16) -> String {
+    format!("\x1b[{};{}H", row.saturating_add(1), col.saturating_add(1))
+}
+
+fn zone_csi_clear_row(row: u16) -> String {
+    format!("{}\x1b[2K", zone_csi_move(row, 0))
+}
+
+fn lock_zone() -> std::sync::MutexGuard<'static, Option<TurnZone>> {
+    TURN_ZONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Whether the zone holds the live screen's write ownership (the prompt
+/// pinned). The writers' gate: `raw_*` and the renderer record-only while
+/// this true. Ownership covers the hidden state too — while the overlay's
+/// alternate screen shows, the zone holds the lease but paints nothing, and
+/// a turn's in-flight writes must keep landing in the record alone (the
+/// overlay draws from that same record), so the gate does not open for the
+/// hidden zone.
+fn zone_armed() -> bool {
+    lock_zone().is_some()
+}
+
+/// Arm the zone for a Pending turn (FR-37a's D-52): the zone takes the live
+/// screen's write ownership with the span anchored on the screen's last row
+/// (the bare parked prompt — the caller's span render re-anchors with the
+/// editor's real extent and reports the caret). Every armed writer stops its
+/// screen writes immediately, and the beat owns the rows above the span from
+/// the next tick; the first beat composes the standing shape on request.
+fn zone_arm(state: &Arc<ReplState>) {
+    let height = terminal_height() as u16;
+    if height < 2 {
+        // No screen worth the name: degrade to the shipped flow (AS-54).
+        return;
+    }
+    let session = ZoneSession {
+        registry_dir: state.registry_dir.clone(),
+        self_id: state.id.clone(),
+        theme: state.theme,
+    };
+    *lock_zone() = Some(TurnZone {
+        height,
+        width: PromptRenderer::terminal_width() as u16,
+        // The initial anchor: a bare one-row parked prompt on the screen's
+        // last row. The caller's span render re-anchors with the editor's
+        // real extent (zone_paint_span) before the first beat.
+        span_top: height - 1,
+        caret_col: 0,
+        caret_row: height - 1,
+        painted_top: height - 1,
+        clock_top: height - 1,
+        clock_rows: 0,
+        on_screen: true,
+        closed: false,
+        session,
+    });
+}
+
+/// The turn-end handoff (D-54): erase everything the zone ever painted and
+/// replay the record so the log ends above the fresh prompt row. The outcome
+/// line the indicator's `finish` recorded at the terminal event stands as the
+/// record's newest line; the shipped render below draws the prompt underneath.
+fn zone_disarm() {
+    let mut guard = lock_zone();
+    // Hidden (the overlay's alternate screen): the turn ended while the other
+    // screen owned the terminal — erasing its own coordinates now would hit
+    // the wrong screen, so the zone stands with the debt marked and the
+    // handoff runs when the live screen returns (`zone_show`).
+    if let Some(z) = guard.as_mut() {
+        if !z.on_screen {
+            z.closed = true;
+            return;
+        }
+    } else {
+        return;
+    }
+    let Some(z) = guard.take() else {
+        return;
+    };
+    let width = z.width.max(1) as usize;
+    let height = z.height;
+    let painted_top = z.painted_top;
+    // Rows painted_top..=height−2: every transient row the zone could have
+    // put on screen, the span's rows included. The record's tail replays
+    // ending on that row — the outcome line the indicator's `finish` recorded
+    // at the terminal event is the tail's newest row — so the shipped render
+    // below draws the prompt on a fresh, empty bottom row, exactly where a
+    // `reset` puts it after a newline-terminated print. One queued pass, so
+    // the repair paints atomically.
+    let plan = zone_disarm_plan(height, painted_top);
+    let mut seq = String::new();
+    for row in painted_top..=plan.tail_floor {
+        seq.push_str(&zone_csi_clear_row(row));
+    }
+    if plan.budget > 0 {
+        if let Some(rows) = crate::scroll::tail_for_region(width, plan.budget) {
+            let top = plan.tail_floor + 1 - rows.len() as u16;
+            for (i, line) in rows.iter().enumerate().take(plan.budget) {
+                seq.push_str(&zone_csi_move(0, top + i as u16));
+                seq.push_str("\x1b[2K");
+                seq.push_str(line);
+            }
+        }
+    }
+    // A fresh row at the screen's bottom: the column-0 origin every shipped
+    // write (the raw writers' CR+LF, `clear_block`'s MoveToColumn(0))
+    // continues from, so the handoff lands where the shipped flow puts the
+    // cursor after the outcome line's newline.
+    seq.push_str("\x1b[0m");
+    seq.push_str(&zone_csi_move(0, height - 1));
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    let _ = out.write_all(seq.as_bytes());
+    let _ = out.flush();
+}
+
+/// Park the caret where the renderer last placed it. Every zone write ends
+/// here, so the caret never wanders while the turn runs.
+fn zone_park() {
+    let (col, row) = {
+        let guard = lock_zone();
+        match guard.as_ref() {
+            Some(z) => (z.caret_col, z.caret_row),
+            None => return,
+        }
+    };
+    let _ = crossterm::queue!(std::io::stdout(), crossterm::cursor::MoveTo(col, row));
+    let _ = std::io::stdout().flush();
+}
+
+/// The beat (FR-37a's standing shape): erase every row above the input span —
+/// the span's own rows are never swept (D-53) — and repaint the region at
+/// absolute rows: the clock block on the rows directly above the span, the
+/// peers' band above the block, and the record's tail above the band, ending
+/// at the composition's top. The record is the sole truth (AS-53) and the beat
+/// is the only painter while armed; it runs from the display task's 100 ms
+/// ticker while a turn runs, so no new event type and no new state machine.
+/// The beat's composition plan (FR-37's four regions, read bottom-up from the
+/// span): the clock block fills the rows directly above the prompt span, the
+/// peers' band sits above the block — the newest just above it (FR-23, AS-26)
+/// — and the log's tail fills what remains above the band. Pure so the pin
+/// binds the same arithmetic the beat paints with; `sweep_to` is the erase
+/// floor the beat shares (the span's own rows are never swept, D-53).
+struct ZoneBeatPlan {
+    /// The clock block's top row (its bottom row is `block_home + block_n − 1`,
+    /// the row just above the span).
+    block_home: u16,
+    /// The peers' band's top row (its bottom row is `peers_top + peers_n − 1`,
+    /// the row just above the block).
+    peers_top: u16,
+    /// The beat erases rows `0..sweep_to` — everything above the input span.
+    sweep_to: u16,
+}
+
+fn zone_beat_plan(span_top: u16, block_n: u16, peers_n: u16) -> ZoneBeatPlan {
+    ZoneBeatPlan {
+        block_home: span_top.saturating_sub(block_n),
+        peers_top: span_top
+            .saturating_sub(block_n)
+            .saturating_sub(peers_n),
+        sweep_to: span_top,
+    }
+}
+
+/// The disarm's geometry, pure: the erase starts at `painted_top` (every row
+/// the zone ever painted) and the record's tail replays ending on
+/// `tail_floor` = height−2 — the row above the bottom row, so the shipped
+/// render draws the prompt on a fresh bottom row with the outcome line above
+/// it (D-54). Pure so the pin binds the same arithmetic the disarm paints with.
+struct DisarmPlan {
+    /// The last row the tail replay may paint (`height − 2`).
+    tail_floor: u16,
+    /// The rows the tail replay asks the record for.
+    budget: usize,
+}
+
+fn zone_disarm_plan(height: u16, painted_top: u16) -> DisarmPlan {
+    let tail_floor = height.saturating_sub(2);
+    // AS-54's degrade inside the geometry: a terminal too short to hold the
+    // fresh bottom row and the row above it has no rows the replay may paint
+    // into (the degenerate floor would be the bottom row itself), so the plan
+    // replays nothing — `zone_arm` never arms such a terminal anyway.
+    let budget = if height < 2 {
+        0
+    } else {
+        (tail_floor.saturating_add(1)).saturating_sub(painted_top) as usize
+    };
+    DisarmPlan { tail_floor, budget }
+}
+
+fn zone_beat(block_rows: &[String]) {
+    // Compose everything that needs the zone's identity while holding the
+    // guard, then drop it before any screen write (beats and the input loop
+    // take the same lock; holding it across writes only widens the window).
+    let (width, span_top, on_screen, session) = {
+        let guard = lock_zone();
+        let Some(z) = guard.as_ref() else {
+            return;
+        };
+        (
+            z.width.max(1) as usize,
+            z.span_top,
+            z.on_screen,
+            z.session.clone(),
+        )
+    };
+    if !on_screen {
+        // The overlay's alternate screen owns the terminal: the bookkeeping
+        // stands, the writes wait for the live screen.
+        return;
+    }
+    let block_n = block_rows.len() as u16;
+    let peers = live_peer_lines(
+        &session.registry_dir,
+        &session.self_id,
+        width,
+    )
+    .into_iter()
+    .map(|l| session.theme.err(Role::Peer, &l).into_owned())
+    .collect::<Vec<_>>();
+    let peers_n = peers.len() as u16;
+    // The composition reads bottom-up from the span: the clock block (the run
+    // display) on the rows above the span, the peers' band above the block —
+    // the newest just above it (FR-23, AS-26) — and the log's tail above the
+    // band. Read top-down the four regions stand in the instruction's order
+    // (FR-37): log / run display / subagent rows / prompt. The geometry is the
+    // pure plan's (the pin below binds the same arithmetic the beat paints).
+    let plan = zone_beat_plan(span_top, block_n, peers_n);
+    let (block_home, peers_top, sweep_to) = (plan.block_home, plan.peers_top, plan.sweep_to);
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    // Everything above the span belongs to the beat: erase the whole region
+    // and repaint it in one queued pass, so no row a previous beat painted —
+    // a taller block, a friendlier band — survives a beat that composes less.
+    let mut seq = String::new();
+    for row in 0..sweep_to {
+        seq.push_str(&zone_csi_clear_row(row));
+    }
+    for (i, line) in block_rows.iter().enumerate() {
+        seq.push_str(&zone_csi_move(0, block_home + i as u16));
+        seq.push_str("\x1b[2K");
+        seq.push_str(line);
+    }
+    for (i, line) in peers.iter().enumerate() {
+        seq.push_str(&zone_csi_move(0, peers_top + i as u16));
+        seq.push_str("\x1b[2K");
+        seq.push_str(line);
+    }
+    // The tail: as much of the record as the region above the composition
+    // holds, wrapped to the terminal's width and ending at the composition's
+    // top — the log's newest row stands just above the band (or the clock
+    // when no peer runs).
+    let mut tail_top = peers_top;
+    if peers_top > 0 {
+        if let Some(rows) = crate::scroll::tail_for_region(width, peers_top as usize) {
+            let n = rows.len() as u16;
+            tail_top = peers_top - n;
+            for (i, line) in rows.iter().enumerate() {
+                seq.push_str(&zone_csi_move(0, tail_top + i as u16));
+                seq.push_str("\x1b[2K");
+                seq.push_str(line);
+            }
+        }
+    }
+    // No colour may outlive the beat's last row: every later write re-states
+    // its own style, but the park lands on the user's line.
+    seq.push_str("\x1b[0m");
+    let _ = out.write_all(seq.as_bytes());
+    let _ = out.flush();
+    drop(out);
+    // Bookkeeping: the clock's extent for the click rule, and the topmost row
+    // the tail repainted — the disarm's erase and replay begin there, so a
+    // shrunk band or block never leaves a survivor above the span.
+    {
+        let mut guard = lock_zone();
+        if let Some(z) = guard.as_mut() {
+            z.clock_top = block_home;
+            z.clock_rows = block_n;
+            z.painted_top = z.painted_top.min(tail_top);
+        }
+    }
+    zone_park();
+}
+
+/// The renderer (or the arm) reports where the caret now stands and how many
+/// rows the input span takes; the zone re-anchors (D-53) so the beat's erase
+/// floor and the park follow the block the edit grew or shrank. The span can
+/// only sit on the screen's last rows; a span that would cross row 0 clamps.
+fn zone_reanchor(span: u16, caret_col: u16, caret_row: u16) {
+    let mut guard = lock_zone();
+    let Some(z) = guard.as_mut() else {
+        return;
+    };
+    let span = span.max(1).min(z.height);
+    z.span_top = z.height - span;
+    z.painted_top = z.painted_top.min(z.span_top);
+    z.caret_col = caret_col;
+    z.caret_row = caret_row;
+}
+
+/// The zone's screen is hidden (the scroll overlay's alternate screen owns
+/// the terminal): the bookkeeping stands, the screen writes stop and the
+/// writers' gate lifts so the overlay's draws come from the record directly.
+fn zone_hide() {
+    if let Some(z) = lock_zone().as_mut() {
+        z.on_screen = false;
+    }
+}
+
+/// The zone's screen is live again: the writes resume, the beat repaints from
+/// the record on its next tick, and the caret is parked. When the turn ended
+/// while the screen was hidden (`closed`), this is the deferred disarm — the
+/// handoff runs here, now that the screen's own coordinates are writable.
+fn zone_show() {
+    let mut guard = lock_zone();
+    match guard.as_mut() {
+        Some(z) if z.closed => {
+            z.closed = false;
+            // The deferred handoff: run the disarm on the live screen, then the
+            // shipped render below (the input loop's render_prompt) draws the
+            // prompt on top of the replayed tail.
+            z.on_screen = true;
+            drop(guard);
+            zone_disarm();
+        }
+        Some(z) => {
+            z.on_screen = true;
+            let (col, row) = (z.caret_col, z.caret_row);
+            drop(guard);
+            let _ = crossterm::queue!(std::io::stdout(), crossterm::cursor::MoveTo(col, row));
+            let _ = std::io::stdout().flush();
+        }
+        None => {}
+    }
+}
+
+fn zone_paint_span(
+    theme: &Theme,
+    prompt_role: Role,
+    prompt: &str,
+    input_state: &InputState,
+    suggestion: Option<&str>,
+) {
+    let Some((width, height)) = (|| {
+        let guard = lock_zone();
+        let z = guard.as_ref()?;
+        Some((z.width.max(1) as usize, z.height))
+    })() else {
+        return;
+    };
+    // The span's rows: the hint row when there is one, then the prompt's wrap
+    // extent — the same arithmetic the renderer's budget uses (D-28's count).
+    let sug_rows = suggestion_rows(suggestion, width) as usize;
+    let prompt_cols = crate::editor::str_display_width(prompt);
+    let total_cols = prompt_cols + input_state.display_width();
+    let (end_row, cursor_row, cursor_col) =
+        layout_cursor(prompt_cols, input_state.display_cursor(), total_cols, width);
+    let bottom_rows = end_row.max(cursor_row) + 1;
+    // The span is the screen's bottom rows; a wrap extent taller than the
+    // screen clamps (the anchor clamps with it).
+    let span_n = sug_rows + bottom_rows;
+    let span_n = span_n.min(height.max(1) as usize).max(1);
+    // Grow the anchor (a span taller than the arm's initial one row) before the
+    // paint: the beat's erase floor must not sit inside the span. The caret row
+    // is the span's bottom row offset by the cursor's position within it.
+    // The caret rides the block's bottom row, offset by the cursor's position
+    // within it; the anchor reports the same absolute row the paint below
+    // parks on (both are height−1−offset: the block's last row pins to the
+    // screen's bottom row under any clamp).
+    let bottom_offset = end_row.max(cursor_row) - cursor_row;
+    zone_reanchor(
+        span_n as u16,
+        cursor_col as u16,
+        (height as usize - 1 - bottom_offset.min(span_n - 1)) as u16,
+    );
+    // The hint row rides the span's top; the prompt's wrap rows follow, each
+    // wrapped by the transcript's own SGR-aware wrapper so a styled prompt and
+    // a multibyte line break exactly as the renderer would.
+    let mut rows: Vec<String> = Vec::with_capacity(span_n);
+    if sug_rows == 1 {
+        let sug = truncate_suggestion(suggestion.unwrap_or(""), width - 1);
+        rows.push(theme.out(Role::Hint, &sug).into_owned());
+    }
+    let plain = format!(
+        "{}{}",
+        theme.out(prompt_role, prompt),
+        theme.out(Role::InputText, &input_state.line)
+    );
+    // The rows paint at absolute rows, the block's last row pinning to the
+    // screen's bottom row; a shorter wrapped content leaves the rows above it
+    // to the beat's sweep. An exactly-full last row leaves the cursor on a
+    // pending fresh row the wrapper does not emit — the erase already cleared
+    // it, so nothing is painted there.
+    for line in crate::scroll::wrap_styled(&plain, width) {
+        rows.push(line);
+    }
+    // The rows paint at absolute rows: the anchor grew above, so the span's
+    // last row is the screen's bottom row and the wrapped content fills the
+    // span downward from its top.
+    let base = (height - span_n as u16) as usize;
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    let mut seq = String::new();
+    for (i, line) in rows.iter().enumerate() {
+        seq.push_str(&zone_csi_move(0, (base + i) as u16));
+        seq.push_str("\x1b[2K");
+        seq.push_str(line);
+    }
+    // The caret parks on the same absolute row the anchor reported — one
+    // truth for the span's edit position (the clamp matches `zone_reanchor`).
+    let caret_row = height - 1 - (bottom_offset.min(span_n - 1)) as u16;
+    seq.push_str("\x1b[0m");
+    seq.push_str(&zone_csi_move(cursor_col as u16, caret_row));
+    let _ = out.write_all(seq.as_bytes());
+    let _ = out.flush();
 }
 
 /// Rows the prompt block occupies on screen: the optional suggestion row above
@@ -1435,9 +2000,16 @@ impl ScrollOverlay {
 
     fn enter(&mut self, stdout: &mut std::io::Stdout) {
         if self.active {
+            // Already on the alternate screen: reset it (the drawn rows stand
+            // from the last view) and hand the zone back its margin.
+            self.view.reset();
             return;
         }
         let _ = stdout.execute(terminal::EnterAlternateScreen);
+        // The alternate screen owns the terminal while the overlay draws: the
+        // armed turn zone stops writing (its bookkeeping keeps running) so a
+        // turn's in-flight writes cannot land on the overlay's screen.
+        zone_hide();
         self.active = true;
     }
 
@@ -1451,6 +2023,10 @@ impl ScrollOverlay {
         }
         let _ = stdout.execute(terminal::LeaveAlternateScreen);
         self.active = false;
+        // Back on the live screen: re-issue the armed turn zone's own margin
+        // (the alternate screen the overlay just left consumed it), replay the
+        // transcript tail into the region, and recompose the band + the park.
+        zone_show();
     }
 }
 
@@ -1552,23 +2128,26 @@ fn bottom_block_rows(
     ) + scrolled_marker_rows(view_moved)
 }
 
-/// The subagent run-state rows (FR-20): one row per live direct child of this
-/// session, naming the peer and its operating time. Pure over the children list,
-/// so the pins compose rows without a registry.
+/// The peer's situation face (FR-37b): one row per live direct child of this
+/// session, naming the peer, its operating time and — when the peer reports
+/// one (D-58's registry transport) — its processing content. Pure over the
+/// children list, so the pins compose rows without a registry. The content's
+/// absence degrades to the shipped name-and-operating-time face.
 ///
 /// The whole list rides on one terminal row when every row fits; `width` is the
 /// budget the truncation shares.
 fn peer_status_rows(
-    children: &[(String, std::time::Duration)],
+    children: &[(String, std::time::Duration, Option<String>)],
     width: usize,
 ) -> Vec<String> {
     children
         .iter()
-        .map(|(name, age)| {
-            crate::editor::truncate_display(
-                &format!("peer {name} · {}", format_elapsed(*age)),
-                width.saturating_sub(1),
-            )
+        .map(|(name, age, turn)| {
+            let face = match turn.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                Some(t) => format!("peer {name} · {} · {t}", format_elapsed(*age)),
+                None => format!("peer {name} · {}", format_elapsed(*age)),
+            };
+            crate::editor::truncate_display(&face, width.saturating_sub(1))
         })
         .collect()
 }
@@ -1580,7 +2159,7 @@ fn peer_status_rows(
 fn live_children_states(
     registry_dir: &Path,
     self_id: &crate::id::AgentId,
-) -> Vec<(String, std::time::Duration)> {
+) -> Vec<(String, std::time::Duration, Option<String>)> {
     let mut children = crate::ipc::registry::children_of(registry_dir, self_id)
         .unwrap_or_default();
     // The rows stack from the bottom line upward with the newest nearest the
@@ -1596,7 +2175,7 @@ fn live_children_states(
                 .signed_duration_since(e.started_at)
                 .to_std()
                 .unwrap_or_default();
-            (peer_display_name(&e), age)
+            (peer_display_name(&e), age, e.turn)
         })
         .collect()
 }
@@ -1872,6 +2451,19 @@ async fn run_display_task(
                 None => break,
             },
             _ = ticker.tick() => {
+                // The armed zone (FR-37a): the beat owns the rows above the
+                // input span — the clock block (spinner + thinking) composes
+                // from the indicator's own face, the peers' band rides with it
+                // (FR-37b), and the tick's screen writes stay suppressed.
+                if zone_armed() {
+                    let block = {
+                        let mut ind = lock_indicator(&display_indicator);
+                        ind.zone_advance_frame();
+                        ind.zone_block_rows()
+                    };
+                    zone_beat(&block);
+                    continue;
+                }
                 lock_indicator(&display_indicator).tick();
                 continue;
             }
@@ -2037,6 +2629,15 @@ fn handle_key(key_event: KeyEvent, input: &mut InputState, history: &[String]) -
 
     match key_event.code {
         KeyCode::Enter => {
+            // A bare Enter (an Enter-only input) is ignored (FR-38, D-59):
+            // the guard sits at the editor's Enter arm, before `submit()`,
+            // so the empty submit touches no state — no history write, no
+            // queue effect, no redraw side effects — in every prompt state
+            // this arm serves. A whitespace-only line still submits (the
+            // guard suppresses the empty string only).
+            if input.line.is_empty() {
+                return None;
+            }
             let line = input.submit();
             Some(KeyAction::Submit(line))
         }
@@ -2442,6 +3043,10 @@ async fn run_input_loop_raw(
                             state.turn_in_flight.load(Ordering::SeqCst),
                         ) {
                             prompt_state = PromptState::Ready;
+                            // The handoff (D-54): the zone gives the screen
+                            // back — its rows erased, the record's tail replayed
+                            // above the fresh prompt — before the shipped render.
+                            zone_disarm();
                             // Redraw prompt after AI response on a fresh line
                             renderer.reset();
                             render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
@@ -2680,21 +3285,28 @@ async fn run_input_loop_raw(
                                 )
                             )
                         {
-                            let painted = lock_indicator(&state.indicator).painted_rows();
-                            // The physical cursor row decides where the click
-                            // landed, and the question goes to the pump — the
-                            // only thread that may touch crossterm's reader —
-                            // so it is never asked behind another consumer's
-                            // back. Without an answer in time the click
-                            // changes nothing, so the elapsed display cannot
-                            // surface from a stale answer (FR-27). The test
-                            // itself keeps the elapsed row out of the rule
+                            // The armed zone owns the standing shape: its beat
+                            // bookkeeping knows the clock block's absolute
+                            // rows, so the question is answered from the
+                            // zone's own truth and no pump round-trip is
+                            // spent. The shipped rule otherwise asks the
+                            // pump — the only thread that may touch
+                            // crossterm's reader — so nothing is asked behind
+                            // another consumer's back. Without an answer in
+                            // time the click changes nothing, so the elapsed
+                            // display cannot surface from a stale answer
+                            // (FR-27). Both rules keep the elapsed row out
                             // (the block's first row, excluded top).
-                            let hit = match cursor_position_via_pump(pump_query_tx.as_ref()).await {
-                                Ok((_, cursor_row)) => {
-                                    click_hits_indicator(painted, cursor_row, mouse_event.row)
+                            let hit = if zone_armed() {
+                                zone_click_hits_clock(mouse_event.row)
+                            } else {
+                                let painted = lock_indicator(&state.indicator).painted_rows();
+                                match cursor_position_via_pump(pump_query_tx.as_ref()).await {
+                                    Ok((_, cursor_row)) => {
+                                        click_hits_indicator(painted, cursor_row, mouse_event.row)
+                                    }
+                                    Err(_) => false,
                                 }
-                                Err(_) => false,
                             };
                             if hit {
                                 lock_indicator(&state.indicator).toggle_expanded();
@@ -2871,6 +3483,12 @@ async fn run_input_loop_raw(
                                 // read once the turn had already ended, and would then
                                 // print over the freshly drawn prompt.
                                 begin_cancel(&state.cancel, &state.suppress, &state.turn_in_flight);
+                                // The forced return: the zone hands the screen
+                                // back first — its rows are erased and the
+                                // record's tail stands as the log — then the
+                                // shipped cancel flow paints the notice and
+                                // the prompt (D-54).
+                                zone_disarm();
                                 // Take the bottom rows back from the indicator
                                 // before printing over them.
                                 lock_indicator(&state.indicator).suspend();
@@ -2952,7 +3570,16 @@ async fn run_input_loop_raw(
                                         // keystrokes, re-painted on every change.
                                         input_state = InputState::new();
                                         renderer.reset();
-                                        paint_queue_status(&input_tx, &state, &mut renderer);
+                                        // The standing shape owns the screen
+                                        // (FR-37a): the fresh span is the zone's
+                                        // to paint; the `[queued: N]` notice
+                                        // rides the record (AS-53) — the next
+                                        // beat surfaces it above the clock.
+                                        if zone_armed() {
+                                            zone_paint_span(&state.theme, Role::PromptSymbol, PROMPT, &input_state, None);
+                                        } else {
+                                            paint_queue_status(&input_tx, &state, &mut renderer);
+                                        }
                                     }
                                     KeyAction::ClearLine | KeyAction::Continue => {
                                         render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
@@ -2975,6 +3602,9 @@ async fn run_input_loop_raw(
                                 let _ = resp_tx.send(false);
                             }
                             begin_cancel(&state.cancel, &state.suppress, &state.turn_in_flight);
+                            // The deny ends the turn's run display: the zone
+                            // hands the screen back before the notice prints.
+                            zone_disarm();
                             lock_indicator(&state.indicator).suspend();
                             renderer.clear_block(&mut stdout);
                             raw_eprintln(
@@ -3088,6 +3718,11 @@ async fn run_input_loop_raw(
                                             CommandResult::SubmittedPrompt => {
                                                 while agent_idle_rx.try_recv().is_ok() {}
                                                 prompt_state = PromptState::Pending;
+                                                // A command's turn runs too (FR-37a):
+                                                // the zone takes the live screen the
+                                                // same way a typed prompt's does.
+                                                zone_arm(&state);
+                                                render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                                             }
                                             CommandResult::Continue => {
                                                 // Redraw prompt after command
@@ -3133,6 +3768,12 @@ async fn run_input_loop_raw(
                                     // Discard stale idle notifications from past peer prompts, then enter Pending
                                     while agent_idle_rx.try_recv().is_ok() {}
                                     prompt_state = PromptState::Pending;
+                                    // The four-region standing shape (FR-37a): the
+                                    // zone takes the live screen and the prompt
+                                    // re-paints as the pinned span above the beat's
+                                    // rows.
+                                    zone_arm(&state);
+                                    render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                                 }
                                 KeyAction::ClearLine => {
                                     // Redraw prompt with cleared state
@@ -3248,6 +3889,9 @@ async fn run_input_loop_raw(
                 ) {
                     pending_since = None;
                     prompt_state = PromptState::Ready;
+                    // The turn's end passed the display task quietly (the
+                    // notification only): the zone hands the screen back.
+                    zone_disarm();
                     renderer.reset();
                     render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                 }
@@ -3277,7 +3921,10 @@ async fn run_input_loop_raw(
         .await;
     }
     // Give the live screen back before tearing the prompt down, so the session
-    // never ends on the alternate screen.
+    // never ends on the alternate screen. The zone — still armed when the last
+    // turn is drained under a shutdown — lets go first, so the leave writes on
+    // a screen no other painter holds.
+    zone_disarm();
     overlay.leave(&mut stdout);
     // Ensure the prompt block (possibly wrapped) is cleaned up before exit
     lock_indicator(&state.indicator).suspend();
@@ -4149,7 +4796,49 @@ impl StatusIndicator {
         self.status_row()
     }
 
+    /// The armed zone's clock face (FR-37a): the styled rows the beat paints
+    /// as the run display — the spinner-and-elapsed row and, when captured,
+    /// the thinking rows under it — the shipped block's own face, unchanged.
+    fn zone_block_rows(&self) -> Vec<String> {
+        let Some(status) = self.status_row() else {
+            return Vec::new();
+        };
+        let mut rows = Vec::with_capacity(1 + THINKING_ROWS);
+        rows.push(status);
+        rows.extend(self.thinking_rows());
+        rows.iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let role = if i > 0 && row.starts_with("  ") {
+                    Role::Thinking
+                } else {
+                    Role::Progress
+                };
+                self.theme.err(role, row).into_owned()
+            })
+            .collect()
+    }
+
+    /// The beat's clock advance: the spinner's frame moves once per beat while
+    /// the zone paints the row, standing in for the shipped tick's advance.
+    fn zone_advance_frame(&mut self) {
+        if let Some(run) = self.run.as_mut() {
+            run.frame = run.frame.wrapping_add(1);
+        }
+    }
+
     fn repaint(&mut self) {
+        if zone_armed() {
+            // FR-37a: the zone owns the rows above the span (the beat paints
+            // the block's own face with `zone_block_rows`), so painting here
+            // would land beside the pinned prompt. Nothing to un-do either:
+            // the zone never paints with this handle, and `painted` never
+            // rises while the gate is on. The gate sits inside, behind the
+            // disabled/suspended/run checks, so the zone's borrow of the
+            // block's face (`zone_block_rows`) is the only thing repainting
+            // stands down from.
+            return;
+        }
         self.clear();
         if self.run.is_none() {
             return;
@@ -4189,6 +4878,16 @@ impl StatusIndicator {
     /// the row where painting began), so the output above is untouched and the
     /// next write continues where it would have without the indicator.
     fn clear(&mut self) {
+        // The armed zone (FR-37a): the beat owns the block's rows on the live
+        // screen and the shared cursor is parked on the prompt's caret — the
+        // shipped relative repair (MoveUp + erase downward) would cut into the
+        // wrong rows, so the flags reset quietly and the screen is left to the
+        // zone.
+        if zone_armed() {
+            self.painted = false;
+            self.painted_rows = 0;
+            return;
+        }
         if !self.painted {
             return;
         }
@@ -4234,8 +4933,11 @@ impl StatusIndicator {
         crate::scroll::record_line(&line);
         // A suspended block cannot write here: the overlay's body would repair
         // over it, and the transcript record above is what the user sees when
-        // the live view returns.
-        if !self.suspended {
+        // the live view returns. The armed zone asks the same quietness: the
+        // shared cursor is parked on the pinned span's caret, the row below the
+        // last beat's paint is the zone's to compose, so the outcome line is
+        // record-only here and surfaces through the disarm's replay.
+        if !self.suspended && !zone_armed() {
             let nl = self.newline();
             let _ = write!(self.out, "{line}{nl}");
             let _ = self.out.flush();
@@ -4630,6 +5332,14 @@ async fn render_prompt(
             },
         );
     } else {
+        // The armed zone's input span (FR-37a's D-52/D-53): the prompt block
+        // paints at its absolute rows inside the zone and the caret is
+        // reported back — the shipped render below stands down while armed,
+        // since its relative clears would cut into the rows the beat owns.
+        if zone_armed() {
+            zone_paint_span(&state.theme, role, prompt, input_state, sug.as_deref());
+            return;
+        }
         renderer.render(
             stdout,
             &state.theme,
@@ -6181,6 +6891,55 @@ mod tests {
         assert!(s.history_index.is_none());
     }
 
+    // --- FR-38: the bare-Enter guard (D-59) ---
+
+    #[test]
+    fn bare_enter_is_ignored_without_states_side_effects() {
+        // An empty line at Enter reaches no submit and mutates no editor
+        // state: no action, and the line stays empty (D-59's guard sits
+        // before `submit()`).
+        let mut s = InputState::new();
+        let action = handle_key(key(KeyCode::Enter, false), &mut s, &[]);
+        assert!(action.is_none());
+        assert_eq!(s.line, "");
+        assert!(s.history_index.is_none());
+    }
+
+    #[test]
+    fn bare_enter_after_draft_restore_is_ignored_too() {
+        // The guard is not a one-shot: browse to history, Esc back to the
+        // (empty) draft, press Enter — still ignored, history intact.
+        let history = vec!["old".to_string()];
+        let mut s = InputState::new();
+        s.navigate_up(&history);
+        let back = handle_key(key(KeyCode::Esc, false), &mut s, &history);
+        assert!(matches!(back, Some(KeyAction::Continue)));
+        let action = handle_key(key(KeyCode::Enter, false), &mut s, &[]);
+        assert!(action.is_none());
+        assert_eq!(s.line, "");
+    }
+
+    #[test]
+    fn nonempty_enter_still_submits() {
+        // A line with content submits exactly as before; the empty check is
+        // the only new behavior.
+        let mut s = InputState::new();
+        s.insert_char('h');
+        s.insert_char('i');
+        let action = handle_key(key(KeyCode::Enter, false), &mut s, &[]);
+        assert!(matches!(action, Some(KeyAction::Submit(l)) if l == "hi"));
+    }
+
+    #[test]
+    fn whitespace_only_enter_still_submits() {
+        // The guard suppresses the empty string only; whitespace falls
+        // through to `submit()` unchanged.
+        let mut s = InputState::new();
+        s.insert_char(' ');
+        let action = handle_key(key(KeyCode::Enter, false), &mut s, &[]);
+        assert!(matches!(action, Some(KeyAction::Submit(l)) if l == " "));
+    }
+
     // --- Pending-state cancel key classification ---
 
     #[test]
@@ -6356,9 +7115,127 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_row_carries_the_processing_content_when_the_registry_has_it() {
+        // FR-37b (T-79's content pin): the face grows the processing content
+        // beside the operating time, the row staying one line cut to the
+        // width.
+        let rows = peer_status_rows(
+            &[(
+                "worker".to_string(),
+                std::time::Duration::from_secs(65),
+                Some("tool bash".to_string()),
+            )],
+            80,
+        );
+        assert_eq!(rows.len(), 1, "one live child, one row: {rows:?}");
+        assert!(rows[0].contains("worker"), "the peer is named: {rows:?}");
+        assert!(
+            rows[0].contains("1m05s"),
+            "the operating time stays (D-58): {rows:?}"
+        );
+        assert!(
+            rows[0].contains("tool bash"),
+            "the processing content rides the row: {rows:?}"
+        );
+        // The whole face is one row cut to the width budget.
+        let wide = peer_status_rows(
+            &[(
+                "w".to_string(),
+                std::time::Duration::from_secs(1),
+                Some("x".repeat(200)),
+            )],
+            40,
+        );
+        assert_eq!(wide.len(), 1, "still one row when cut: {wide:?}");
+        assert!(
+            crate::editor::str_display_width(&wide[0]) <= 39,
+            "the row is cut to the width: {}",
+            crate::editor::str_display_width(&wide[0])
+        );
+    }
+
+    #[test]
+    fn a_peer_row_degrades_to_the_shipped_face_when_the_state_is_absent() {
+        // The degrade rule (D-58): no turn state in the registry entry (an old
+        // version's file, an idle peer) and the face is exactly the shipped
+        // name-and-operating-time.
+        let rows = peer_status_rows(
+            &[("alpha".to_string(), std::time::Duration::from_secs(1), None)],
+            80,
+        );
+        assert_eq!(rows[0], "peer alpha · 1.0s", "{rows:?}");
+        // A blank or whitespace-only content is absence too.
+        let blank = peer_status_rows(
+            &[(
+                "beta".to_string(),
+                std::time::Duration::from_secs(2),
+                Some("   ".to_string()),
+            )],
+            80,
+        );
+        assert_eq!(blank[0], "peer beta · 2.0s", "{blank:?}");
+    }
+
+    #[test]
+    fn the_peer_rows_keep_their_stacking_order() {
+        // T-79's stacking pin (FR-23/AS-26) over the display's real read
+        // path: `live_children_states` sorts the registry's children
+        // oldest-first — the spawn order itself — so the painter walking
+        // downward lands the newest on the row just above the block that
+        // holds the bottom. The directory is written newest-first and the
+        // names are set against the age order, so a sort by the registry's
+        // read order or by name fails this pin.
+        let tmp = TempDir::new().unwrap();
+        let parent = AgentId::new();
+        let entry = |name: &str, started_at: chrono::DateTime<chrono::Utc>| {
+            crate::ipc::registry::RegistryEntry {
+                id: AgentId::new(),
+                name: Some(name.to_string()),
+                group: None,
+                pid: 1,
+                started_at,
+                provider: "ollama".into(),
+                model: "m".into(),
+                // The directory itself is the socket stand-in: the read's
+                // reap-on-read prunes entries whose socket is gone, and the
+                // pin tests the stacking order, not liveness.
+                socket: tmp.path().to_path_buf(),
+                persona: None,
+                ancestors: vec![parent.clone()],
+                turn: None,
+            }
+        };
+        // Written newest-first: the read order is the opposite of the ask.
+        let newer = entry("apple", chrono::Utc::now());
+        let older = entry("zed", chrono::Utc::now() - chrono::Duration::seconds(30));
+        for e in [&newer, &older] {
+            std::fs::write(
+                tmp.path().join(format!("{}.json", e.id.as_str())),
+                serde_json::to_string(e).unwrap(),
+            )
+            .unwrap();
+        }
+        let states = live_children_states(tmp.path(), &parent);
+        assert_eq!(states.len(), 2, "both live children read: {states:?}");
+        assert_eq!(states[0].0, "zed", "the oldest child first: {states:?}");
+        assert_eq!(states[1].0, "apple", "the newest last: {states:?}");
+        assert!(
+            states[0].1 > states[1].1,
+            "the ages agree with the order: {states:?}"
+        );
+        // The painter's rows follow the same order (the newest nearest the
+        // clock).
+        let rows = peer_status_rows(&states, 80);
+        assert!(
+            rows[0].contains("zed") && rows[1].contains("apple"),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
     fn spawned_subagent_shows_its_line_with_operating_time() {
         let rows = peer_status_rows(
-            &[("worker".to_string(), std::time::Duration::from_secs(65))],
+            &[("worker".to_string(), std::time::Duration::from_secs(65), None)],
             80,
         );
         assert_eq!(rows.len(), 1, "one live child, one row: {rows:?}");
@@ -6376,8 +7253,8 @@ mod tests {
     fn second_subagent_gets_its_own_row_and_finished_one_is_removed() {
         let two = peer_status_rows(
             &[
-                ("alpha".to_string(), std::time::Duration::from_secs(1)),
-                ("beta".to_string(), std::time::Duration::from_secs(2)),
+                ("alpha".to_string(), std::time::Duration::from_secs(1), None),
+                ("beta".to_string(), std::time::Duration::from_secs(2), None),
             ],
             80,
         );
@@ -6386,11 +7263,121 @@ mod tests {
         // The reap decides removal: a finished child is simply not in the
         // registry read's output, so the rows contract covers its absence.
         let gone = peer_status_rows(
-            &[("beta".to_string(), std::time::Duration::from_secs(2))],
+            &[("beta".to_string(), std::time::Duration::from_secs(2), None)],
             80,
         );
         assert_eq!(gone.len(), 1, "the finished peer's line is gone: {gone:?}");
         assert!(!gone[0].contains("alpha"), "no stale row remains");
+    }
+
+    // --- T-77's pins: the FR-37a composition's own geometry (the live
+    // screen's zone) ---
+
+    #[test]
+    fn the_beat_plan_holds_the_four_regions_in_the_instruction_order() {
+        // FR-37a's re-stack, bound through the pure plan the beat paints with:
+        // read top-down the composition is FR-37's four regions — the log
+        // region above (there the sweep erases and the tail fills), the run
+        // display (the clock block), the subagent rows, the prompt span last.
+        // Fold check: swapping the block above the peers (the run display
+        // above the subagent rows) fails the order asserts.
+        let plan = zone_beat_plan(23, 2, 1);
+        // The clock block sits directly above the span
+        assert_eq!(plan.block_home, 21, "the block's home is span_top − block_n");
+        // The band above the block; its last row is the block's top neighbour
+        assert_eq!(plan.peers_top, 20, "the band is above the block");
+        assert_eq!(
+            plan.peers_top + 1, plan.block_home,
+            "the band's bottom row is the block's top neighbour"
+        );
+        // The sweep never enters the span (D-53) and covers all the region
+        // above
+        assert_eq!(plan.sweep_to, 23, "the sweep erases every row above the span");
+        // No peers: the block still sits directly above the span
+        let bare = zone_beat_plan(23, 1, 0);
+        assert_eq!(bare.block_home, 22);
+        assert_eq!(bare.peers_top, 22, "the band's plan collapses into the block");
+    }
+
+    #[test]
+    fn the_span_never_enters_the_sweep_even_when_the_block_exhausts_the_screen() {
+        // D-53's guarantee at the geometry's degenerate edge: a turn whose
+        // thinking block plus peers cover every row above the span still
+        // leaves the span's rows out of the beat's sweep (and the plan's
+        // saturating arithmetic keeps every row in range).
+        let plan = zone_beat_plan(3, 3, 0);
+        assert_eq!(plan.block_home, 0, "the block fills every row above the span");
+        assert_eq!(plan.sweep_to, 3, "the span's rows are still excluded");
+        // Overflowing the screen clamps at row 0 — nothing is negative, no
+        // panic, and the span's exclusion is unchanged.
+        let clamped = zone_beat_plan(0, 5, 5);
+        assert_eq!(clamped.block_home, 0);
+        assert_eq!(clamped.peers_top, 0);
+        assert_eq!(clamped.sweep_to, 0);
+    }
+
+    #[test]
+    fn the_zone_click_rule_hits_only_the_blocks_reasoning_rows() {
+        // FR-27's rule at the zone's clock block (D-52's composition): the
+        // reasoning rows (the block below its spinner row) toggle the view,
+        // the spinner row itself and everything outside the block never do,
+        // and a block not painted (`clock_rows <= 1`) takes no click. Fold
+        // check: including the spinner row (the shipped fold) fails the
+        // exclusion assert.
+        assert!(click_hits_clock_block(20, 3, 21));
+        assert!(click_hits_clock_block(20, 3, 22));
+        assert!(
+            !click_hits_clock_block(20, 3, 20),
+            "the spinner row itself is not a toggle"
+        );
+        assert!(
+            !click_hits_clock_block(10, 1, 11),
+            "a single-row block has no reasoning rows to toggle"
+        );
+        assert!(!click_hits_clock_block(10, 0, 11));
+        assert!(
+            !click_hits_clock_block(20, 3, 23),
+            "the span below the block is the user's line"
+        );
+    }
+
+    #[test]
+    fn the_disarm_leaves_the_bottom_row_fresh_and_the_record_ends_above_it() {
+        // D-54's handoff, bound through `tail_for_region`'s seam: the erase's
+        // budget ends the replay on the row above the bottom row, so the
+        // shipped render draws the prompt on a fresh bottom row with the
+        // outcome line above it. The disarm itself needs a terminal to paint
+        // at, so the pin binds its arithmetic through the same plan the erase
+        // walks and asks the record for exactly the plan's budget. Fold check:
+        // replaying the tail into the bottom row (the fold: the plan's floor
+        // one row lower into `height`) fails the bounds assert.
+        let plan = zone_disarm_plan(24, 0);
+        assert_eq!(plan.tail_floor, 22, "the replay ends above the bottom row");
+        assert_eq!(plan.budget, 23, "the erase owns every row it could paint");
+        let degenerate = zone_disarm_plan(1, 0);
+        assert_eq!(degenerate.tail_floor, 0, "the height clamp stays in range");
+        assert_eq!(degenerate.budget, 0, "a one-row terminal replays nothing");
+
+        // The record's side of the seam: the tail the disarm asks for exists,
+        // is at most the budget, and — with the transcript shorter than the
+        // budget — returns exactly what is there, which is what leaves the
+        // bottom row free for the shipped prompt.
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        for i in 0..5 {
+            crate::scroll::record_line(&format!("log line {i}"));
+        }
+        let rows = crate::scroll::tail_for_region(80, plan.budget).unwrap();
+        assert!(
+            rows.len() <= plan.budget,
+            "the replay never exceeds the budget: {rows:?}"
+        );
+        assert_eq!(
+            rows.last().map(|r| crate::theme::strip_sgr(r)),
+            Some("log line 4".to_string()),
+            "the record's tail is what the replay paints last: {rows:?}"
+        );
+        crate::scroll::uninstall();
     }
 
     #[test]

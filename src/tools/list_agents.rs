@@ -138,6 +138,7 @@ pub(crate) mod tests_support {
             socket,
             persona: None,
             ancestors: ancestors.to_vec(),
+            turn: None,
         };
         let handle = RegistryHandle::register(dir, &entry).await.unwrap();
         // Keep the files after the handle drops: this is a fixture, not a run.

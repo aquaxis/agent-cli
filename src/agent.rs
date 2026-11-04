@@ -468,6 +468,16 @@ impl Agent {
         // before anything else of this turn (including compaction), so the
         // elapsed time it shows covers the whole turn.
         let _ = event_tx.send(AgentEvent::TurnStart).await;
+        // The peer's situation face (FR-37b, D-58): the registry entry's turn
+        // field is the parent's read at its beat — coarse boundaries only
+        // (never per delta, the stream's rate would make the writes churn).
+        // Turn start (FR-37b): announce "working" in the registry, so the
+        // parent's peer row grows the processing content. D-58's measured
+        // transport is the registry seam, not an IPC message: the parent
+        // already re-reads the registry every beat for `live_children_states`,
+        // and the entry is what survives a peer that dies mid-turn.
+        crate::ipc::registry::set_turn_state(&self.registry_dir, &self.id, Some("working"))
+            .await;
 
         // Hybrid history-window management (opt-in `[history]`). Runs before
         // the provider call so the compacted history is what gets sent.
@@ -501,6 +511,7 @@ impl Agent {
                         .await;
                     // FR-03-2: Always emit a `Done` even on error, so the REPL input
                     // loop does not get stuck in Pending state.
+                    crate::ipc::registry::clear_turn_state(&self.registry_dir, &self.id).await;
                     let _ = event_tx.send(AgentEvent::Done).await;
                     return Ok(());
                 }
@@ -609,10 +620,12 @@ impl Agent {
             // next prompt continues from there), but every tool call it made
             // still needs a result before the history can be sent again.
             if cancelled {
+                crate::ipc::registry::clear_turn_state(&self.registry_dir, &self.id).await;
                 return self.finish_cancelled(event_tx, log, &pending_tools).await;
             }
 
             if had_error || pending_tools.is_empty() {
+                crate::ipc::registry::clear_turn_state(&self.registry_dir, &self.id).await;
                 let _ = event_tx.send(AgentEvent::Done).await;
                 return Ok(());
             }
@@ -638,6 +651,14 @@ impl Agent {
                 }
                 let (id, name, args) = pending_tools[next_tool].clone();
                 next_tool += 1;
+                // The row says which call is running (FR-37b): the name joins
+                // the elapsed time the parent composes at its beat.
+                crate::ipc::registry::set_turn_state(
+                    &self.registry_dir,
+                    &self.id,
+                    Some(&format!("tool {name}")),
+                )
+                .await;
                 let _ = event_tx
                     .send(AgentEvent::ToolCall {
                         name: name.clone(),

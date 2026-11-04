@@ -385,6 +385,7 @@ mod tests {
             socket,
             persona: None,
             ancestors: Vec::new(),
+            turn: None,
         }
     }
 
@@ -433,6 +434,7 @@ mod tests {
             socket: socket_path,
             persona: None,
             ancestors: Vec::new(),
+            turn: None,
         };
         write_registry_entry(registry_dir, &entry);
         entry
@@ -467,6 +469,7 @@ mod tests {
             socket: socket_path,
             persona: None,
             ancestors: Vec::new(),
+            turn: None,
         };
         write_registry_entry(registry_dir, &entry);
         entry
@@ -618,6 +621,7 @@ mod tests {
                 socket: socket.clone(),
                 persona: None,
                 ancestors: Vec::new(),
+                turn: None,
             },
             socket,
         )

@@ -4,6 +4,28 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+### Added
+
+- **The terminal composes four display regions while a turn runs.** From
+  the top: the agent's log (scrollable, mouse-selection-copyable), the
+  run's spinner-and-elapsed block, the running subagents' rows (each
+  carrying its operating time and its processing content — e.g.
+  「peer alpha · 1m05s · tool bash」, degrading to the shipped
+  「peer <name> · <elapsed>」 when the state is unavailable), and the
+  bottom-most line kept for the prompt, with the half-typed line
+  untouched by every redraw. The live screen's composition is carried by
+  a transcript-backed turn zone: while the turn runs the zone is the sole
+  writer on the rows above the pinned prompt span, a 100 ms beat
+  repainting the clock block, the peer band and the log's tail from the
+  transcript record (the sweep never enters the typed line); at the
+  turn's end the zone hands the screen back to the shipped renderer with
+  the outcome line in the log. The scrolled screen keeps its shipped
+  pinned composition. The subagents' processing content is transported
+  through a new `turn` field on the agent registry (old registry files
+  load unchanged). A bare `Enter` — Enter with an empty input line — is
+  now ignored on the raw editor's path instead of submitting; whitespace-
+  only input still submits.
+
 ## [0.38.0]
 
 ### Added

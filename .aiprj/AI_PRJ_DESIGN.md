@@ -99,9 +99,11 @@ the two new parts:
   one-row clock bottom the shipped pins bind is thereby a specification
   change: the pins `the_clock_row_is_not_the_subagent_lines_price`
   (`src/app.rs:6397–6421`, the Pending face) and the wheel pin "the
-  tracked turn pins one row" (`:6711–6730`) are updated in place to the
-  new composition in the same commit that delivers the feature (NFR-13),
-  as the FR-35 cycle did with its pending-loss pin.
+  tracked turn pins one row" (`:6711–6730`) are re-derived by the growth
+  and re-verified in place in the same commit that delivers the feature
+  (NFR-13) — the execution's head-to-head read found their text already
+  carrying the additive peer budget, no change needed — as the FR-35
+  cycle did with its pending-loss pin.
 
 ## 2. The touchpoints this cycle touches (TPR-22)
 
@@ -172,25 +174,49 @@ line numbers are **worktree** numbers; the HEAD line numbers stand in
 the tables above. The execution session continues or re-bases the block
 against the current documents (§3 of the tasks list: T-76; AS-58).
 
-## 3′′. The transport measurement's record (the execution-stage record, ⬜)
+## 3′′. The transport measurement's record (the execution-stage record, ✅)
 
-D-58's transport measurement is the execution stage's record: which
-standing transport carries the processing content (an IPC-set status
-extension or a registry-side field) is measured and recorded here when
-executed, with the §6 boundary item recorded with it. Until then the
-face's degrade rule stands: the shipped name-and-operating-time face.
+Measured at the execution stage: the **registry-side field** wins. The
+shipped IPC set's wire shapes stand untouched (the message set
+`src/ipc/mod.rs` keeps its shipped enumeration, no new variant), so §6's
+boundary item (no wire-shape change rides this cycle) holds with nothing
+recorded against it; the content rides the registry — `RegistryEntry`'s
+`turn: Option<String>` (`src/ipc/registry.rs:45`, `#[serde(default,
+skip_serializing_if = "Option::is_none")]`, absence is the degrade rule —
+an old registry file loads unchanged), written at the turn's boundaries by
+the agent itself: `set_turn_state` / `clear_turn_state`
+(`src/ipc/registry.rs:215` / `:231`), the peer writing
+`Some("working")` at its turn start (`src/agent.rs:479`), the per-tool
+content `tool <tool>` (the live tool name) beside each tool call
+(`src/agent.rs:656`), and the clears at every terminal path — the
+provider-error Done (`:514`), the cancelled-mid-stream unwind (`:623`),
+the normal Done (`:628`). The reader composes it into the peer rows:
+`live_children_states` (`src/app.rs:2159`) returns the 3-tuple
+(name, operating time, content) ordered oldest-first, and
+`peer_status_rows` (`src/app.rs:2139`) renders
+「peer <name> · <elapsed> · <content>」, one line cut to the width,
+degrading to the shipped 「peer <name> · <elapsed>」 when the entry lacks
+the state. The measurement's grounds: the content is read **fresh at each
+beat** (the zone's beat reads the registry every 100 ms), while the peer's
+own turn state changes only at the turn's boundaries — an IPC status
+variant would add a wire-shape change and a fan-out every tool call just
+to be stale between messages; the registry field is additive (the
+`skip_serializing_if` keeps old files loadable), needs no wire change, and
+the shipped round-trip pin
+(`the_turn_state_survives_the_registry_round_trip`,
+`src/ipc/registry.rs:316`) binds it green.
 
-## 4. Verification of the cycle (planned — the gate table, W-57–W-59)
+## 4. Verification of the cycle (the executed gate table, W-57–W-59)
 
 | Step | Check | Covers | Task | Status |
 |---|---|---|---|---|
-| W-57 | FR-37a — the composition: the prompt block on the bottom-most rows during a run (the live screen and the scrolled pin), the budgets re-derived from the helpers, the typed line persisting through the display beats | FR-37, FR-37a, NFR-13 | design TPR-22a/22b | ⬜ |
-| W-58 | FR-37b — the spinner-and-elapsed kept above the prompt block; the peer rows carrying the operating time and the processing content (degrading to the shipped face); the thinking rows, the subagent rows' stacking and the `[queued: N]` notice keeping their shipped faces; the turn-end handoff leaving no residue | FR-37b, NFR-14 | TPR-22a/22c | ⬜ |
-| W-58′ | The boundaries — the queue contracts (FR-35), the cancel keys, the approval takeover, the headless/piped paths, the mouse-capture and clipboard contracts unchanged | FR-37, FR-38, NFR-14 | — | ⬜ |
-| W-59 | The pins and the gates — the superseded geometry pins updated in place, the new pins (the prompt-at-bottom pins for both screens, the line-persists pin, the clock-above pin, the handoff pin, the content pin, the bare-`Enter` pin) green; unit + integration 0 failed, clippy identical to the baseline; the `.aiprj` documents mutually consistent, the work logs written, the delivery committed per the user's direction | FR-37, FR-38, NFR-13, C-08, C-09, NFR-12, AC-33 | TPR-22a/22b/22c/22d | ⬜ |
+| W-57 | FR-37a — the composition: the prompt block on the bottom-most rows during a run (the live screen and the scrolled pin), the budgets re-derived from the helpers, the typed line persisting through the display beats | FR-37, FR-37a, NFR-13 | design TPR-22a/22b | ✅ |
+| W-58 | FR-37b — the spinner-and-elapsed kept above the prompt block; the peer rows carrying the operating time and the processing content (degrading to the shipped face); the thinking rows, the subagent rows' stacking and the `[queued: N]` notice keeping their shipped faces; the turn-end handoff leaving no residue | FR-37b, NFR-14 | TPR-22a/22c | ✅ |
+| W-58′ | The boundaries — the queue contracts (FR-35), the cancel keys, the approval takeover, the headless/piped paths, the mouse-capture and clipboard contracts unchanged | FR-37, FR-38, NFR-14 | — | ✅ |
+| W-59 | The pins and the gates — the superseded geometry pins re-verified in place (already carrying the additive peer budget, no change needed), the new pins (the composition plan, sweep-exclusion, zone click-rule, handoff, screen-span, content, stacking, degrade, bare-`Enter` pins) green; unit + integration 0 failed, clippy identical to the baseline; the `.aiprj` documents mutually consistent, the work logs written, the delivery committed per the user's direction | FR-37, FR-38, NFR-13, C-08, C-09, NFR-12, AC-33 | TPR-22a/22b/22c/22d | ✅ |
 
-*Executed rows are transcribed (after execution) into `AI_PRJ_TASKS.md` §4
-(the task list's execution record).*
+*Executed rows stand in the task list's execution record (`AI_PRJ_TASKS.md`
+the tasks' sections below).*
 
 ## 5. The previous cycles (recorded after their documents were retired)
 

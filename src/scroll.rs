@@ -256,6 +256,15 @@ pub fn body_rows(height: usize, prompt_rows: u16) -> usize {
     height.saturating_sub(prompt_rows as usize)
 }
 
+/// The transcript's last `want` wrapped rows as plain row strings — the turn
+/// zone's region replay's transport (the log the scrollable region replays).
+/// The rows keep the styling they were recorded with, each self-closing. An
+/// installed transcript with less than `want` wrapped rows returns what is
+/// there; `None` when no transcript is installed (piped/serve paths).
+pub fn tail_for_region(cols: usize, want: usize) -> Option<Vec<String>> {
+    with(|t| tail_rows(t, cols, want).into_iter().map(|r| r.text).collect())
+}
+
 /// Where the view sits, in wrapped rows above the bottom of the transcript.
 /// `0` is the live view — the bottom — and is the only position in which no
 /// overlay is drawn.

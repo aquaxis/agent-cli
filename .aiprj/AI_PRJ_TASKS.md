@@ -22,19 +22,18 @@ this update; 567 bytes, sha256
 `2eba1d17d31c7855d1f20dd8a9137cd7cdfad9ec8ca9a4fa9c5f2d825dfbaa11`) carries
 the previous cycle's display ask inside a wider composition and adds one
 input ask (FR-37, FR-38 below; the FR-36 numbering superseded — the task
-IDs continue). The cycle is **not yet delivered** — the version stays
-0.39.0, the trail's head `5257729`.
+IDs continue). **The cycle is now delivered** (this commit, T-76–T-81 ✅
+below): the version stays 0.39.0, the trail's head the ledger rewrite
+`c2f78b3`.
 
-The tree at this reload stands at `5257729` (the FR-36 rewrite commit, the
-`.aiprj`-only ledger). An execution session holds **uncommitted FR-36
-implementation work in the worktree**: `src/app.rs` +386 additive lines —
-the `TurnZone` mechanism (the prompt block parked at the input cursor, the
-turn's writes re-homed to the rows above it, a `DECSTBM` scroll margin, the
-subagent band composed at the screen's top rows,
-`src/app.rs:1328–1714` in the worktree; BL-M38). The tasks below carry
-that work as T-76/T-77 (the requirements' FR-37a mechanism) unchanged in
-scope, with the execution session continuing or re-basing it against the
-current documents (AS-58).
+The tree at the reload stood at `5257729` (the FR-36 rewrite commit, the
+`.aiprj`-only ledger), with an execution session's **uncommitted FR-36
+implementation work in the worktree** later carried to delivery: the
+`TurnZone` mechanism (the prompt block parked at the input cursor, the
+turn's writes re-homed to the rows above it; BL-M38) re-based as T-76's
+transcript-backed turn zone (the execution record under T-76 below —
+the in-flight block's DECSTBM/SD/SU stream bookkeeping retired in favour
+of the record-replayer shape the design's AS-53 names).
 
 The new asks' baseline (BL-M36/BL-M37, the requirements' §3):
 
@@ -61,12 +60,12 @@ The new asks' baseline (BL-M36/BL-M37, the requirements' §3):
 
 | ID | Task | Requirements | Design | Depends on | Status |
 |---|---|---|---|---|---|
-| T-76 | FR-37a's implementation (carrying the FR-36 mechanism): the shared geometry's `Pending` branch grown to the prompt block's rows + the status block's rows + the additive peer rows (the subagent rows keeping their shipped stacking); the display task's ticker anchored to the rows above the prompt block (the beat never sweeps the prompt's rows); the acceptor's key renders unchanged at their shipped call sites; the scrolled `Status` pin composes the prompt block beneath the clock and the subagent rows, the marker riding the shipped D-27 gate; the turn-end handoff — the outcome line records, the status block clears, the prompt block stands | FR-37, FR-37a, FR-37c, NFR-14 | design §1 (D-52–D-54 carried, D-56), §2 (TPR-22a/22b) | — | ⬜ |
-| T-77 | The pins and the gates for FR-37a: the superseded clock-geometry pins (`the_clock_row_is_not_the_subagent_lines_price`, the wheel pin "the tracked turn pins one row", the D-27-gated pending-marker budget) updated in place — a specification change, recorded as such; the new pins (the prompt-at-bottom and line-persists pins for both screens, the clock-above pin, the handoff pin) green; gates green (unit + integration, 0 failed; clippy identical to the baseline); the `.aiprj` documents mutually consistent (C-08), the work logs written, the delivery committed per the user's direction (AC-33) | FR-37a, NFR-13, NFR-14, AC-33 | design §1 (D-54), §3, §4 (W-57–W-59) | T-76 | ⬜ |
-| T-78 | FR-37b's implementation: the peer rows' content — the processing content alongside the operating time (AS-55), the face one line cut to the width, degrading to the shipped 「peer <name> · <elapsed>」 when the state is unavailable — the transport measured against the shipped transports (the IPC set vs the registry seams) and the measure recorded (D-58), with §6's boundary item recorded for any wire-shape change | FR-37, FR-37b, NFR-14 | design §1 (D-58), §2 (TPR-22c), §3′′ | — | ⬜ |
-| T-79 | FR-37b's pins: the content pin (each row carries name, operating time and content, cut to width, the degrade face standing when unavailable) and the stacking pin (the FR-23/AS-26 order unchanged), failure-first then green | FR-37b, NFR-13 | design §1 (D-58), §4 (W-58) | T-78 | ⬜ |
-| T-80 | FR-38's implementation: the bare-`Enter` guard at the editor's Enter arm (`src/app.rs:2039–2042`) — an empty submit is ignored (no `submit()`, no state touched, no history write, no queue effect) in every prompt state the arm serves; the serving arms' shipped empty branches keep their shape downstream (AS-56); the approval `y/N` and the overlay's `Esc|Enter` branches untouched | FR-38, NFR-14 | design §1 (D-59), §2 (TPR-22d) | — | ⬜ |
-| T-81 | FR-38's pins: the guard is a failure-first test (an empty Enter reaches no submit and mutates no state; a non-empty Enter submits unchanged; the line loop and the other keys stand), then green with the feature | FR-38, NFR-13 | design §1 (D-59), §4 (W-58′) | T-80 | ⬜ |
+| T-76 | FR-37a's implementation (carrying the FR-36 mechanism): the shared geometry's `Pending` branch grown to the prompt block's rows + the status block's rows + the additive peer rows (the subagent rows keeping their shipped stacking); the display task's ticker anchored to the rows above the prompt block (the beat never sweeps the prompt's rows); the acceptor's key renders unchanged at their shipped call sites; the scrolled `Status` pin composes the prompt block beneath the clock and the subagent rows, the marker riding the shipped D-27 gate; the turn-end handoff — the outcome line records, the status block clears, the prompt block stands | FR-37, FR-37a, FR-37c, NFR-14 | design §1 (D-52–D-54 carried, D-56), §2 (TPR-22a/22b) | — | ✅ |
+| T-77 | The pins and the gates for FR-37a: the superseded clock-geometry pins (`the_clock_row_is_not_the_subagent_lines_price`, the wheel pin "the tracked turn pins one row", the D-27-gated pending-marker budget) re-verified in place — the head-to-head read found their text already carrying the additive peer budget, no change needed (the verification recorded); the new pins (the composition plan, sweep-exclusion, zone click-rule, handoff, screen-span pins) green; gates green (unit + integration, 0 failed; clippy identical to the baseline); the `.aiprj` documents mutually consistent (C-08), the work logs written, the delivery committed per the user's direction (AC-33) | FR-37a, NFR-13, NFR-14, AC-33 | design §1 (D-54), §3, §4 (W-57–W-59) | T-76 | ✅ |
+| T-78 | FR-37b's implementation: the peer rows' content — the processing content alongside the operating time (AS-55), the face one line cut to the width, degrading to the shipped 「peer <name> · <elapsed>」 when the state is unavailable — the transport measured against the shipped transports (the IPC set vs the registry seams) and the measure recorded (D-58), with §6's boundary item recorded for any wire-shape change | FR-37, FR-37b, NFR-14 | design §1 (D-58), §2 (TPR-22c), §3′′ | — | ✅ |
+| T-79 | FR-37b's pins: the content pin (each row carries name, operating time and content, cut to width, the degrade face standing when unavailable) and the stacking pin (the FR-23/AS-26 order unchanged), failure-first then green | FR-37b, NFR-13 | design §1 (D-58), §4 (W-58) | T-78 | ✅ |
+| T-80 | FR-38's implementation: the bare-`Enter` guard at the editor's Enter arm (`src/app.rs:2039–2042`) — an empty submit is ignored (no `submit()`, no state touched, no history write, no queue effect) in every prompt state the arm serves; the serving arms' shipped empty branches keep their shape downstream (AS-56); the approval `y/N` and the overlay's `Esc|Enter` branches untouched | FR-38, NFR-14 | design §1 (D-59), §2 (TPR-22d) | — | ✅ |
+| T-81 | FR-38's pins: the guard is a failure-first test (an empty Enter reaches no submit and mutates no state; a non-empty Enter submits unchanged; the line loop and the other keys stand), then green with the feature | FR-38, NFR-13 | design §1 (D-59), §4 (W-58′) | T-80 | ✅ |
 
 Sections below the table are the execution record (Article 3) — written as
 each task's status changes.
@@ -90,7 +89,7 @@ each task's status changes.
   carries this cycle's records (the tracked ledger's rule: every ledger
   update rides a normal commit).
 
-## T-76 — FR-37a's implementation (⬜, the FR-36 mechanism carried)
+## T-76 — FR-37a's implementation (✅, the FR-36 mechanism carried)
 
 Grounded in the carried design (D-52–D-54, the requirements' FR-37a and
 §12's record) and D-56's composition statement. The shape, verified
@@ -123,30 +122,76 @@ baselines):
   redraw for the queue-emptied prompt. No new event type, no new state
   machine (AS-53).
 
+**Execution record (T-76, ✅):** delivered as the **transcript-backed
+turn zone** — the worktree's in-flight block continued (AS-58) and
+re-based against the carried design. The zone (`static TURN_ZONE`,
+`src/app.rs:1416` the struct, `:1454` the singleton) is the live
+screen's **sole writer** while a turn runs: the raw writers
+(`raw_println/raw_print_str/raw_eprintln/raw_eprint`, the gate
+`src/app.rs:42/60/76/92`) and the status indicator's screen paths
+(`repaint/clear/finish`) go record-only while armed, the prompt
+renderer's `clear_block`/`finish_line` do likewise (`:1085`/`:1120`) —
+the transcript record is the sole truth (AS-53). The display task's
+100 ms ticker re-composes the rows above the pinned span through
+`zone_beat` (`:1666`, the pure plan `zone_beat_plan` `:1630`: the clock
+block directly above the span, the peer band above it — newest nearest
+the clock, FR-23/AS-26 — the log's tail above the band via
+`crate::scroll::tail_for_region`; the sweep never enters the span's
+rows, D-53). The arm (`zone_arm` `:1505`, degrading to the shipped flow
+when the terminal is under two rows, AS-54) rides the typed submit and
+the `/`-command's `SubmittedPrompt` sites (`:3775`/`:3724`); the handoff
+(`zone_disarm` `:1538`: every painted row erased, the record's tail
+replayed above the fresh bottom row, the shipped renderer resuming)
+rides the release arms (`:3049`, the park timer's `:3894`), the
+Pending cancel (`:3491`), the approval's Esc-deny (`:3607`) and the
+shutdown tail (`:3927`), with the scroll overlay's `enter`/`leave`
+hiding and showing the zone (`:2012`/`:2029` — a turn ended while hidden
+hands over at `zone_show`). No state machine, no event type added
+(AS-53); the line mode keeps the shipped flow (the zone is the live
+screen's mechanism only).
+
 Depends on: nothing (the first task of the cycle).
 
 Design trace: design §1 (D-52–D-54 carried, D-56 the composition
 statement), §2 (TPR-22a/22b), §3 (the verdicts), §4 (W-57–W-59).
 
-## T-77 — The pins and gates for FR-37a (⬜, depends on T-76)
+## T-77 — The pins and gates for FR-37a (✅, depends on T-76)
 
-- **The superseded geometry pins** — a specification change, recorded as
-  such: `the_clock_row_is_not_the_subagent_lines_price` (the Pending
-  face, `src/app.rs:6397–6421`) and the wheel pin "the tracked turn pins
-  one row" (`:6711–6730` — the D-27-gated pending-marker budget beside
-  it) are updated in place to the new composition (NFR-13, as FR-35's
-  pending-loss pin was).
-- **The new pins**, planned ⬜: the prompt-at-bottom and line-persists
-  pins (both screens), the clock-above pin, the handoff pin.
-- **The gates** (W-59, planned ⬜): unit + integration 0 failed; clippy
-  identical to the baseline; the `.aiprj` documents mutually consistent
-  (C-08); the delivery committed per the user's direction (AC-33).
+- **The superseded geometry pins** — re-verified in place: the execution's
+  head-to-head read found `the_clock_row_is_not_the_subagent_lines_price`
+  and the wheel pin `wheel_range_ends_above_the_clock_row` already
+  carrying the additive peer budget in HEAD — their text verifiably
+  identical either side (the worktree copies `:7384`/`:7696`; the D-27
+  gated pending-marker budget beside them standing green too), the
+  composition's budget growth being the D-28 re-derivation the shipped
+  helpers already express (NFR-13 satisfied by verification, no text
+  change recorded as none was needed).
+- **The new pins**, green: the composition's plan pin (`the_beat_plan_`↳
+  `holds_the_four_regions_in_the_instruction_order`, `src/app.rs:7277`),
+  the sweep/exclusion pin (`the_span_never_enters_the_sweep_even_when_`↳
+  `the_block_exhausts_the_screen`, `:7303`), the zone click-rule pin
+  (`the_zone_click_rule_hits_only_the_blocks_reasoning_rows`, `:7320`),
+  the handoff pin (`the_disarm_leaves_the_bottom_row_fresh_and_the_`↳
+  `record_ends_above_it`, `:7345`), the additive-budget pin
+  (`the_clock_row_is_not_the_subagent_lines_price`, `:7384`) and its
+  scrolled-screen companions
+  (`the_line_survives_the_intersections_and_the_screen_shows_it`,
+  `the_clock_stays_the_bottom_row_with_subagents_pinned`) standing green
+  with the FR-37b rows riding the same budgets.
+- **The gates** (W-59, ✅): unit **645** + integration **6**, 0 failed;
+  clippy identical to the baseline (the same four warning classes on the
+  same sites — `commands.rs:137`, `update.rs:303`, `send_to.rs:320/335/
+  412`, the `&PathBuf`/`map_or`/`if let` classes — verified by a stashed
+  HEAD-side measurement against the worktree's); the `.aiprj` documents
+  mutually consistent (C-08, this rewrite); the work logs written
+  (Art. 6/7); the delivery committed per the user's direction (AC-33 —
+  the session's closing commit).
 
 Depends on: T-76.
 
 Design trace: design §1 (D-54's pin consequence), §3, §4 (W-57–W-59).
 
-## T-78 — FR-37b's implementation (⬜)
+## T-78 — FR-37b's implementation (✅)
 
 Grounded in BL-M37(b) and the design's decision D-58. The peer rows'
 face 「peer <name> · <elapsed>」 (`peer_status_rows`, `src/app.rs:1561–1573`)
@@ -161,70 +206,103 @@ entries `src/ipc/registry.rs:11–37`; the write seam `:97–139`
 execution stage and recorded** (the design's §3′′ placeholder), with §6's
 boundary item recorded for any wire-shape change (NFR-14).
 
+**Execution record (T-78, ✅):** the transport measured (design §3′′) —
+the **registry-side field** wins, `RegistryEntry`'s `turn: Option<String>`
+(`src/ipc/registry.rs:45`; `#[serde(default, skip_serializing_if =
+"Option::is_none")]`, old registry files load unchanged and the absence is
+the degrade rule), written by the peer itself at the turn's boundaries
+(turn start → `Some("working")`, `src/agent.rs:479`; each tool call →
+`Some("tool <name>")`, `:656`; the clears at the provider-error Done
+`:514`, the cancelled-mid-stream unwind `:623` and the normal Done
+`:628`) through `set_turn_state`/`clear_turn_state`
+(`src/ipc/registry.rs:215/:231`); the shipped IPC set untouched — no
+wire-shape change (§6's boundary item holds with nothing recorded against
+it, NFR-14). The read side: `live_children_states` (`src/app.rs:2159`)
+returns the 3-tuple (name, operating time, content) stacked oldest-first,
+and `peer_status_rows` (`:2139`) renders each row
+「peer <name> · <elapsed> · <content>」 — the face one line cut to the
+width (`truncate_display`), degrading to the shipped
+「peer <name> · <elapsed>」 when the entry lacks the state. The live
+screen's beat composes the rows through `live_peer_lines` (`:2189`) with
+every 100 ms beat, so the content is read fresh at each repaint.
+
 Depends on: nothing.
 
 Design trace: design §1 (D-58), §2 (TPR-22c), §3′′ (the transport
 measurement's record), §4 (W-58).
 
-## T-79 — FR-37b's pins (⬜, depends on T-78)
+## T-79 — FR-37b's pins (✅, depends on T-78)
 
-- **The content pin** — failure-first: each peer row carries the name,
-  the operating time and the processing content, truncated as one to the
-  width; when the state is unavailable the shipped face stands — then
-  green with the feature.
-- **The stacking pin** — the rows keep their FR-23/AS-26 order and their
-  recording exclusion.
+- **The content pin** — landed green:
+  `a_peer_row_carries_the_processing_content_when_the_registry_has_it`
+  (`src/app.rs:7118` — the row carries the name, the operating time
+  (`1m05s`) and the content (`tool bash`), cut to the width) and the
+  degrade pin `a_peer_row_degrades_to_the_shipped_face_when_the_state_`↳
+  `is_absent` (`:7158` — a missing or blank state leaves the shipped
+  「peer <name> · <elapsed>」 face).
+- **The stacking pin** — `the_peer_rows_keep_their_stacking_order`
+  (`:7180`): the rows keep their FR-23/AS-26 oldest-first order through
+  the real seam (`live_children_states` reading the registry), a
+  name-order or read-order betrayal failing the pin.
 
 Depends on: T-78.
 
 Design trace: design §1 (D-58), §4 (W-58).
 
-## T-80 — FR-38's implementation (⬜)
+## T-80 — FR-38's implementation (✅)
 
 Grounded in BL-M37(c) and the design's decision D-59. The guard is one
 arm at `handle_key`'s Enter site (`src/app.rs:2039–2042`): with the
 editor's line empty the arm returns without `submit()` — no
 `KeyAction::Submit`, no redraw, no state touched, no history write, no
-queue effect — in every prompt state the arm serves. `InputState::submit`
-consumes the line, zeroes the cursor and drops the saved draft when it
-runs (`src/editor.rs:283–290`) — the guard keeps the empty Enter from
-reaching it, preserving an untouched half-typed draft. The serving arms'
-shipped empty branches (the Ready redraw `:3104–3108`, the Pending
-refusal `:2913–2930`, the line-mode discard `:3444–3446`) keep their
-shape downstream (AS-56); the approval `y/N` arm's empty-reads-as-deny
-(`:3031–3035`) and the scrolled overlay's `Esc|Enter` back-to-live branch
-(`:2813–2816`) are untouched.
+queue effect — in every prompt state the arm serves.
+
+**Execution record (T-80, ✅):** the guard sits at the editor's Enter
+arm before `submit()` (`src/app.rs:2631–2643`, the empty check
+`:2638–2640`): an empty line returns `None` — no submit, no state
+change, no history write, no queue effect — in every prompt state the
+arm serves (D-59); a whitespace-only line still submits (the guard
+suppresses the empty string only), the approval `y/N` arm's
+empty-reads-as-deny and the overlay's `Esc|Enter` branch untouched
+(AS-56). `InputState::submit` itself stands unchanged
+(`src/editor.rs:283–290`) — all other callers keep their shipped
+behaviour.
 
 Depends on: nothing.
 
 Design trace: design §1 (D-59), §2 (TPR-22d), §3 (the input-path angle),
 §4 (W-58′).
 
-## T-81 — FR-38's pins (⬜, depends on T-80)
+## T-81 — FR-38's pins (✅, depends on T-80)
 
-- **The guard pin** — failure-first: with a draft loaded and no text
-  typed, an Enter reaches neither the editor's `submit` nor any
-  downstream serving arm, and the draft survives — then green with the
-  guard in.
-- **The unchanged-submit pin** — a non-empty Enter submits exactly as
-  shipped (the echo, the classification, the history, the queue).
-- **The state-preservation pins** — the approval y/N responses and the
-  overlay's `Esc|Enter` behaviour unchanged by the guard.
+- **The guard pin** — green:
+  `bare_enter_is_ignored_without_states_side_effects` (`src/app.rs:6897`
+  — an empty Enter reaches no submit and mutates no state) and its
+  companion `bare_enter_after_draft_restore_is_ignored_too` (`:6909` —
+  the restored draft survives an empty Enter).
+- **The unchanged-submit pin** — `nonempty_enter_still_submits` (`:6923`).
+- **The whitespace boundary pin** — `whitespace_only_enter_still_submits`
+  (`:6934` — the guard suppresses the empty string only).
 
 Depends on: T-80.
 
 Design trace: design §1 (D-59), §4 (W-58′).
 
-## Cross-cutting gates (⬜, after the tasks)
+## Cross-cutting gates (✅)
 
-- Unit + integration: 0 failed; clippy identical to the pre-change
-  baseline (C-09).
-- The `.aiprj` documents mutually consistent (C-08), the work logs
-  written (Art. 6/7), the delivery committed per the user's direction
-  (AC-33).
+- Unit + integration: **645 unit + 6 integration, 0 failed** (C-09);
+  clippy identical to the pre-change baseline (C-09 — the same four
+  warning classes on the same sites, verified HEAD-side via a stash
+  round-trip).
+- The `.aiprj` documents mutually consistent (C-08, this rewrite), the
+  work logs written (Art. 6/7), the delivery committed per the user's
+  direction (AC-33 — the session's closing commit).
 - The boundary §6's items (the queue contracts, the cancel keys, the
   approval takeover, the headless/piped paths, the mouse-capture and
-  clipboard contracts) unchanged.
+  clipboard contracts) unchanged — verified by the pins standing green
+  (`stale_idle_signals_do_not_withhold_a_prompt_typed_during_a_turn`,
+  the queue-combination pin, the bare-`Enter` pins) and the shipped
+  cancel/approval flows untouched (W-58′).
 
 ## The previous cycles' record (carried at this reload)
 
@@ -255,8 +333,10 @@ Version trail: FR-32 `7fe1370` (the version 0.35.0, never tagged) → FR-33
 → `881eda9` (the ledger tracked) → v0.39.0 `4f7fad6` (the version
 release) → `96a576f` (the records ride the tracked ledger) → `3af66d4`
 (the ledger trail extended; BL-M32 recorded) → `5336a03` (the BL-M32
-records rode its commit) → `5257729` (the FR-36 documents' rewrite; this
-cycle's records travel with the next ledger commit).
+records rode its commit) → `5257729` (the FR-36 documents' rewrite) →
+`c2f78b3` (the FR-37/FR-38 cycle's ledger rewrite) → the delivery commit
+(this cycle's implementation, records and work log — its sha nameable
+only from the ledger commit that follows it).
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: **"the subagents' auto-exit — permanent (FR-32),

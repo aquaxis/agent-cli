@@ -34,6 +34,15 @@ pub struct RegistryEntry {
     /// responsibility of whoever started the chain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ancestors: Vec<AgentId>,
+    /// The agent's own turn state, written by the agent task at coarse turn
+    /// boundaries (FR-37b's measured transport, D-58): a one-line description
+    /// of what the peer is working on (`thinking`, `tool <name>`,
+    /// `answering`), absent when idle. `#[serde(default)]` keeps registry
+    /// files written before the field (and older versions) loadable; the
+    /// absence is the degrade rule — the parent's peer row falls back to the
+    /// shipped name-and-operating-time face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
 }
 
 impl RegistryEntry {
@@ -199,6 +208,30 @@ pub fn descendants_of(dir: &Path, id: &AgentId) -> Result<Vec<(RegistryEntry, u3
     Ok(out)
 }
 
+/// Update the peer's own registry file in place: read the entry, set or clear
+/// its processing-content field (FR-37b, D-58's measured transport), and write
+/// it back. Errors are swallowed — a failed status write degrades the parent's
+/// peer row to the name-and-elapsed face rather than failing the turn.
+pub async fn set_turn_state(dir: &Path, id: &AgentId, state: Option<&str>) {
+    let meta_path = dir.join(format!("{}.json", id.as_str()));
+    let Ok(raw) = tokio::fs::read_to_string(&meta_path).await else {
+        return;
+    };
+    let mut entry: RegistryEntry = match serde_json::from_str(&raw) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    entry.turn = state.map(|s| s.to_string());
+    if let Ok(out) = serde_json::to_string_pretty(&entry) {
+        let _ = tokio::fs::write(&meta_path, out).await;
+    }
+}
+
+/// Clear the peer's processing content (the turn is over).
+pub async fn clear_turn_state(dir: &Path, id: &AgentId) {
+    set_turn_state(dir, id, None).await;
+}
+
 pub fn resolve_peer(dir: &Path, key: &str) -> Result<RegistryEntry> {
     let entries = list_entries(dir)?;
     for e in &entries {
@@ -232,6 +265,7 @@ mod tests {
             socket: PathBuf::from("/tmp/a.sock"),
             persona: None,
             ancestors: Vec::new(),
+            turn: None,
         }
     }
 
@@ -254,7 +288,7 @@ mod tests {
         );
     }
 
-    /// A registry file written before lineage existed loads as a root.
+    /// An entry without ancestors loads as a root (the older-version shape).
     #[test]
     fn an_entry_without_ancestors_loads_as_a_root() {
         let old = r#"{
@@ -271,6 +305,27 @@ mod tests {
         assert!(entry.ancestors.is_empty());
         assert_eq!(entry.depth(), 0);
         assert!(entry.parent().is_none());
+        // D-58's degrade rule: absence in the file is absence in the entry, so
+        // the parent's row falls back to the shipped face (TFR-37b).
+        assert!(entry.turn.is_none());
+    }
+
+    /// D-58's pin: the turn state survives the same file round trip every
+    /// other transport shares, and an idle entry omits the key (TFR-37b).
+    #[test]
+    fn the_turn_state_survives_the_registry_round_trip() {
+        let mut busy = sample(None);
+        busy.turn = Some("tool bash".into());
+        let raw = serde_json::to_string(&busy).unwrap();
+        assert!(raw.contains("\"turn\""), "{raw}");
+        let back: RegistryEntry = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.turn.as_deref(), Some("tool bash"));
+
+        let idle = sample(None);
+        let raw = serde_json::to_string(&idle).unwrap();
+        assert!(!raw.contains("\"turn\""), "{raw}");
+        let back: RegistryEntry = serde_json::from_str(&raw).unwrap();
+        assert!(back.turn.is_none());
     }
 
     #[test]

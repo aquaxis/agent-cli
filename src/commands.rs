@@ -1268,6 +1268,7 @@ mod tests {
             socket: PathBuf::from("/tmp/x.sock"),
             persona: None,
             ancestors: Vec::new(),
+            turn: None,
         }
     }
 
@@ -1339,6 +1340,7 @@ mod tests {
             socket: socket_path,
             persona: None,
             ancestors: Vec::new(),
+            turn: None,
         };
         write_registry_entry(registry_dir, &entry);
         entry
@@ -1406,6 +1408,7 @@ registry_dir = {:?}
             socket: socket_path,
             persona: None,
             ancestors: Vec::new(),
+            turn: None,
         };
         write_registry_entry(&registry_dir, &entry);
 
