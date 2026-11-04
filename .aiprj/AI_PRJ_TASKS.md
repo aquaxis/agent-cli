@@ -334,9 +334,11 @@ Version trail: FR-32 `7fe1370` (the version 0.35.0, never tagged) → FR-33
 release) → `96a576f` (the records ride the tracked ledger) → `3af66d4`
 (the ledger trail extended; BL-M32 recorded) → `5336a03` (the BL-M32
 records rode its commit) → `5257729` (the FR-36 documents' rewrite) →
-`c2f78b3` (the FR-37/FR-38 cycle's ledger rewrite) → the delivery commit
-(this cycle's implementation, records and work log — its sha nameable
-only from the ledger commit that follows it).
+`c2f78b3` (the FR-37/FR-38 cycle's ledger rewrite) → `39afeb2` (the
+delivery commit — "During a turn the terminal composes the four display
+regions and a bare Enter is ignored", the cycle's implementation, records
+and work log; its sha named by the ledger commit that follows it, the
+tracked ledger's rule).
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: **"the subagents' auto-exit — permanent (FR-32),
