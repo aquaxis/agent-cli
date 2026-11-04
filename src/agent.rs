@@ -1399,6 +1399,85 @@ mod tests {
         );
     }
 
+    /// FR-35's boundary pin: a prompt queued behind a turn survives the user
+    /// cancelling that turn. The first turn starts a tool call and is
+    /// cancelled at the call; the second prompt — already queued behind it —
+    /// must still be served afterwards. The per-turn cancel token is consumed
+    /// by the unwind (and re-zeroed on the next turn's entry), the session's
+    /// `stopping` flag never moves, so the dequeued prompt runs a full turn:
+    /// its answer arriving at all is the proof the queue was neither dropped
+    /// nor refused (the cancelled turn's `cancelled by user` tool result is
+    /// the front prompt's own affair).
+    #[tokio::test]
+    async fn a_queued_prompt_survives_a_cancelled_turn_in_front_of_it() {
+        let scripts = vec![
+            vec![
+                ProviderEvent::ToolUse {
+                    id: "call-1".into(),
+                    name: "bash".into(),
+                    args: serde_json::json!({ "command": "sleep 20" }),
+                },
+                ProviderEvent::Done,
+            ],
+            vec![
+                ProviderEvent::Text {
+                    delta: "second answer".into(),
+                },
+                ProviderEvent::Done,
+            ],
+        ];
+        let (agent, cancel) = build_test_agent_with_cancel(
+            scripts,
+            Agent::build_initial_history(&Persona::builtin_default()),
+        );
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
+
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx.send(AgentInput::UserPrompt("first".into()))
+            .await
+            .unwrap();
+        // Queued while the first turn runs — the FR-35b shape.
+        in_tx.send(AgentInput::UserPrompt("second".into()))
+            .await
+            .unwrap();
+
+        // Cancel the first turn the moment its tool call starts; keep the
+        // rest of the events.
+        let mut events = Vec::new();
+        let mut tool_cancelled = false;
+        let mut dones = 0;
+        while dones < 2 {
+            let ev = tokio::time::timeout(std::time::Duration::from_secs(5), ev_rx.recv())
+                .await
+                .expect("the queued turn must be served after the cancelled one")
+                .expect("the agent must not end its loop before the queue drains");
+            let is_call = matches!(ev, AgentEvent::ToolCall { .. });
+            let is_done = matches!(ev, AgentEvent::Done);
+            if is_call && !tool_cancelled {
+                tool_cancelled = true;
+                cancel.cancel();
+            }
+            if is_done {
+                dones += 1;
+            }
+            events.push(ev);
+        }
+
+        assert!(tool_cancelled, "the first turn's tool call must have been cancelled");
+        assert!(
+            events.iter().any(|e| matches!(e, AgentEvent::Text { .. })),
+            "the queued prompt's turn must run after the cancelled one: {events:?}"
+        );
+
+        drop(in_tx);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("the drained agent must end its loop")
+            .expect("the loop must end cleanly");
+        assert!(result.is_ok(), "the run must end without an error: {result:?}");
+    }
+
     /// FR-32's companion pin: without the flag the shipped behaviour stands —
     /// a headless agent keeps waiting for the next input after its work, so a
     /// peer persists afterwards (the measured default this cycle replaces).

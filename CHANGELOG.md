@@ -4,6 +4,37 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.38.0]
+
+### Added
+
+- **Prompts typed while a turn runs are queued, and run in order once the
+  turn finishes.** The REPL used to ignore every keypress except Esc and
+  Ctrl-C while the agent was thinking or calling a tool — a second prompt
+  typed during the work was silently lost. The input loop now keeps its
+  line editor open during the turn (`PromptState::Pending`): every key is
+  fed to the same `InputState` the idle prompt uses (including Tab's slash
+  completion), and Enter enqueues the line onto the agent's existing FIFO
+  input channel as a `UserPrompt` while the turn keeps running — the agent
+  picks the queued prompt up and runs it right after the current turn ends,
+  with no preemption of the running work and no parallel execution. The
+  queue's only face is a one-line `[queued: N]` notice printed under the
+  prompt when the count changes: the queued prompts are readable as a
+  count and uneditable, and nothing of the running turn's display is
+  taken. The prompt stays occupied until the drain is finished — it only
+  returns to `Ready` when nothing is queued and no turn is in flight (the
+  release gate closes the dequeue race where the next queued turn has
+  already started by the time the previous terminal event arrives), with a
+  short self-healing tick as the fallback for stale idle notifications.
+  Shell (`!`) and slash-command (`/`) lines are refused mid-turn with an
+  inline notice and stay editable — they still run at the idle prompt
+  only. The half-typed draft is snapshotted before a tool-approval prompt
+  pops the editor and restored verbatim after it resolves, so queuing
+  never destroys work in progress, and the cancel keys keep their shipped
+  meaning: Esc during a turn cancels that turn only — every queued prompt
+  stays queued and runs after it. The piped/line-mode loop (tests) accepts
+  lines during a turn on the same terms.
+
 ## [0.37.0]
 
 ### Fixed

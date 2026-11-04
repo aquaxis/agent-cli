@@ -1240,9 +1240,56 @@ fn click_hits_indicator(painted_rows: u16, cursor_row: u16, row: u16) -> bool {
     row > top && row <= cursor_row
 }
 
+/// How many prompts are waiting in the agent's input channel right now
+/// (FR-35's D-51): the difference between the channel's configured capacity
+/// and its remaining one — Tokio's own sender-side accounting (`capacity()`
+/// dips on every send, recovers on every receive). Read without receiving, so
+/// the queue's truth is visible from the REPL the moment an enqueue lands.
+fn queued_count(input_tx: &mpsc::Sender<AgentInput>) -> usize {
+    input_tx
+        .max_capacity()
+        .saturating_sub(input_tx.capacity())
+}
+
+/// Whether the prompt may return to the user after a turn's terminal event
+/// (FR-35's D-50): only when nothing is queued (`queued_count` is the
+/// queue's own truth) **and** no turn is in flight. The turn conjunct closes
+/// the dequeue race: the agent pulls the next queued input the instant the
+/// previous turn ends, so a no-longer-queued check alone cannot distinguish
+/// "still owed" from "already running" — the terminal event of the *previous*
+/// turn arrives while the *next* turn's flag is already raised, and the prompt
+/// must stay Pending through that turn too. Pure so the gate is pin-bound
+/// without a live channel.
+fn queue_release_allowed(pending: bool, queue_len: usize, turn_in_flight: bool) -> bool {
+    pending && queue_len == 0 && !turn_in_flight
+}
+
+/// The queued prompts' only face (FR-35's D-51): one status line naming the
+/// channel's count, printed whenever an enqueue or a release changes what is
+/// waiting. The queued prompts stay readable as a count and uneditable — the
+/// line's text is the channel's, not the REPL's. The indicator is suspended
+/// for the line and resumed after, the shipped mid-turn print dance (the
+/// cancel path's), so the running turn's spinner never interleaves.
+fn paint_queue_status(
+    input_tx: &mpsc::Sender<AgentInput>,
+    state: &Arc<ReplState>,
+    renderer: &mut PromptRenderer,
+) {
+    let line = format!("{QUEUED_NOTICE_PREFIX}{}]", queued_count(input_tx));
+    lock_indicator(&state.indicator).suspend();
+    raw_eprintln(true, &state.theme.err(Role::Info, &line));
+    lock_indicator(&state.indicator).resume();
+    renderer.reset();
+}
+
 /// The REPL's input prompt, and the prompt that asks for a tool approval.
 const PROMPT: &str = "> ";
 const APPROVAL_PROMPT: &str = "approve? [y/N]: ";
+/// The one-line queue notice shown above the prompt block while a turn runs
+/// (FR-35's D-51): the queued prompts' visibility is the channel's own count,
+/// readable but uneditable — nothing of the running turn's display is taken,
+/// nothing of the enqueued text is shown.
+const QUEUED_NOTICE_PREFIX: &str = "[queued: ";
 
 /// The scrolled-view marker (FR-25): the text the pinned bottom row shows
 /// while the wheel's view has moved off the bottom of the log — the elapsed
@@ -1939,6 +1986,32 @@ fn raise_cancel_if_turn_in_flight(cancel: &CancelToken, turn_in_flight: &AtomicB
     }
 }
 
+/// The half-typed prompt the approval prompt stole (FR-35's approval
+/// snapshot): the approval arm resets the editor to read y/N, and the draft
+/// edited while the turn runs must survive that pop. Saved as the editor's
+/// own fields, with the history-browsing state dropped — the browsed entry is
+/// not owed a return.
+struct DraftSnapshot {
+    line: String,
+    cursor: usize,
+    saved_draft: Option<String>,
+}
+
+fn snapshot_draft(input_state: &InputState) -> DraftSnapshot {
+    DraftSnapshot {
+        line: input_state.line.clone(),
+        cursor: input_state.cursor,
+        saved_draft: input_state.saved_draft.clone(),
+    }
+}
+
+fn restore_draft(input_state: &mut InputState, snapshot: DraftSnapshot) {
+    input_state.line = snapshot.line;
+    input_state.cursor = snapshot.cursor;
+    input_state.history_index = None;
+    input_state.saved_draft = snapshot.saved_draft;
+}
+
 /// Handle a single key event in interactive (raw-mode) editing.
 /// Returns `Some(action)` indicating what to do next.
 enum KeyAction {
@@ -2263,6 +2336,29 @@ async fn run_input_loop_raw(
     let mut shutdown_rx = shutdown_rx;
     let mut agent_idle_rx = agent_idle_rx;
     let mut renderer = PromptRenderer::new();
+    // FR-35: when the idle arm consumed a notification but had to keep
+    // `Pending` (a queued prompt is owed or already running), `pending_since` is
+    // stamped; the low-priority tick arm below re-asks `queue_release_allowed`
+    // after a grace and releases the prompt if the state holds — the
+    // self-healing fallback for a notification that can be stale in either
+    // direction (one notification per terminal event, a queue advancing under
+    // the wait).
+    let mut pending_since: Option<std::time::Instant> = None;
+    // The half-typed prompt the approval prompt stole (FR-35's approval
+    // snapshot): when the approval arm pops the editor to read y/N, the draft
+    // edited while the turn runs is saved here and handed back the moment the
+    // approval is answered (y/N or Esc-deny), so an approval arriving mid-edit
+    // does not eat it.
+    let mut stolen_draft: Option<DraftSnapshot> = None;
+    // The park arm's clock (FR-35): a low-frequency ticker the idle arm arms
+    // when it must keep `Pending` after consuming a notification — the
+    // self-healing release re-check runs on its ticks, never in a hot loop.
+    const PARK_GRACE_MS: u64 = 120;
+    let mut park_timer = tokio::time::interval(tokio::time::Duration::from_millis(
+        PARK_GRACE_MS,
+    ));
+    park_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    park_timer.tick().await; // consume the immediate first tick
     // The wheel scrollback: the terminal has to report mouse events for the
     // whole session, not only while a turn runs, so the input loop owns
     // reporting here (the indicator's own switch is disabled in that case) and
@@ -2333,14 +2429,29 @@ async fn run_input_loop_raw(
                     break;
                 }
             }
-            // Only wait for AI response completion when in Pending state
+            // The turn's terminal event releases Pending only when the drain
+            // is finished (FR-35c / D-50): nothing queued and no turn in
+            // flight — otherwise the next queued turn is either still owed or
+            // already running, and the prompt keeps waiting.
             res = agent_idle_rx.recv(), if prompt_state.is_pending() => {
                 match res {
                     Some(()) => {
-                        prompt_state = PromptState::Ready;
-                        // Redraw prompt after AI response on a fresh line
-                        renderer.reset();
-                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                        if queue_release_allowed(
+                            true,
+                            queued_count(&input_tx),
+                            state.turn_in_flight.load(Ordering::SeqCst),
+                        ) {
+                            prompt_state = PromptState::Ready;
+                            // Redraw prompt after AI response on a fresh line
+                            renderer.reset();
+                            render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                        } else {
+                            // The drain continues; the notification is consumed
+                            // and the wait resumes. `pending_since` is kept so
+                            // the park arm can still act as the release's
+                            // self-healing fallback.
+                            pending_since = Some(std::time::Instant::now());
+                        }
                     }
                     None => break,
                 }
@@ -2374,6 +2485,11 @@ async fn run_input_loop_raw(
                             ),
                         );
                         renderer.reset();
+                        // The draft edited while the turn runs is popped with
+                        // the editor below (FR-35's approval snapshot): saved
+                        // here, restored when the approval is answered, so the
+                        // y/N editor never eats a half-typed queued prompt.
+                        stolen_draft = Some(snapshot_draft(&input_state));
                         // Reset input state for the approval prompt
                         input_state = InputState::new();
                         prompt_state = PromptState::AwaitingApproval(req.response);
@@ -2737,9 +2853,15 @@ async fn run_input_loop_raw(
                             }
                             continue;
                         }
-                        // During Pending, only ESC and Ctrl-C are honoured (cancel).
-                        // Other key events are ignored to avoid corrupting the edit
-                        // buffer while the agent is processing.
+                        // During Pending the turn keeps running, but the prompt
+                        // keeps accepting lines (FR-35): the same edit machinery
+                        // the Ready branch drives builds the typed line, Enter
+                        // enqueues it onto the agent's input channel (the queue
+                        // the loop drains after the turn), and only the cancel
+                        // keys keep their turn-cancel meaning. A `!` or `/` line
+                        // typed mid-turn is refused — those run shells and
+                        // commands only at the idle prompt; the boundary keeps
+                        // the queued stream pure prompts.
                         if prompt_state.is_pending() {
                             if is_cancel_key(&key_event) {
                                 // Forced return: raise the cancellation and take the
@@ -2759,8 +2881,85 @@ async fn run_input_loop_raw(
                                 prompt_state = PromptState::Ready;
                                 renderer.reset();
                                 render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                                continue;
                             }
-                            // All other keys during Pending are ignored.
+                            let is_release =
+                                key_event.kind == crossterm::event::KeyEventKind::Release;
+                            if matches!(key_event.code, KeyCode::Tab) && !is_release {
+                                // Mid-turn completion still completes the slash
+                                // command being typed, exactly as at the idle
+                                // prompt.
+                                let customs: Vec<String> = state
+                                    .commands
+                                    .read()
+                                    .await
+                                    .iter()
+                                    .map(|c| c.name.clone())
+                                    .collect();
+                                if let Some(completed) =
+                                    command_completion(&input_state.line, &customs)
+                                {
+                                    input_state.line = completed;
+                                    input_state.move_end();
+                                }
+                                render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                                continue;
+                            }
+                            if let Some(action) = handle_key(key_event, &mut input_state, &history_snapshot)
+                                .filter(|a| !matches!(a, KeyAction::Eof))
+                            {
+                                match action {
+                                    KeyAction::Submit(line) => {
+                                        let trimmed = line.trim();
+                                        let plain = matches!(
+                                            crate::shell::classify_line(trimmed, state.shell.enabled),
+                                            crate::shell::Line::Prompt(_)
+                                        ) && !trimmed.is_empty();
+                                        if !plain {
+                                            // Refuse, redraw, keep editing: the
+                                            // line survives, the queued stream
+                                            // stays prompts only.
+                                            let notice = if trimmed.is_empty() {
+                                                "[info] nothing to queue"
+                                            } else {
+                                                "[info] queue accepts prompts only; run ! and / lines at the idle prompt"
+                                            };
+                                            lock_indicator(&state.indicator).suspend();
+                                            raw_eprintln(true, &state.theme.err(Role::Info, notice));
+                                            lock_indicator(&state.indicator).resume();
+                                            renderer.reset();
+                                            input_state.line = trimmed.to_string();
+                                            input_state.cursor = input_state.line.len();
+                                            render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                                            continue;
+                                        }
+                                        // Echo the submitted line, then move to a
+                                        // fresh line — the same submission shape
+                                        // the Ready branch echoes with. The block
+                                        // taken from the indicator is given back,
+                                        // so the running turn's output continues
+                                        // beneath it untouched.
+                                        lock_indicator(&state.indicator).suspend();
+                                        renderer.finish_line(&mut stdout, &state.theme, prompt_line_role(&line, state.shell.enabled), PROMPT, &line);
+                                        lock_indicator(&state.indicator).resume();
+                                        if input_tx.send(AgentInput::UserPrompt(trimmed.to_string())).await.is_err() {
+                                            exit_loop = true;
+                                            break;
+                                        }
+                                        // The queued count is the queue's only
+                                        // face (FR-35a): one status line between
+                                        // the running turn's output and the next
+                                        // keystrokes, re-painted on every change.
+                                        input_state = InputState::new();
+                                        renderer.reset();
+                                        paint_queue_status(&input_tx, &state, &mut renderer);
+                                    }
+                                    KeyAction::ClearLine | KeyAction::Continue => {
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                                    }
+                                    KeyAction::Eof => {}
+                                }
+                            }
                             continue;
                         }
                         let is_awaiting_approval = prompt_state.is_awaiting_approval();
@@ -2782,7 +2981,18 @@ async fn run_input_loop_raw(
                                 true,
                                 &state.theme.err(Role::Info, "[info] cancelled by user"),
                             );
-                            input_state = InputState::new();
+                            // The Esc deny is an answer too (FR-35's approval
+                            // snapshot): the half-typed draft comes back with
+                            // the editor. The prompt returns as Ready here —
+                            // the unwind's idle notification arrives stale and
+                            // is drained by the next submit flow — so the
+                            // restored line is drawn at the prompt below and
+                            // survives until the user finishes it.
+                            if let Some(draft) = stolen_draft.take() {
+                                restore_draft(&mut input_state, draft);
+                            } else {
+                                input_state = InputState::new();
+                            }
                             renderer.reset();
                             render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                             continue;
@@ -2833,6 +3043,19 @@ async fn run_input_loop_raw(
                                         // The turn continues: hand the bottom
                                         // rows back to the indicator.
                                         lock_indicator(&state.indicator).resume();
+                                        // The half-typed draft the approval
+                                        // prompt stole comes back with the
+                                        // editor (FR-35's approval snapshot):
+                                        // the next redraw draws it either at
+                                        // the running turn's prompt or, after
+                                        // the drain, at the idle one.
+                                        if let Some(draft) = stolen_draft.take() {
+                                            restore_draft(&mut input_state, draft);
+                                        } else {
+                                            input_state = InputState::new();
+                                        }
+                                        renderer.reset();
+                                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                                         continue;
                                     }
 
@@ -2938,10 +3161,6 @@ async fn run_input_loop_raw(
                 if exit_loop {
                     break;
                 }
-                // The wheel moved the view: take the screen (the first notch
-                // switches to the alternate screen, so the live one is frozen
-                // as it is), redraw, or give it back once the view is at the
-                // bottom again.
                 if scroll_dirty {
                     if overlay.view_active() || overlay.has_selection() {
                         if !overlay.is_active() {
@@ -3012,6 +3231,27 @@ async fn run_input_loop_raw(
                     }
                 }
             }
+            // The drain's self-healing release (FR-35c): the idle arm
+            // consumes a notification even when it must keep `Pending`, so
+            // a notification can be stale in either direction (one per
+            // terminal event, with the queue advancing under the wait).
+            // This arm is the select's least significant under `biased` —
+            // keys, approvals, shells and asks are serviced first, and only
+            // an otherwise-quiet loop reaches the check. With the park aged
+            // past the grace, a still-true release state ends the wait;
+            // anything else keeps it waiting with the park kept.
+            _ = park_timer.tick(), if prompt_state.is_pending() && pending_since.is_some() => {
+                if queue_release_allowed(
+                    true,
+                    queued_count(&input_tx),
+                    state.turn_in_flight.load(Ordering::SeqCst),
+                ) {
+                    pending_since = None;
+                    prompt_state = PromptState::Ready;
+                    renderer.reset();
+                    render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                }
+            }
         }
     }
 
@@ -3063,8 +3303,21 @@ async fn run_input_loop_line<R>(
     let buffered = BufReader::new(reader);
     let mut lines = buffered.lines();
     let mut prompt_state = PromptState::Ready;
+    // FR-35 (line mode): the same park machinery the raw loop runs — the idle
+    // arm arms it when a consumed notification must keep `Pending`, and the
+    // low-priority tick arm below is the release's self-healing fallback.
     // Once the approval channel closes, set to `None` and switch to `pending()` wait (avoid busy loop)
     let mut approval_rx: Option<mpsc::Receiver<ApprovalRequest>> = Some(approval_rx);
+    // FR-35: when the idle arm consumed a notification but had to keep
+    // `Pending`, the stamp arms the park arm below — the same self-healing
+    // release re-check the raw loop runs, never a hot loop.
+    let mut pending_since: Option<std::time::Instant> = None;
+    const PARK_GRACE_MS: u64 = 120;
+    let mut park_timer = tokio::time::interval(tokio::time::Duration::from_millis(
+        PARK_GRACE_MS,
+    ));
+    park_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    park_timer.tick().await; // consume the immediate first tick
     loop {
         if interactive && prompt_state.is_ready() {
             print_prompt();
@@ -3076,12 +3329,25 @@ async fn run_input_loop_line<R>(
                     break;
                 }
             }
-            // Only wait for AI response completion when in Pending state (stdin is paused)
+            // Only wait for AI response completion when in Pending state — but
+            // the prompt returns only when the whole drain is finished
+            // (FR-35c / D-50): nothing queued and no turn in flight, else the
+            // next queued turn is either still owed or already running. The
+            // low-priority park arm below is the release's self-healing
+            // fallback, exactly as the raw loop's is.
             res = agent_idle_rx.recv(), if prompt_state.is_pending() => {
                 match res {
                     Some(()) => {
-                        prompt_state = PromptState::Ready;
-                        // Prompt will be redrawn at the top of the next loop iteration
+                        if queue_release_allowed(
+                            true,
+                            queued_count(&input_tx),
+                            state.turn_in_flight.load(Ordering::SeqCst),
+                        ) {
+                            prompt_state = PromptState::Ready;
+                            // Prompt will be redrawn at the top of the next loop iteration
+                        } else {
+                            pending_since = Some(std::time::Instant::now());
+                        }
                     }
                     None => break, // display_task terminated -> no more events coming
                 }
@@ -3115,8 +3381,13 @@ async fn run_input_loop_line<R>(
                     }
                 }
             }
-            // Read from stdin when Ready or AwaitingApproval
-            next = lines.next_line(), if prompt_state.is_ready() || prompt_state.is_awaiting_approval() => {
+            // Read from stdin when Ready, AwaitingApproval, or Pending (FR-35):
+            // mid-turn lines are accepted and enqueued, they do not wait for
+            // the idle signal.
+            next = lines.next_line(), if prompt_state.is_ready()
+                || prompt_state.is_awaiting_approval()
+                || prompt_state.is_pending() =>
+            {
                 match next {
                     Ok(Some(line)) => {
                         let trimmed = line.trim_end_matches('\r').trim().to_string();
@@ -3199,6 +3470,19 @@ async fn run_input_loop_line<R>(
                     }
                     Ok(None) => break, // EOF (Ctrl+D)
                     Err(_) => break,
+                }
+            }
+            // Same self-healing release as the raw loop's park arm: with the
+            // park aged past the grace, a still-true release state ends the
+            // wait; anything else keeps it waiting with the park kept.
+            _ = park_timer.tick(), if prompt_state.is_pending() && pending_since.is_some() => {
+                if queue_release_allowed(
+                    true,
+                    queued_count(&input_tx),
+                    state.turn_in_flight.load(Ordering::SeqCst),
+                ) {
+                    pending_since = None;
+                    prompt_state = PromptState::Ready;
                 }
             }
         }
@@ -5167,6 +5451,46 @@ mod tests {
         rx
     }
 
+    /// FR-35's approval snapshot (D-49): the half-typed draft an approval
+    /// prompt steals comes back with the editor after the approval is
+    /// answered. Snapshot → pop → restore must preserve the line, the cursor
+    /// and the saved history draft; the history-browsing index is dropped by
+    /// design — the browsed entry is not owed a return, only the text the
+    /// user typed is. (The wiring — the approval arm snapshotting on pop and
+    /// restoring on both answers, y/N and Esc-deny — lives in the raw loop,
+    /// which owns the real terminal and cannot be driven headless; the
+    /// pair-wise pin fixes the machinery the wiring relies on.)
+    #[test]
+    fn approval_snapshot_roundtrip_preserves_the_half_typed_draft() {
+        let mut editor = InputState::new();
+        editor.insert_char('h');
+        editor.insert_char('i');
+        editor.insert_char(' ');
+        editor.insert_char('！');
+        editor.cursor = 3; // mid-edit position, between ' ' and '！'
+        editor.history_index = Some(2);
+        editor.saved_draft = Some("browsed-draft".to_string());
+
+        let snapshot = snapshot_draft(&editor);
+        // The approval prompt pops the editor for y/N.
+        let mut popped = InputState::new();
+        // …some y/N editing happened…
+        popped.insert_char('n');
+        restore_draft(&mut popped, snapshot);
+
+        assert_eq!(popped.line, "hi ！", "the draft text must come back");
+        assert_eq!(popped.cursor, 3, "the cursor must come back");
+        assert_eq!(
+            popped.saved_draft.as_deref(),
+            Some("browsed-draft"),
+            "the saved pre-↑ draft must come back"
+        );
+        assert!(
+            popped.history_index.is_none(),
+            "the browsed entry is not owed a return — the restored editor edits the new line"
+        );
+    }
+
     /// A `!` line typed at the prompt runs and its result is handed to the
     /// model as context — not as a prompt, so no turn is started.
     #[tokio::test]
@@ -5399,16 +5723,24 @@ mod tests {
         );
     }
 
+    /// FR-35 / T-75: a prompt typed while the input loop is `Pending` is
+    /// accepted and queued — its `UserPrompt` arrives on the agent's input
+    /// channel **while the turn still runs**, not only after the idle
+    /// notification. This pin replaces the shipped pending-loss pin
+    /// (`input_loop_waits_for_agent_idle_between_user_prompts`), which bound
+    /// the opposite behaviour — a second prompt arriving only after the idle
+    /// signal — the contract FR-35 overturns (recorded as a specification
+    /// change in the task list).
     #[tokio::test]
-    async fn input_loop_waits_for_agent_idle_between_user_prompts() {
+    async fn a_prompt_typed_during_a_turn_is_queued_and_arrives_while_it_runs() {
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
-        let (idle_tx, idle_rx) = mpsc::channel::<()>(8);
+        let (_idle_tx, idle_rx) = mpsc::channel::<()>(8);
 
         let (mut writer, reader) = tokio::io::duplex(1024);
-        writer.write_all(b"first\nsecond\n").await.unwrap();
+        writer.write_all(b"first\n").await.unwrap();
 
         let handle = tokio::spawn(async move {
             run_input_loop(
@@ -5433,40 +5765,63 @@ mod tests {
             other => panic!("expected UserPrompt(\"first\"), got {:?}", other),
         }
 
-        let blocked = tokio::time::timeout(Duration::from_millis(300), input_rx.recv()).await;
-        assert!(
-            blocked.is_err(),
-            "second prompt should not arrive while input loop is Pending"
-        );
-
-        idle_tx.send(()).await.unwrap();
+        // The turn is running (no idle notification has been sent): the second
+        // and third prompts are typed anyway and must reach the channel
+        // immediately, in arrival order (FR-35b — FIFO, no reordering).
+        writer.write_all(b"second\n").await.unwrap();
 
         let msg2 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
-            .expect("second prompt timeout")
+            .expect("queued prompt timeout")
             .expect("input_rx closed");
         match msg2 {
             AgentInput::UserPrompt(s) => assert_eq!(s, "second"),
             other => panic!("expected UserPrompt(\"second\"), got {:?}", other),
+        }
+        writer.write_all(b"third\n").await.unwrap();
+
+        let msg3 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
+            .await
+            .expect("queued prompt timeout")
+            .expect("input_rx closed");
+        match msg3 {
+            AgentInput::UserPrompt(s) => assert_eq!(s, "third"),
+            other => panic!("expected UserPrompt(\"third\"), got {:?}", other),
         }
 
         drop(writer);
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
+    /// FR-35 / T-75: idle notifications left over from bygone turns do not
+    /// gate a prompt typed during a turn. The idle channel is pre-seeded with
+    /// two stale notifications before the loop starts; the first prompt moves
+    /// the loop to `Pending`, and a second prompt typed **while that turn
+    /// runs** reaches the channel immediately, with no idle signal sent
+    /// afterwards — under the shipped contract the line was withheld until
+    /// the next idle notification arrived. Renames and inverts the shipped
+    /// pin `stale_idle_signal_is_drained_before_pending`, which asserted the
+    /// second line was held back until an idle signal was delivered (the
+    /// contract FR-35 overturns — recorded as a specification change in the
+    /// task list).
     #[tokio::test]
-    async fn stale_idle_signal_is_drained_before_pending() {
+    async fn stale_idle_signals_do_not_withhold_a_prompt_typed_during_a_turn() {
         let tmp = TempDir::new().unwrap();
         let state = build_state(tmp.path());
         let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (idle_tx, idle_rx) = mpsc::channel::<()>(8);
 
+        // Leftovers of bygone turns sit in the idle channel before the loop
+        // starts. The submit flow drains them before entering `Pending`;
+        // release afterwards watches the queue depth and turn-in-flight, not
+        // these notifications. The sender stays alive but silent — the pin
+        // must fail if the loop ever waits for this channel again.
         idle_tx.send(()).await.unwrap();
         idle_tx.send(()).await.unwrap();
 
         let (mut writer, reader) = tokio::io::duplex(1024);
-        writer.write_all(b"only\n").await.unwrap();
+        writer.write_all(b"first\n").await.unwrap();
 
         let handle = tokio::spawn(async move {
             run_input_loop(
@@ -5487,24 +5842,21 @@ mod tests {
             .expect("prompt timeout")
             .expect("input_rx closed");
         match msg {
-            AgentInput::UserPrompt(s) => assert_eq!(s, "only"),
+            AgentInput::UserPrompt(s) => assert_eq!(s, "first"),
             other => panic!("unexpected: {:?}", other),
         }
 
-        writer.write_all(b"should-not-pass\n").await.unwrap();
-        let blocked = tokio::time::timeout(Duration::from_millis(300), input_rx.recv()).await;
-        assert!(
-            blocked.is_err(),
-            "stale idle signals should have been drained, leaving the loop Pending"
-        );
-
-        idle_tx.send(()).await.unwrap();
+        // The turn is running and no idle signal arrives past this point: the
+        // second prompt is typed anyway and must reach the channel
+        // immediately (FR-35a/b) — behind `first`, ahead of nothing, the
+        // channel itself being the FIFO queue.
+        writer.write_all(b"second\n").await.unwrap();
         let msg2 = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
-            .expect("second prompt timeout")
+            .expect("queued prompt timeout")
             .expect("input_rx closed");
         match msg2 {
-            AgentInput::UserPrompt(s) => assert_eq!(s, "should-not-pass"),
+            AgentInput::UserPrompt(s) => assert_eq!(s, "second"),
             other => panic!("unexpected: {:?}", other),
         }
 
@@ -7135,6 +7487,53 @@ mod tests {
         turn.store(true, Ordering::SeqCst);
         assert!(raise_cancel_if_turn_in_flight(&cancel, &turn));
         assert!(cancel.is_cancelled());
+    }
+
+    #[test]
+    fn queue_release_gate_answers_every_combination() {
+        // FR-35's D-50: the prompt returns only when the drain is finished —
+        // all three conjuncts must hold together, each alone is not enough.
+        let combinations = [
+            // (pending, queue_len, turn_in_flight, allowed)
+            (true, 0, false, true),
+            (false, 0, false, false), // nothing to release
+            (true, 1, false, false),  // still owed a queued prompt
+            (true, 0, true, false),   // next turn already dequeued and running
+            (true, 2, true, false),   // drain half-done: keep waiting
+        ];
+        for (pending, queue_len, turn_in_flight, expected) in combinations {
+            assert_eq!(
+                queue_release_allowed(pending, queue_len, turn_in_flight),
+                expected,
+                "pending={pending} queue_len={queue_len} turn={turn_in_flight}"
+            );
+        }
+    }
+
+    #[test]
+    fn queued_count_tracks_a_live_channel_without_receiving() {
+        // FR-35's D-51: the count is read purely from the sender's own
+        // accounting — no receives, so the queue's truth is observable from
+        // the REPL the moment an enqueue lands.
+        let (tx, mut rx) = mpsc::channel::<AgentInput>(32);
+        assert_eq!(queued_count(&tx), 0, "an empty channel owes nothing");
+
+        for n in 1..=3 {
+            tx.try_send(AgentInput::UserPrompt(format!("n{n}")))
+                .expect("the bounded channel has room");
+            assert_eq!(queued_count(&tx), n, "each send raises the count");
+        }
+
+        let one = rx.try_recv().expect("the first queued input is there");
+        assert!(matches!(one, AgentInput::UserPrompt(s) if s == "n1"));
+        assert_eq!(queued_count(&tx), 2, "an agent's receive lowers the count");
+
+        drop(rx);
+        assert_eq!(
+            queued_count(&tx),
+            0,
+            "a closed-and-drained channel owes nothing"
+        );
     }
 
     #[test]
