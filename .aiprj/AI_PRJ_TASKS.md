@@ -191,11 +191,17 @@ exit/quiet angles), §4 (W-53–W-56 the gate rows T-75 executes).
   (remote sha confirmed `4f7fad6…`); the GitHub release published
   **2026-11-04T04:24:19Z**,
   https://github.com/aquaxis/agent-cli/releases/tag/v0.39.0. Work log
-  `AI_LOG/2026-11-04_003.md` records the close.
+  `AI_LOG/2026-11-04_003.md` records the close; the records themselves —
+  these follow-ups and the requirements document's *State at exit* row —
+  travelled in the ledger's own commit `96a576f` ("Record the
+  ledger-tracking release close: the ledger events ride the tracked
+  documents", `.aiprj`-only, 2026-11-04 13:25:12 +0900), the first commit
+  to carry the tracked ledger's updates.
 
 Version trail: v0.35.0 `7fe1370` (FR-32) → v0.36.0 `af48be5` (FR-33) →
 v0.37.0 `5a2d7f0` (FR-34, code `ddeaf67`) → v0.38.0 `c02862d` (FR-35) →
-`881eda9` (the ledger tracked) → v0.39.0 `4f7fad6` (the version release).
+`881eda9` (the ledger tracked) → v0.39.0 `4f7fad6` (the version release) →
+`96a576f` (the records ride the tracked ledger).
 
 ## The previous cycle's record (closed before this cycle)
 
