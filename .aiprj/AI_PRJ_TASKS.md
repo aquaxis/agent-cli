@@ -166,6 +166,37 @@ Depends on: T-74.
 Design trace: design §1 (D-49's pin consequence), §3 (the cancel and
 exit/quiet angles), §4 (W-53–W-56 the gate rows T-75 executes).
 
+## The post-cycle follow-ups (closed ✅, 2026-11-04)
+
+- **The ledger tracked by git** (the user's directive "ドキュメントも更新",
+  after the cycle's close): the `.aiprj` exclusion was lifted — the three
+  documents, the work logs (`AI_LOG/`, 2025-06-17 → 2026-11-04), the rules
+  and the shipped example `config.toml`/`README.md` joined the tree at
+  commit `881eda9` ("Track the .aiprj project ledger: the three documents,
+  work logs, rules"; 133 files, +12,246/−6, pushed
+  `c02862d..881eda9 main → origin/main`). `.aiprj/instructions.md` alone
+  stays untracked (`.gitignore`, with the comment recording the reason:
+  every work log embeds its full text per Art. 7). Earlier work-log
+  statements that `.aiprj` is untracked are the records of their own days
+  and stand unedited. Secret scan clean before the commit (`config.toml`
+  names env variables only, no key material); the ledger lives in the
+  repository from here on, so its updates ride the normal commits.
+- **The version carried forward, v0.39.0** (the user's "必要" on
+  "タグ/リリースが必要なら"): `Cargo.toml` 0.39.0 (`Cargo.lock` following);
+  commit `4f7fad6` "Release 0.39.0: the version carries the ledger
+  tracking" (`5a2d7f0`-style: the version-only release commit, no
+  CHANGELOG section — the release carries no user-facing change);
+  the build verified (`agent-cli 0.39.0`); pushed
+  `881eda9..4f7fad6 main → origin/main`; lightweight tag `v0.39.0` pushed
+  (remote sha confirmed `4f7fad6…`); the GitHub release published
+  **2026-11-04T04:24:19Z**,
+  https://github.com/aquaxis/agent-cli/releases/tag/v0.39.0. Work log
+  `AI_LOG/2026-11-04_003.md` records the close.
+
+Version trail: v0.35.0 `7fe1370` (FR-32) → v0.36.0 `af48be5` (FR-33) →
+v0.37.0 `5a2d7f0` (FR-34, code `ddeaf67`) → v0.38.0 `c02862d` (FR-35) →
+`881eda9` (the ledger tracked) → v0.39.0 `4f7fad6` (the version release).
+
 ## The previous cycle's record (closed before this cycle)
 
 **"the subagents' auto-exit — permanent (FR-32), configurable and
