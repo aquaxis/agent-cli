@@ -11,10 +11,11 @@ Paired with: `AI_PRJ_DESIGN.md`, `AI_PRJ_TASKS.md`
 ## 1. Purpose
 
 The v0.35.0–v0.37.0 stretch delivered the subagents' completion-triggered
-auto-exit, permanent and configurable and on by default (FR-32/FR-33,
-v0.35.0/v0.36.0), and repaired the compaction that let a live session die
-with `prompt too long` (FR-34, closed as **v0.37.0** — the delivery record
-below corrects the version the previous ledger carried). The current
+auto-exit, permanent and configurable and on by default (FR-32/FR-33 — the
+in-tree versions 0.35.0/0.36.0, neither ever tagged; BL-M32), and repaired
+the compaction that let a live session die with `prompt too long` (FR-34,
+closed as **v0.37.0** — the delivery record below corrects the version the
+previous ledger carried). The current
 instruction (rewritten 2026-11-04; reloaded byte-exact) carries one ask,
 and the cycle answers it in three parts:
 
@@ -67,12 +68,14 @@ order.)
 
 ## 3. Baseline — verified in the tree at this update
 
-Verified 2026-11-04 on HEAD `5a2d7f0` (= tag `v0.37.0`, worktree clean):
+Verified 2026-11-04 — BL-M30/BL-M31 on the cycle's baseline HEAD `5a2d7f0`
+(= tag `v0.37.0`); BL-M32 on HEAD `3af66d4` (worktree clean at both):
 
 | ID | Fact | Evidence |
 |---|---|---|
 | BL-M30 | A prompt typed during a running turn is **lost, not queued**: in the `PromptState::Pending` branch the input loop honours only the cancel keys (Esc / Ctrl-C) and `continue`s on every other key; stdin line reads are suppressed entirely while Pending, and the shipped pin asserts a second prompt sent during Pending **does not** arrive on the agent's input channel. The agent-side channel, in contrast, already queues: it is a bounded mpsc FIFO (capacity 32) fed by the REPL sender, the IPC front door and peer sends, and the agent loop consumes exactly one input per iteration, so any input already in the channel when a turn ends is delivered next. | `src/app.rs:902–907` (the `Pending` state's contract: "normal stdin reads are suppressed"), `src/app.rs:2740–2764` (during Pending only Esc/Ctrl-C are honoured; "All other keys during Pending are ignored"), `src/app.rs:5436–5440` (the pin that binds today's loss), `src/app.rs:421` / `:734` (the channel: `mpsc::channel::<AgentInput>(32)`), `src/agent.rs:233` (the loop consumes one input per iteration), `src/agent.rs:207–214` (the queued-input contract the FR-32 flag already relies on) |
 | BL-M31 | The delivery state the previous ledger recorded for FR-34 is superseded in the tree: the repair's version commit was followed by a release commit, the tag stands on the release commit `5a2d7f0` on `origin/main`, and the CHANGELOG carries `[0.37.0]` with the repair — so FR-34's close-out is re-recorded as **v0.37.0** (the earlier documents' "tag `v0.36.0` on `ddeaf67`" and "close-out commit pending" were written before the release commit landed). | `git log` (`5a2d7f0` "Release 0.37.0: the compaction repair carries the version", 2026-11-03 23:28:17 +0900; parent `ddeaf67`), the tag list (`v0.37.0`), `CHANGELOG.md` `[0.37.0]` (Fixed — the compaction repair), `Cargo.toml` version `0.37.0` |
+| BL-M32 | The version trail's release labels for FR-32/FR-33 are superseded: no `v0.35.0` tag exists (the local and remote tag lists jump v0.34.0 → v0.36.0) and the lightweight tag `v0.36.0` dereferences to the FR-34 compaction commit `ddeaf67` (`af48be5` is its ancestor, never a tagged tip). The previous documents' "tag `v0.36.0` on `ddeaf67`" — deleted by BL-M31's rewrite — was the true tag state and stands restored; "`7fe1370` = **v0.35.0**" and "`af48be5` = **v0.36.0**" as *releases* were false records (the commits carry the in-tree versions 0.35.0/0.36.0, never tagged, no GitHub releases). The v0.37.0 publication time already stood corrected (14:17:12Z → 14:33:12Z). | the local and remote tag lists (`git tag`, `git ls-remote --tags origin` — no `v0.35.0`), the dereference (`git rev-parse v0.36.0^{commit}` → `ddeaf67…`), the tree at the commits (`7fe1370`: `Cargo.toml` 0.35.0 + CHANGELOG `[0.35.0]`; `af48be5`: 0.36.0 + `[0.36.0]`; `ddeaf67`: 0.36.0 + `[0.37.0]`), `gh release list`/the release API (none for v0.35.0; v0.36.0 published 2026-11-03T14:24:11Z, v0.37.0 14:33:12Z, v0.38.0 2026-11-04T03:52:18Z, v0.39.0 04:24:19Z) |
 
 ## 3.1 What the instruction does NOT ask for
 
@@ -186,20 +189,20 @@ spinner) keeps its shape; the queued state adds display, not reroutes it.
 
 **"the subagents' auto-exit — permanent (FR-32), configurable and
 default-on (FR-33); the 'prompt too long' repair (FR-34)"** — closed,
-2026-11-03. FR-32 (commit `7fe1370`, **v0.35.0**): the agent's own quiet
-rule (`input_quiet` = the channel empty **and** closed, the loop ends), the
-serve owner's wait reusing the shipped teardown; the first planned shape
-(`AgentInput::ExitWhenIdle` + an in-flight counter) was removed before
-commit when its race was found by the queued-prompt pin. FR-33 (commit
-`af48be5`, **v0.36.0**): `[spawn] exit_when_idle` (default `true`), carried
-via `SpawnLimits`/`ToolCtx`, overridable per launch by the tool argument.
-FR-34: the weighted token estimate (CJK ×3, tool-call arguments, reasoning
-content, the per-message envelope) and the kept-tail truncation
-(`truncate_tail_tool_results` at half the token budget, marker-annotated) —
-delivered at commit `ddeaf67` and released as **v0.37.0** (the release
-commit `5a2d7f0`, tag pushed, 2026-11-03 23:28:17 +0900; delivery state
-BL-M31 — this record supersedes the earlier ledger's "tag `v0.36.0` on
-`ddeaf67`", which was written before the release commit landed).
+2026-11-03. FR-32 (commit `7fe1370`, the version 0.35.0 delivered in-tree,
+never tagged — no release), FR-33 (commit `af48be5`,
+2026-11-03 21:36:00 +0900, version 0.36.0, equally untagged), FR-34
+(commit `ddeaf67`, released as **v0.37.0** — the weighted token estimate
+(CJK ×3, tool-call arguments, reasoning content, the per-message envelope)
+and the kept-tail truncation
+(`truncate_tail_tool_results` at half the token budget, marker-annotated);
+the release commit `5a2d7f0`, tag pushed, 2026-11-03 23:28:17 +0900; the
+earlier ledger's "tag `v0.36.0` on `ddeaf67`" record **was the true tag
+state** (BL-M32 narrows BL-M31's supersession at this update; re-verified
+from the local and remote tag lists) and stands restored, while the
+earlier ledger's
+"`7fe1370` = **v0.35.0**"/"`af48be5` = **v0.36.0**" release labels are the
+false records and are superseded by BL-M32).
 
 **"the multi-angle subagent analysis (standing) and the subagents' self-exit
 on completion" (FR-31)** — closed, 2026-11-03 (no release — investigation
@@ -227,8 +230,8 @@ running display, the subagent status display…"** — closed, v0.32.0
 
 | Item | State |
 |---|---|
-| FR-32 (the auto-exit, permanent) | Delivered — v0.35.0, commit `7fe1370`. |
-| FR-33 (configurable, default-on) | Delivered — v0.36.0, commit `af48be5`. |
+| FR-32 (the auto-exit, permanent) | Delivered — commit `7fe1370` (the version 0.35.0, in-tree; **no tag, no release** — BL-M32). |
+| FR-33 (configurable, default-on) | Delivered — commit `af48be5` (the version 0.36.0, in-tree; equally untagged — BL-M32). |
 | FR-34 (the "prompt too long" repair) | Delivered — commit `ddeaf67`, released **v0.37.0** (the tag on `5a2d7f0`, pushed 2026-11-03 23:28:17 +0900; the release
 published 2026-11-03T14:33:12Z — live-verified from the GitHub releases
 list and the release API at this update (an earlier draft of this ledger

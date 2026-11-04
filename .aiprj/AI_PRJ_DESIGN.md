@@ -105,7 +105,7 @@ Requirement IDs (FR-/NFR-/AS-/AC-) refer to `AI_PRJ_REQUIREMENTS.md`.
   session). The interactive REPL
   never sets the flag regardless (FR-32's shipped construction).
 
-## 3′. Superseded state (re-read against the tree, BL-M31)
+## 3′. Superseded state (re-read against the tree, BL-M31; narrowed by BL-M32)
 
 The previous documents' delivery record for FR-34 — "tag `v0.36.0` on
 `ddeaf67`", "the close-out commit pending" — is superseded in the tree: the
@@ -113,7 +113,11 @@ release commit `5a2d7f0` ("Release 0.37.0: the compaction repair carries the
 version") follows `ddeaf67`, the tag `v0.37.0` stands on it, the CHANGELOG
 carries `[0.37.0]` with the repair, and `Cargo.toml` reads `0.37.0`. The
 repair is delivered (FR-34 closed as v0.37.0); only this cycle's deliverable
-(FR-35) is new.
+(FR-35) is new. BL-M32 narrows this supersession: the "tag `v0.36.0` on
+`ddeaf67`" part of the previous record was the true tag state and stands
+restored — BL-M31 superseded only the "close-out commit pending" part,
+while the version trail's "v0.35.0/v0.36.0" *release* labels were the
+false records (recast as the untagged in-tree versions).
 
 ## 4. Verification of the cycle (executed — the gate table, closed 2026-11-04 at `c02862d`, released v0.38.0)
 
@@ -132,13 +136,16 @@ repair is delivered (FR-34 closed as v0.37.0); only this cycle's deliverable
 
 **"the subagents' auto-exit — permanent (FR-32), configurable and default-on
 (FR-33); the 'prompt too long' repair (FR-34)"** — closed, 2026-11-03:
-FR-32 (commit `7fe1370`, **v0.35.0**), FR-33 (commit `af48be5`,
-2026-11-03 21:36:00 +0900, **v0.36.0**), FR-34 (commit `ddeaf67`, released
+FR-32 (commit `7fe1370`, the version 0.35.0 never tagged), FR-33 (commit
+`af48be5`, version 0.36.0, equally never tagged), FR-34 (commit `ddeaf67`,
+released
 as **v0.37.0** — the release commit `5a2d7f0` "Release 0.37.0: the compaction
 repair carries the version", the tag `v0.37.0` on `5a2d7f0`, the CHANGELOG
 `[0.37.0]`, `Cargo.toml` version 0.37.0 verified in the tree). The tag
-stands on the release commit `5a2d7f0`, not on the repair commit — the
-previous documents' "tag v0.36.0 on ddeaf67" record is superseded (BL-M31).
+stands on the release commit `5a2d7f0`, not on the repair commit — while
+the previous documents' separate "tag v0.36.0 on ddeaf67" record was the
+true tag state and stands restored (BL-M32 narrows BL-M31's supersession:
+only the "close-out commit pending" part was superseded).
 The delivered mechanism is recorded in the requirements document's §12 and
 the task list's closed sections, mutually consistent (C-08).
 

@@ -34,7 +34,15 @@ release commit `5a2d7f0` ("Release 0.37.0: the compaction repair carries the
 version") landed after `ddeaf67`, the tag `v0.37.0` stands on the release
 commit, and the CHANGELOG carries `[0.37.0]`. The previous documents'
 "tag `v0.36.0` on `ddeaf67`"/"close-out commit pending" record was written
-before the release commit landed and is superseded.
+before the release commit landed and is superseded. One more correction
+(BL-M32) was carried at this cycle's second update, and it narrows
+BL-M31's supersession: BL-M31's rewrite had dropped the true "tag
+`v0.36.0` on `ddeaf67`" fact — the tag **does** stand on `ddeaf67` (the
+record BL-M31 deleted was the true tag state) and is restored; what
+BL-M31 truly superseded is only the "close-out pending" part. The version
+trail's "v0.35.0/v0.36.0" *release* labels were the false records and
+stand recast as the untagged in-tree versions they are (recorded with
+BL-M32 in the corrections section).
 
 Tasks: T-74 the FR-35 implementation (✅), T-75 the pins (✅). The cycle is
 delivered at commit `c02862d` ("Prompts typed while a turn runs are queued
@@ -65,6 +73,18 @@ each task's status changes.
   `2026-11-03T14:33:12Z` (`gh` release view; the commit authored
   14:28:17Z precedes the publication — the earlier "14:17:12" figure
   matched v0.36.0's neighbourhood and no live timestamp).
+- **BL-M32** (this update) — the version trail's release labels for
+  FR-32/FR-33 are superseded: no `v0.35.0` tag exists (the tags jump
+  v0.34.0 → v0.36.0, local and remote), the lightweight tag `v0.36.0`
+  dereferences to `ddeaf67` (the FR-34 code commit; `af48be5` is its
+  ancestor, never a tagged tip), and the GitHub releases carry no v0.35.0.
+  So FR-32 `7fe1370` and FR-33 `af48be5` are the in-tree versions
+  0.35.0/0.36.0, never tagged, never released, and the trail's
+  "v0.35.0 → v0.36.0" release pair is recast commit-only — while
+  BL-M31's deletion of the older documents' "tag `v0.36.0` on `ddeaf67`"
+  fact is itself corrected: that record stood and is restored. Evidence:
+  `git tag`, `git ls-remote --tags`, `git rev-parse v0.36.0^{commit}`,
+  each sha's `Cargo.toml`/`CHANGELOG.md`, `gh release list`.
 
 ## T-74 — FR-35's implementation (closed ✅, delivered at `c02862d`)
 
@@ -198,30 +218,34 @@ exit/quiet angles), §4 (W-53–W-56 the gate rows T-75 executes).
   documents", `.aiprj`-only, 2026-11-04 13:25:12 +0900), the first commit
   to carry the tracked ledger's updates.
 
-Version trail: v0.35.0 `7fe1370` (FR-32) → v0.36.0 `af48be5` (FR-33) →
-v0.37.0 `5a2d7f0` (FR-34, code `ddeaf67`) → v0.38.0 `c02862d` (FR-35) →
+Version trail: FR-32 `7fe1370` (the version 0.35.0, never tagged) → FR-33 `af48be5` (the version 0.36.0) →
+`ddeaf67` (FR-34's code; the tag `v0.36.0` on it) → v0.37.0 `5a2d7f0` (FR-34) → v0.38.0 `c02862d` (FR-35) →
 `881eda9` (the ledger tracked) → v0.39.0 `4f7fad6` (the version release) →
-`96a576f` (the records ride the tracked ledger).
+`96a576f` (the records ride the tracked ledger) → `3af66d4` (the ledger
+trail extended; BL-M32 recorded).
 
 ## The previous cycle's record (closed before this cycle)
 
 **"the subagents' auto-exit — permanent (FR-32), configurable and
 default-on (FR-33); the 'prompt too long' repair (FR-34)"** — closed,
-2026-11-03. FR-32 (commit `7fe1370`, **v0.35.0**): the agent's own quiet
+2026-11-03. FR-32 (commit `7fe1370`, the version 0.35.0 delivered in-tree,
+never tagged — no release — BL-M32): the agent's own quiet
 rule (`input_quiet()` = the channel empty and closed, checked after each
 processed input), the serve owner's wait selecting on the agent task's
 completion, `spawn_detached` forwarding `--exit-when-idle`, the spawn
 tool's and `/spawn`'s children defaulted on, the interactive REPL forced
 off; the first planned shape (`AgentInput::ExitWhenIdle` + an in-flight
 counter) was removed before commit when the queued-prompt pin found its
-race. FR-33 (commit `af48be5`, **v0.36.0**): `[spawn] exit_when_idle`
+race. FR-33 (commit `af48be5`, the version 0.36.0, equally never tagged —
+BL-M32): `[spawn] exit_when_idle`
 (serde-default `true`), carried via `SpawnLimits`/`ToolCtx`, overridable
 per launch by the spawn tool's optional argument. FR-34: the weighted token
 estimate (CJK ×3, tool-call argument JSON, reasoning content, the
 per-message envelope) and the kept-tail truncation
 (`truncate_tail_tool_results`, the `max * 4 / 2` budget) — delivered at
 commit `ddeaf67` and released as **v0.37.0** (the release commit `5a2d7f0`,
-the tag on the release commit, pushed 2026-11-03; BL-M31 recorded above).
+the tag on the release commit, pushed 2026-11-03; BL-M31 recorded above;
+the tag `v0.36.0` on `ddeaf67` stands restored — BL-M32).
 Gates at the close: **629 unit + 6 integration, 0 failed**; clippy
 identical to the baseline. The tasks T-66 → T-73 stand ✅ in the cycle's
 closed ledger; the FR-34 close-out's "pending" item is resolved by BL-M31's
