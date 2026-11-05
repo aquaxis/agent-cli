@@ -1501,7 +1501,11 @@ fn zone_armed() -> bool {
 fn zone_arm(state: &Arc<ReplState>) {
     let height = terminal_height() as u16;
     if height < 2 {
-        // No screen worth the name: degrade to the shipped flow (AS-54).
+        // No screen worth the name: degrade to the shipped flow (AS-54). The
+        // prompt block cannot be kept apart from the clock there either, so
+        // the rows go back to the shipped cursor-relative block rather than
+        // standing unwritten.
+        lock_indicator(&state.indicator).set_prompt_owned(false);
         return;
     }
     let session = ZoneSession {
@@ -1509,7 +1513,24 @@ fn zone_arm(state: &Arc<ReplState>) {
         self_id: state.id.clone(),
         theme: state.theme,
     };
-    *lock_zone() = Some(TurnZone {
+    // The armed zone is the rows' only writer, so the live prompt block no
+    // longer owns them: its cursor-relative block stays silent and the beat
+    // composes the run display above the span instead (FR-37a/FR-40). Taken
+    // before the zone lock, so the two locks are never held in both orders.
+    lock_indicator(&state.indicator).set_prompt_owned(false);
+    let mut guard = lock_zone();
+    if let Some(z) = guard.as_mut() {
+        // Already armed: the anchor the editor reported stands. Re-seeding it
+        // would drop the span's extent back to the bare one-row prompt, and the
+        // next beat would then compose the clock over the block's other rows —
+        // the same defect the zone exists to prevent. Only the session the beat
+        // reads and the two visibility flags are refreshed.
+        z.session = session;
+        z.on_screen = true;
+        z.closed = false;
+        return;
+    }
+    *guard = Some(TurnZone {
         height,
         width: PromptRenderer::terminal_width() as u16,
         // The initial anchor: a bare one-row parked prompt on the screen's
@@ -1707,13 +1728,29 @@ fn zone_beat(block_rows: &[String]) {
     for row in 0..sweep_to {
         seq.push_str(&zone_csi_clear_row(row));
     }
+    // Each paint stops at its own floor. The plan clamps the composition's top
+    // with `saturating_sub`, but a block or band taller than the rows above the
+    // span would still walk every row it holds, downward into the span — over
+    // the prompt, its bottom-most row among them. The bounds below keep every
+    // row the beat writes above the span: the block never crosses `sweep_to`
+    // (the span's own top) and the band never crosses the block's first row.
+    // The block's first row is the elapsed row, so a truncated block keeps the
+    // elapsed display and drops the reasoning rows beneath it.
     for (i, line) in block_rows.iter().enumerate() {
-        seq.push_str(&zone_csi_move(0, block_home + i as u16));
+        let row = block_home.saturating_add(i as u16);
+        if row >= sweep_to {
+            break;
+        }
+        seq.push_str(&zone_csi_move(0, row));
         seq.push_str("\x1b[2K");
         seq.push_str(line);
     }
     for (i, line) in peers.iter().enumerate() {
-        seq.push_str(&zone_csi_move(0, peers_top + i as u16));
+        let row = peers_top.saturating_add(i as u16);
+        if row >= block_home.min(sweep_to) {
+            break;
+        }
+        seq.push_str(&zone_csi_move(0, row));
         seq.push_str("\x1b[2K");
         seq.push_str(line);
     }
@@ -2947,6 +2984,19 @@ async fn run_input_loop_raw(
     ));
     park_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     park_timer.tick().await; // consume the immediate first tick
+    // The reconcile clock (FR-37a/FR-40): a turn the input loop did not submit
+    // — a peer prompt arriving over IPC, a queued prompt the agent dequeued on
+    // its own — runs with nobody holding the rows above the prompt. The arm
+    // below hands them to the turn zone the moment it sees the turn in flight,
+    // so the elapsed row is composed above the prompt in every state instead of
+    // being painted onto the prompt's own bottom row by the cursor-relative
+    // block. Low frequency: the loop only has to notice, never to race.
+    const ZONE_RECONCILE_MS: u64 = 150;
+    let mut zone_timer = tokio::time::interval(tokio::time::Duration::from_millis(
+        ZONE_RECONCILE_MS,
+    ));
+    zone_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    zone_timer.tick().await; // consume the immediate first tick
     // The wheel scrollback: the terminal has to report mouse events for the
     // whole session, not only while a turn runs, so the input loop owns
     // reporting here (the indicator's own switch is disabled in that case) and
@@ -3883,6 +3933,39 @@ async fn run_input_loop_raw(
                     render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                 }
             }
+            // The reconcile arm (FR-40's live side): a turn the input loop did
+            // not submit — a peer prompt over IPC, a queued prompt the agent
+            // dequeued by itself — runs with nobody holding the rows above the
+            // prompt. Left alone the block's cursor-relative repaint lands on
+            // the prompt and the elapsed row takes the prompt's own bottom row.
+            // Handing the rows to the zone the moment the turn is seen composes
+            // the elapsed row above the prompt in every state. The overlay's
+            // screen is not this arm's to take: while it is active the pin
+            // already carries the elapsed row (`draw_scrolled`).
+            _ = zone_timer.tick(), if !overlay.is_active() => {
+                if state.turn_in_flight.load(Ordering::SeqCst) {
+                    if !zone_armed() {
+                        zone_arm(&state);
+                        zone_paint_span(
+                            &state.theme,
+                            if prompt_state.is_awaiting_approval() { Role::Confirm } else { Role::PromptSymbol },
+                            if prompt_state.is_awaiting_approval() { APPROVAL_PROMPT } else { PROMPT },
+                            &input_state,
+                            None,
+                        );
+                    }
+                } else if zone_armed() && prompt_state.is_ready() {
+                    // The other half of the same handoff: that turn reached its
+                    // terminal event with no submit site of this loop to disarm
+                    // for it, so the zone is still standing over a prompt the
+                    // loop believes is idle. Give the rows back the way the
+                    // release arm does — the disarm's replay, a fresh renderer
+                    // and the prompt underneath (D-54).
+                    zone_disarm();
+                    renderer.reset();
+                    render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                }
+            }
         }
     }
 
@@ -4581,6 +4664,15 @@ struct StatusIndicator {
     /// (it has to be on at the prompt too), so the end of a turn must not be
     /// able to turn it off underneath the wheel.
     owns_mouse: bool,
+    /// Whether the live prompt block owns the screen's bottom rows and the
+    /// parked caret, with no turn zone holding the writes. The block's rows are
+    /// cursor-relative from the prompt's own position, and the caret stands
+    /// *inside* the prompt, so a repaint here lands on the prompt: the elapsed
+    /// row takes the bottom-most prompt row. Nothing here writes while this
+    /// holds — the prompt render is the screen's only writer, and the armed
+    /// zone (which composes the elapsed row above the pinned span) is the only
+    /// painter allowed on those rows.
+    prompt_owned: bool,
 }
 
 impl StatusIndicator {
@@ -4600,6 +4692,22 @@ impl StatusIndicator {
             thinking_view: true,
             theme: Theme::plain(),
             owns_mouse: true,
+            prompt_owned: false,
+        }
+    }
+
+    /// Record whether the live prompt block owns the screen's bottom rows. While
+    /// it does, nothing here writes to the screen: the caret is the prompt's to
+    /// place, so the shipped cursor-relative block (erase upward from the
+    /// caret, repaint downward from it) would land inside the prompt — the
+    /// elapsed row on the bottom-most prompt row. Entering the state drops the
+    /// painted bookkeeping without moving the cursor; leaving it lets the next
+    /// paint start from wherever its writer then stands.
+    fn set_prompt_owned(&mut self, on: bool) {
+        self.prompt_owned = on;
+        if on {
+            self.painted = false;
+            self.painted_rows = 0;
         }
     }
 
@@ -4738,7 +4846,12 @@ impl StatusIndicator {
     /// row is already on screen — a tick never *introduces* a row, so it
     /// cannot land in the middle of streamed output.
     fn tick(&mut self) {
-        if self.run.is_none() || !self.enabled || self.suspended || !self.painted {
+        if self.run.is_none()
+            || !self.enabled
+            || self.suspended
+            || !self.painted
+            || self.prompt_owned
+        {
             return;
         }
         if let Some(run) = self.run.as_mut() {
@@ -4750,7 +4863,12 @@ impl StatusIndicator {
     /// Draw the row when allowed to. `at_line_start` is the caller's knowledge
     /// of where the cursor is.
     fn paint(&mut self, at_line_start: bool) {
-        if !self.enabled || self.suspended || self.run.is_none() || !at_line_start {
+        if !self.enabled
+            || self.suspended
+            || self.run.is_none()
+            || !at_line_start
+            || self.prompt_owned
+        {
             return;
         }
         self.repaint();
@@ -4826,6 +4944,13 @@ impl StatusIndicator {
             // stands down from.
             return;
         }
+        // The live prompt block's rows (the same rule `tick` and `paint` gate
+        // on): the caret stands inside the prompt and this repair is
+        // cursor-relative, so a repaint here lands on the prompt's own last
+        // row. The armed zone is the only painter allowed above the span.
+        if self.prompt_owned {
+            return;
+        }
         self.clear();
         if self.run.is_none() {
             return;
@@ -4871,6 +4996,16 @@ impl StatusIndicator {
         // wrong rows, so the flags reset quietly and the screen is left to the
         // zone.
         if zone_armed() {
+            self.painted = false;
+            self.painted_rows = 0;
+            return;
+        }
+        // The live screen's prompt block (the same rule the gate above serves):
+        // the caret stands inside the prompt, so the shipped relative repair
+        // (MoveUp from the caret + erase downward) would erase the prompt's own
+        // rows. Nothing was painted there either, so the bookkeeping simply
+        // resets.
+        if self.prompt_owned {
             self.painted = false;
             self.painted_rows = 0;
             return;
@@ -4924,7 +5059,7 @@ impl StatusIndicator {
         // shared cursor is parked on the pinned span's caret, the row below the
         // last beat's paint is the zone's to compose, so the outcome line is
         // record-only here and surfaces through the disarm's replay.
-        if !self.suspended && !zone_armed() {
+        if !self.suspended && !zone_armed() && !self.prompt_owned {
             let nl = self.newline();
             let _ = write!(self.out, "{line}{nl}");
             let _ = self.out.flush();
@@ -5357,6 +5492,15 @@ async fn render_prompt_with_run(
             zone_paint_span(&state.theme, role, prompt, input_state, sug.as_deref());
             return;
         }
+        // The live prompt block takes the screen's bottom rows from here, and
+        // the caret is parked *inside* it. The indicator's block is
+        // cursor-relative (erase upward from the caret, repaint downward from
+        // it), so painting here would land on the prompt — the elapsed row on
+        // the prompt's own last row, which is the row the prompt alone owns. The
+        // indicator stands down until a turn zone takes the rows and composes
+        // the elapsed row above the span (FR-37a/FR-40); `finish` still records
+        // the outcome row, so nothing is lost from the transcript.
+        lock_indicator(&state.indicator).set_prompt_owned(true);
         renderer.render(
             stdout,
             &state.theme,
@@ -6152,6 +6296,45 @@ mod tests {
                 layers: vec![dir.join("config.toml")],
                 from_explicit: false,
             },
+            group: None,
+            theme: Theme::plain(),
+            shell: crate::config::ShellConfig::default(),
+            scroll: false,
+            mouse_select: true,
+            copy_command: String::new(),
+        })
+    }
+
+    /// Test helper: the same state `build_state` builds, carrying the caller's
+    /// indicator — the ownership handoffs are read off the shared indicator, so
+    /// a pin has to observe that one rather than the disabled default.
+    fn test_state_with_indicator(
+        indicator: Arc<std::sync::Mutex<StatusIndicator>>,
+    ) -> Arc<ReplState> {
+        let dir = TempDir::new().unwrap();
+        let base = build_state(dir.path());
+        Arc::new(ReplState {
+            id: base.id.clone(),
+            ancestors: base.ancestors.clone(),
+            registry_dir: base.registry_dir.clone(),
+            agents_dir: base.agents_dir.clone(),
+            persona_file_setting: base.persona_file_setting.clone(),
+            cli_persona_path: None,
+            project_persona_path: None,
+            name: base.name.clone(),
+            persona: RwLock::new(Persona::builtin_default()),
+            tool_names: Vec::new(),
+            history_path: base.history_path.clone(),
+            history: RwLock::new(Vec::new()),
+            auto_approve: Arc::new(AtomicBool::new(false)),
+            permissions: Arc::new(crate::permissions::Ruleset::default()),
+            cancel: Arc::new(CancelToken::default()),
+            suppress: Arc::new(AtomicUsize::new(0)),
+            turn_in_flight: Arc::new(AtomicBool::new(false)),
+            indicator,
+            commands_dir: base.commands_dir.clone(),
+            commands: RwLock::new(Vec::new()),
+            config_source: base.config_source.clone(),
             group: None,
             theme: Theme::plain(),
             shell: crate::config::ShellConfig::default(),
@@ -8205,6 +8388,81 @@ mod tests {
         ind.resume();
         ind.paint(true);
         assert!(!sink.taken().is_empty(), "painting resumes after the prompt");
+    }
+
+    /// The reported defect, pinned on the block itself: while the live prompt
+    /// block owns the screen's bottom rows the caret stands *inside* the
+    /// prompt, and the block's repair is cursor-relative — so a paint or a tick
+    /// there rewrites the prompt's own last row with the spinner-and-elapsed
+    /// row. Failure-first: without the ownership gate this pin sees the elapsed
+    /// row written onto the prompt (`sink.taken()` non-empty, `painted` set).
+    #[test]
+    fn the_indicator_never_paints_over_the_live_prompt_block() {
+        let sink = CaptureSink::default();
+        let mut ind = test_indicator(&sink);
+        // A turn is running and its row was on screen, then the prompt block
+        // took the bottom rows back (a live redraw after a turn the loop did
+        // not submit, a drain window, an approval answer).
+        ind.start();
+        ind.paint(true);
+        let _ = sink.taken();
+        ind.set_prompt_owned(true);
+        // Every writer the display task drives must stand down.
+        ind.tick();
+        ind.paint(true);
+        ind.repaint();
+        ind.toggle_expanded();
+        assert_eq!(
+            sink.taken(),
+            "",
+            "no writer may touch the prompt's rows while the prompt owns them"
+        );
+        assert_eq!(ind.painted_rows(), 0, "nothing is on screen from the block");
+        // The closing row is still the transcript's — the outcome is not lost,
+        // it is only not written onto the prompt (D-54's disarm replays it).
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        ind.finish(Mark::Ok);
+        let texts: Vec<String> = crate::scroll::with(|t| {
+            t.lines()
+                .map(|l| crate::theme::strip_sgr(l).to_string())
+                .collect()
+        })
+        .unwrap();
+        crate::scroll::uninstall();
+        assert!(
+            texts.iter().any(|t| t.contains('\u{2714}')),
+            "the outcome row is recorded even while the prompt owns the rows: {texts:?}"
+        );
+        assert_eq!(sink.taken(), "", "and still nothing is written there");
+        // Ownership handed back (the zone armed, the screen scrolled away, the
+        // rows released): the next paint draws again.
+        ind.start();
+        ind.set_prompt_owned(false);
+        ind.paint(true);
+        assert!(
+            sink.taken().contains(SPINNER_FRAMES[0]),
+            "the block paints once the prompt releases the rows"
+        );
+    }
+
+    /// The arm half of the same rule: arming the turn zone takes the rows from
+    /// the prompt block, so the beat — which composes the elapsed row *above*
+    /// the span — is their only writer. Failure-first: without the handoff the
+    /// flag stays set and the beat is the sole writer while the block also
+    /// believes it owns the rows.
+    #[test]
+    fn arming_the_zone_takes_the_rows_from_the_prompt_block() {
+        let sink = CaptureSink::default();
+        let ind = Arc::new(std::sync::Mutex::new(test_indicator(&sink)));
+        let state = test_state_with_indicator(ind.clone());
+        lock_indicator(&ind).set_prompt_owned(true);
+        zone_arm(&state);
+        assert!(
+            !lock_indicator(&ind).prompt_owned,
+            "the armed zone owns the rows above the span, not the prompt block"
+        );
+        zone_disarm();
     }
 
     #[test]

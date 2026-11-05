@@ -1,11 +1,11 @@
 # AI_PRJ_TASKS.md — Task List
 
 Project: `agent-cli`
-Cycle: "the display corrections — during mouse scrolling the `Message below`
-marker stands above the prompt, not below it; and during a running turn a
-mouse selection no longer makes the elapsed display vanish nor drop the
-selection one row" (FR-39, FR-40) (`.aiprj/instructions.md`, rewritten
-2026-11-05 09:31 (+0900))
+Cycle: "the refactoring — contradictions and waste in the source are removed,
+`src/ai`'s provider error chain and the tools' test context each collapse to
+one implementation, clippy falls silent, and the documents follow the source;
+and the prompt's bottom row is prompt-only — the elapsed row never takes it"
+(FR-41, FR-42) (`.aiprj/instructions.md`, rewritten 2026-11-05 11:21 (+0900))
 Paired with `AI_PRJ_REQUIREMENTS.md`, `AI_PRJ_DESIGN.md`.
 
 Status: ⬜ not started / 🟨 in progress / ✅ done / ⛔ blocked
@@ -16,257 +16,338 @@ file whenever a task changes state.
 
 ## Overview
 
-The instruction (rewritten 2026-11-05 09:31:00 +0900, re-verified
-byte-exact at this update; 595 bytes, sha256
-`eca9d4fc943914aeaab42fd7052660d76ee14b51f92c6559b1f9239d675e8988`)
-replaces the 2026-11-04 17:08 text the previous cycle's ledger recorded.
-Its method sentence and its heading stand; its two asks are new: **the
-display corrections**. The previous cycle (FR-37 a/b/c, FR-38 — the four
-display regions and the bare-`Enter` guard) is delivered at `39afeb2`,
-its sha named by the tracked ledger's follow-up `fb46cc0`, and stands:
-nothing it asked for is withdrawn (BL-M42). The two corrections are
-recorded as **FR-39** and **FR-40** with their baselines verified in the
-tree (BL-M40, BL-M41), the design decisions **D-60**/**D-61** and the
-tasks **T-82–T-85** below.
+The instruction (rewritten 2026-11-05 11:21:10 +0900, re-verified
+byte-exact at this update; 364 bytes, sha256
+`9929f174e6acfef3479949cdacd6eab34b77301539915a19c723e72fd960b098`)
+replaces the 2026-11-05 09:31 text the previous cycle's ledger recorded.
+Its method sentence and its heading stand; its ask is new: **refactor the
+source** — remove the contradictions and the waste the feature additions
+left behind — and **correct the documents to the source**. The previous
+cycles stand: FR-37/FR-38 (the four display regions, the bare-`Enter`
+guard) at `39afeb2`, named by the follow-up `fb46cc0`; FR-39/FR-40 (the
+marker above the prompt, the scrolled screen's four-region pin) at
+`db68d3f`, named by `306f425`. The cycle's asks are recorded as **FR-41**
+(the refactoring) and **FR-42** (the display defect the refactoring round
+surfaced) with their baselines verified in the tree (BL-M43–BL-M45), the
+design decisions **D-62–D-64** and the tasks **T-87–T-92** below.
 
-**Both corrections are delivered and pinned.** T-82–T-85 stand ✅ in the
-task list and their execution record stands below it (the cycle's record).
-The cycle published no release of its own; afterwards, on the user's
-direction, the version was carried **0.39.0 → 0.40.0** by the release
-commit `505097a` "Release 0.40.0: the display corrections carry the
-version" (T-86). The tree the cycle started from was `fb46cc0` (the `main`
-tip, the previous cycle's ledger follow-up), the worktree carrying the
-ledger's recording alone; the execution then carried the product tree with
-it. The gates are green at
-the delivered tip: **645 unit + 6 integration, 0 failed** (the baseline
-held exactly), clippy the same four warning classes on the same sites —
-all outside the cycle's diff.
+**Both are delivered.** T-87–T-91 stand ✅ in the task list and their
+execution record stands below it. The refactoring is one commit of its
+own (`eec12f9` "Refactor: one HTTP error chain, one test context, no dead
+code", 26 files, +139/−314) so the display repair and the ledger's record
+stand apart from it. The tree the cycle started from was `856c2bf` (the
+`main` tip, the version carry's record); the version stands at **0.40.0**,
+no `v0.40.0` tag exists, the tag `v0.39.0` stands on `4f7fad6`. The gates
+are green at the delivered tip: **647 unit + 6 integration, 0 failed**
+(the baseline's 645 + 6 plus the two new pins of FR-42, no test lost), and
+clippy reports **0 warnings** — the seven baseline warnings fixed at their
+sites rather than tolerated (C-09, D-62).
 
-The two asks' baselines, as the tree stood before the execution:
+The two asks' baselines, as the tree stood before the work:
 
-- **The scroll marker was painted beneath the prompt block** (BL-M40, now
-  superseded by D-60): the text rode the prompt pin's `text` field, set
-  from `overlay.view_active()`, and the renderer's marker arm painted it
-  after the block's last row — `k = (end_row.max(cursor_row) −
-  cursor_row) + 1`, `MoveDown(k)` — so the row always landed one below the
-  block. The row's **budget** was already reserved above that arithmetic
-  (`scrolled_marker_rows` `:1378–1380`: `1` off the bottom, `0` at it), so
-  FR-39 was the row's **place**, not its count. The delivered place: the
-  row immediately above the block's first row, painted by the renderer's
-  marker arm **before** the block's rows (`src/app.rs` `render`
-  `:1156–1260`, the marker arm `:1201–1213`, the fold `:1258`), counted in
-  `above_rows` so `clear_block` (`:1078–1102`) climbs past it.
-- **The scrolled screen's mid-turn pin was the clock alone, and the mouse
-  arms measured that clock-only budget** (BL-M41, now superseded by D-61):
-  `draw_scrolled` drew a clock-only `ScrollBottom::Status` whenever
-  `overlay_status_row()` answered, with a `1 + peer_lines` budget, and
-  never the prompt span; the live screen's mid-turn order was the opposite
-  (`zone_beat_plan` `:1628–1636`: the span at the bottom, the clock above
-  it, the peers above that). The wheel and drag arms both derived `body`
-  from `bottom_block_rows`'s `Pending` branch (`view_moved ? 2 : 1`,
-  `+ peer_lines`) and both gated `view_moved` on the turn's absence, so
-  mid-turn the body was short of a composition carrying the span and the
-  marker's row was never counted. Both symptoms the instruction names
-  followed from that one disagreement (AS-60). The delivered composition:
-  `ScrollBottom` is a single struct with `run_row` beside the prompt's
-  fields (`:2050–2062`), `scrolled_block_plan` (`:2115–2131`) answers the
-  four-region order, `scrolled_bottom_rows` (`:2144–2162`) is the one
-  budget the drawer, the wheel arm (`:3249–3257`) and the drag arm
-  (`:3326–3335`) all ask, and both arms pass `view_moved =
-  overlay.view_active()` with no turn gate.
+- **The duplication and the dead code** (BL-M43, now superseded by D-62):
+  the provider HTTP-error chain was assembled five times — once per
+  provider, verbatim modulo the name — and the tools' test context was
+  built eight times, the same nine-field literal in eight files. The
+  eleven `#[allow(dead_code)]` blankets turned out to be three different
+  things — six hid an item nothing called, four hid an item that is
+  called, one hid a test-only item — and clippy carried four warning
+  classes the ledger had certified as the baseline. The delivered shape:
+  one `http_error` (`src/ai/mod.rs:182–205`), one
+  `test_ctx`/`test_ctx_in` (`src/tools/mod.rs:208–228`), the six uncalled
+  items deleted, the four called items kept with only their blanket
+  removed, `GroupId::generate` made `#[cfg(test)]`, clippy silent.
+- **The live prompt block's ownership** (BL-M44, now superseded by D-63):
+  `StatusIndicator` paints cursor-relative and only asks that the caret
+  stand at a line start; the turn zone was armed at the input loop's own
+  submit sites alone. A turn the loop did not submit — a peer prompt over
+  IPC (`src/agent.rs:308`), a queued prompt the agent dequeued itself, the
+  window after `zone_disarm()` + `render_prompt()` — ran with no zone while
+  the caret stood inside the prompt block, and the repaint wrote the
+  spinner-and-elapsed row at the caret: the bottom-most prompt row, ten
+  times a second. Separately, `zone_beat`'s two paint loops emitted every
+  `block_n`/`peers_n` row downward without re-clamping, so a clock block or
+  peer band taller than the room above the span painted over the prompt
+  span. The delivered shape: `prompt_owned` gates all five cursor-relative
+  writers, a 150 ms reconcile arm arms and disarms the zone to the turn
+  rather than to the keypress, and the two paint loops stop at their own
+  floor.
 
 | ID | Task | Requirements | Design | Depends on | Status |
 |---|---|---|---|---|---|
-| T-82 | FR-39's implementation: the scroll marker's place moved from the row beneath the prompt block to the row above its first row — the renderer's marker arm painting before the block's rows, `cursor_row`'s fold and `clear_block`'s reach accounting for the marker's row, the drawer's `bottom_rows` and the wheel/drag budgets agreeing with the place they already agree on the count; the marker absent at the log's bottom as shipped | FR-39, NFR-14 | design §1 (D-60), §2 (TPR-23a), §3 | — | ✅ |
-| T-83 | FR-39's pins: failure-first against the shipped beneath-the-block place, then green — the marker's row directly above the block's first row, `cursor_row` including it so the next render erases from the right row, the drawer/wheel/drag arithmetic on one budget, the absent-at-bottom case standing | FR-39, NFR-13 | design §1 (D-60), §4 (W-62) | T-82 | ✅ |
-| T-84 | FR-40's implementation: the scrolled screen's mid-turn composition brought into line with the live four-region order — the prompt pin carrying the running turn's elapsed row above it (the clock face from `overlay_status_row`, display-only as shipped), the peer rows above that, the marker of FR-39 between the run display and the prompt; the mouse arms' `Pending` budget grown from the clock's row to the prompt span's rows plus the clock's row plus the additive peer rows, so `draw_scrolled`, the wheel arm and the drag arm share one arithmetic; the transcript's recording rules untouched | FR-40, NFR-14 | design §1 (D-61), §2 (TPR-23b), §3 | T-82 | ✅ |
-| T-85 | FR-40's pins: failure-first then green — the mid-turn scrolled composition's plan in the four-region order, the elapsed row displayed and in place, a press/drag/release resolving against the rows the screen shows (no one-row drop), the arms' body equal to the drawer's `bottom_rows`, and the clock row still out of the recorded transcript | FR-40, NFR-13 | design §1 (D-61), §4 (W-62) | T-84 | ✅ |
-| T-86 | The version carry on the user's direction after the delivery: `Cargo.toml` 0.39.0 → 0.40.0 with `Cargo.lock` reloaded by the build, the release commit carrying the two files alone and the gates green at it; no source, ledger-of-record or pin change | — (§12) | — | T-82–T-85 | ✅ |
+| T-87 | FR-41's implementation: the five providers' HTTP-error chains collapse to one `http_error` in `src/ai/mod.rs`, each call site passing its own name, status, headers, body and context; the eight tool test contexts collapse to one `test_ctx`/`test_ctx_in`, `send_to`'s `build_ctx` delegating to it; the seven clippy warnings fixed at their sites (`is_none_or` ×2, `&PathBuf` → `&Path` ×4, the merged `if let` ×2); and every `#[allow(dead_code)]` blanket read and resolved — the six over an uncalled item deleted (`bytes_to_lines`, `AppError::Tool`/`Ui`/`Agent` and their constructors, `RegistryHandle.dir`, `ConversationLog.path`, `Agent.name`), the four over a called item kept with only the blanket removed (`Agent.config`, `RegistryHandle.socket_path`, `LogEvent`, `ToolRegistry::names`), and `GroupId::generate` made `#[cfg(test)]`. No caller observes a change | FR-41, NFR-14, C-09 | design §1 (D-62), §2 (TPR-24a), §3 | — | ✅ |
+| T-88 | FR-41's proof: the shipped suite unchanged — the same tests run before and after, and none was removed, because `bytes_to_lines` carried no test of its own and `GroupId::generate`'s test still runs against the `#[cfg(test)]` function — and clippy silent on the whole tree, so the refactoring's "no contradiction, no waste" is measured rather than asserted | FR-41, NFR-13, C-09 | design §1 (D-62), §4 (W-63) | T-87 | ✅ |
+| T-89 | FR-42's implementation: the live prompt block's rows become prompt-only — `StatusIndicator` carries `prompt_owned` and `set_prompt_owned`, and `tick`/`paint`/`repaint`/`clear`/`finish`'s screen write all stand down under it while `finish`'s transcript record still runs; the live prompt render takes ownership before it draws and the arm releases it; `zone_arm` stops re-seeding an armed zone's anchor so the next beat composes over the editor's true extent; a 150 ms reconcile arm in the input loop arms the zone for a turn the loop did not submit and disarms it on the mirror condition; and `zone_beat`'s two paint loops stop at `sweep_to` and at `block_home.min(sweep_to)`, so a truncated block keeps the elapsed row. The elapsed row is composed above the span, its four-region place; the transcript's recording rules untouched | FR-42, NFR-14 | design §1 (D-63), §2 (TPR-24b), §3 | — | ✅ |
+| T-90 | FR-42's pins: failure-first against the shapes they replace, then green — `the_indicator_never_paints_over_the_live_prompt_block` (each of the five writers stands down under `prompt_owned`, and `finish` still records) and `arming_the_zone_takes_the_rows_from_the_prompt_block` (the arm releases the ownership); the previous cycles' geometry pins re-run green and unmoved in meaning | FR-42, NFR-13 | design §1 (D-63), §4 (W-64) | T-89 | ✅ |
+| T-91 | The documents corrected to the source (the instruction's second sentence as a work item): `C-09`'s "clippy output stays identical to the pre-change baseline" retired for **clippy stays silent** and recorded as a specification change (the requirements' §6); the `src/app.rs` citations the fix's +258 rows shifted re-read content-by-content at the delivered tip and written with the numbers the tree answers; the three documents brought to the source's shape (FR-41/FR-42, BL-M43–BL-M45, D-62–D-64, TPR-24a/b, T-87–T-92, W-63–W-65, AC-35) | — (NFR-11, NFR-12, C-08, C-13) | design §1 (D-64), §3 (the documentation angle), §4 (W-65) | T-87–T-90 | ✅ |
+| T-92 | The cycle's record and delivery: the work log written (`2026-11-05_006.md`, embedding the instruction verbatim), the three documents mutually consistent, the instruction re-verified byte-exact at exit, and the delivery committed per the user's direction | — (C-08, C-13, AC-35) | design §4 (W-65) | T-87–T-91 | ✅ |
 
 Sections below the table are the execution record (Article 3) — written as
 each task's status changes.
 
 ## The cycle's record
 
-- **The instruction was rewritten, and the previous cycle's asks stand** —
-  the 2026-11-04 17:08 text (567 bytes, sha256 `2eba1d17…`) is replaced by
-  the 2026-11-05 09:31 text (595 bytes, sha256 `eca9d4fc…`). The
-  previous cycle's FR-37/FR-38 were delivered at `39afeb2` and re-certified
-  at `fb46cc0` (BL-M42); this cycle's two asks are corrections to that
-  delivered display, not withdrawals of it (the requirements' §1).
-- **Both corrections are geometry statements about rows the display
-  already owns** — the marker's place (BL-M40) and the mid-turn scrolled
-  composition together with the mouse arms' budget (BL-M41). No key path,
-  no recording rule and no wire shape changed (NFR-14; the requirements' §6
-  records the two superseded display statements as specification changes).
-- **The ledger's recording opened as the ledger's alone** (C-13), carried
-  by the work log `2026-11-05_002.md`; the execution then carried the
-  product tree with it, carried by `2026-11-05_003.md`. Both corrections
-  are delivered and pinned, and the gates are green (§ the gates below).
+- **The instruction was rewritten, and the previous cycles' asks stand** —
+  the 2026-11-05 09:31 text (595 bytes, sha256 `eca9d4fc…`) is replaced by
+  the 2026-11-05 11:21 text (364 bytes, sha256 `9929f174…`). FR-37/FR-38
+  were delivered at `39afeb2` (named by `fb46cc0`) and FR-39/FR-40 at
+  `db68d3f` (named by `306f425`); neither is withdrawn. This cycle's first
+  ask is the refactoring they left owed, not a correction of them.
+- **The refactoring is a refactoring in the strict sense** — no caller
+  observes a change (BL-M43, the requirements' §6). Each collapsed chain
+  assembles what its own site assembled; each deletion removes a function
+  or field whose every reference was the deleted code's own test. The
+  unchanged suite is the proof, and clippy's silence is the second half of
+  the ask measured (`無駄` reaching the baseline's warnings).
+- **The display defect surfaced while reading the regions** — the
+  refactoring's third angle (the live prompt block's writers) found the two
+  paths by which the running display could take the prompt's bottom row
+  (BL-M44). It is recorded as FR-42 because the instruction's method — one
+  reading, no detour beyond the ask, and the ask is "no contradiction, no
+  waste" — makes a live defect found in that reading part of the same
+  cycle. It carries its own pins and changes no shipped contract
+  (NFR-14).
+- **The documents were edited as work, not only as record** (C-13, D-64) —
+  the instruction's second sentence is itself a document ask. `C-09`'s
+  superseded text is rewritten, the shifted `src/app.rs` citations are
+  re-read rather than renumbered, and the design and task documents follow
+  the source.
 
-## T-82 — FR-39's implementation (✅)
+## T-87 — FR-41's implementation (✅)
 
-Delivered. `ScrollBottom` (`src/app.rs:2050–2062`) carries the marker's
-text in its `text` field beside the prompt's own, and the renderer prints
-it on the row immediately above the block's first row: the marker arm
-(`render` `:1156–1260`, the arm `:1201–1213`) now runs **before** the
-prompt span's rows — it prints the row and a CR+LF and adds one to
-`above_rows` — and the fold `self.cursor_row = above_rows + sug_rows +
-cursor_row` (`:1258`) counts it, so the next render's `clear_block`
-(`:1078–1102`) climbs past it and leaves no stale row behind. The old
-below-the-block arithmetic is gone: the renderer no longer computes
-`k = (end_row.max(cursor_row) − cursor_row) + 1` and `MoveDown(k)` to land
-the row under the block's last row. Nothing about the row's **count**
-moved — `scrolled_marker_rows` (`:1378–1380`) still answers `1` while the
-view is off the bottom and `0` at it, and the drawer and the mouse arms
-all take that answer through one budget (`scrolled_block_plan`
-`:2115–2131`, `scrolled_bottom_rows` `:2144–2162`, `bottom_block_rows`
-`:2170–2191`). The marker is produced where it was —
-`render_prompt_with_run`'s `overlay.view_active().then(||
-SCROLLED_MARK.to_string())` (`:5348–5350`, the text at `:1372`) — and
-consumed once, at `draw_scroll_overlay` handing `bottom.marker_row()` to
-`renderer.render` (`:2340`ff). AS-59 holds: a wrapped prompt still keeps
-the marker directly above the block's first row, because the marker is
-printed ahead of the span's first row rather than placed relative to the
-caret.
+Delivered. One function assembles what five providers each assembled:
+`http_error(provider, status, headers, text, context)`
+(`src/ai/mod.rs:182–205`) recovers the request id from headers or body,
+attaches the status and its canonical reason, attaches the body, folds in
+the provider's config and key context, derives the pattern-specific hint
+and converts to `AppError`. Each site passes what it already held —
+`claude.rs:226`, `codex.rs:190` (its own `kind_label`), `llamacpp.rs:188`,
+`ollama.rs:209`, `opencode.rs:181` — and each keeps its own module free of
+the chain. `extract_request_id` and `ProviderError` are imported where they
+are still used and dropped where they are not.
+
+One function fills the tools' test context: `test_ctx()`
+(`src/tools/mod.rs:208–210`) over `test_ctx_in(registry_dir)`
+(`:216–228`), the nine fields written once with a comment naming what each
+default means. The eight tool test modules name it as `ctx` — `bash:115`,
+`edit:83`, `glob:88`, `grep:186`, `monitor:117`, `read:84`, `websearch:169`,
+`write:54` — and `send_to`'s `build_ctx` (`:320–322`) keeps its own name and
+delegates to `test_ctx_in`, which is the only one of the nine that needs a
+directory.
+
+clippy's seven warnings are fixed where they were reported, not
+suppressed: `.is_none_or(…)` at `commands.rs:140` and `update.rs:303`,
+`&Path` in place of `&PathBuf` at `commands.rs:1296`/`:1304` and
+`send_to.rs:326`/`:386`/`:433`, and the merged `if let` at `send_to.rs:402`
+and `commands.rs:1317`.
+
+The eleven `#[allow(dead_code)]` blankets were read one by one, and they
+turned out to be three different things — which is why none was removed as
+a class. **Six stood over an item nothing calls**, and the item goes with
+the blanket: `bytes_to_lines` and the imports it alone used
+(`src/ai/stream.rs`), `AppError::Tool`/`Ui`/`Agent` and the constructors
+`tool()`/`ui()`/`agent()` (`src/error.rs`), `RegistryHandle.dir`
+(`src/ipc/registry.rs`), `ConversationLog.path` (`src/log.rs`) and
+`Agent.name` (`src/agent.rs`, with the two construction sites in
+`src/app.rs` and the one test literal that filled it). **Four stood over an
+item that is called**, so only the blanket goes — `Agent.config`,
+`RegistryHandle.socket_path` (read by the handle's own `Drop`), `LogEvent`
+and `ToolRegistry::names` (`src/app.rs:325`) — since deleting the item
+would have been a behaviour change disguised as a cleanup. **One is a
+test-only item**: `GroupId::generate` (`src/id.rs`) has no production
+caller and one test of its own, so its blanket becomes `#[cfg(test)]` and
+the production build stops compiling it. 26 files, +139/−314.
 
 Depends on: nothing (the first task of the cycle).
 
-Design trace: design §1 (D-60), §2 (TPR-23a), §3 (the marker-place and the
-superseded-pins angles), §4 (W-60).
+Design trace: design §1 (D-62), §2 (TPR-24a), §3 (the duplication and
+dead-code angles), §4 (W-63).
 
-## T-83 — FR-39's pins (✅, depends on T-82)
+## T-88 — FR-41's proof (✅, depends on T-87)
 
-Delivered, green. The place pin
-`the_scrolled_prompt_pin_carries_the_marker_row` (`:7539–7607`) was
-re-derived from the beneath-the-block place it stated: it now composes the
-block through `scrolled_block_plan`, binds the marker's row as the prompt
-span's first row minus one, binds `cursor_row` after the render as
-including it — so the next `clear_block` climbs past it — and binds the
-same place with a wrapped prompt. The absent case rides the same pin: at
-the log's bottom `scrolled_marker_rows(false)` answers `0`, so no row is
-produced or painted. The agreement the budgets owe is pinned by
-`the_clock_row_is_not_the_subagent_lines_price` (`:7392–7405`) and
-`the_line_survives_the_intersections_and_the_screen_shows_it`
-(`:7408–7423`), which ask `bottom_block_rows` — the function the drawer,
-the wheel arm (`:3249–3257`) and the drag arm (`:3326–3335`) all call, so
-their `body` answers the same number as the drawer's `bottom_rows` with
-the marker present and absent. NFR-13's fold check: the same pin name
-carried the old text, so the rewrite of its assertions is the record that
-the correction happened, first made to fail against the shipped place.
+Delivered, green. The suite is the proof and it is unchanged: the same
+tests run before and after, and **none was removed** — `bytes_to_lines`
+carried no test of its own, and `GroupId::generate`'s test still runs
+against the function the `#[cfg(test)]` attribute keeps. Nothing reachable
+was removed, which is what an unchanged passing suite measures; no test was
+adjusted to accommodate the collapse, and none was rewritten to hide one.
 
-Depends on: T-82.
+Clippy reports **no warning at all** on the whole tree — the four baseline
+classes are gone, not tolerated (C-09 as rewritten, the requirements' §6).
+The refactoring's commit `eec12f9` was gated on its own before the display
+fix began (`cargo test` 645 + 6, 0 failed; `cargo clippy` silent), so the
+two halves of the cycle are measured separately.
 
-Design trace: design §1 (D-60), §3 (the superseded-pins angle), §4 (W-62).
+Depends on: T-87.
 
-## T-84 — FR-40's implementation (✅, depends on T-82)
+Design trace: design §1 (D-62), §3 (the duplication, dead-code and pins
+angles), §4 (W-63).
 
-Delivered. The scrolled screen no longer swaps in a clock-only pin:
-`draw_scrolled` (`:5379–5412`) takes the running turn's face from
-`overlay_status_row` (`:4779–4786`) and hands it to
-`render_prompt_with_run` (`:5303–5374`) as `run_row`, so the one render
-path prints it on the row directly above the prompt span — the live
-screen's order (`zone_beat_plan` `:1628–1636`: the span at the bottom,
-the clock above it, the peers above that), with the marker of FR-39
-between the run display and the prompt (`scrolled_block_plan`
-`:2115–2131`). The enum that used to select between a prompt pin and a
-clock-only one is gone: `ScrollBottom` (`:2050–2062`) is a single struct
-whose fields are the whole composition, so every state — a turn running
-or not — draws through one path and the scrolled screen composes the four
-regions in the instruction's order.
+## T-89 — FR-42's implementation (✅)
 
-The arms' budget follows. `bottom_block_rows` (`:2170–2191`) delegates to
-`scrolled_bottom_rows` (`:2144–2162`) with `prompt_state.is_pending()` as
-`running`, so the pending budget is the prompt span's rows plus the
-elapsed row plus the additive peer rows — the shape the `Ready` branch
-computes plus the run block — and the wheel arm (`:3249–3257`) and the
-drag arm (`:3326–3335`) both pass `view_moved = overlay.view_active()`
-with no turn gate. The press's `row < body` (`:3339`), the drag's
-`row.min(body − 1)` (`:3353`) and the release's
-`body_slice_at(width, body, offset)` (`:3373–3374`) therefore resolve
-against exactly the rows the screen shows (AS-62): the selection lands
-where the pointer is and the elapsed row keeps its place.
+Delivered. The rule — the live prompt block's rows are prompt-only — is
+held by one flag and one handoff.
 
-The recording rule is untouched: `renderer.render` writes rows only, and
-`finish_line` (`:1108–1139`) remains the sole recorder, so the elapsed row
-and the marker never enter the transcript.
+**The flag.** `StatusIndicator` carries `prompt_owned`
+(`src/app.rs:4675`, initialised `:4695`) and `set_prompt_owned(on)`
+(`:4706–4714`), which drops the painted bookkeeping when it is set on (no
+cursor move: the screen is about to be redrawn by its new owner). Every
+cursor-relative writer asks it: `tick` (`:4848–4859`, the gate `:4853`),
+`paint` (`:4865–4874`, `:4870`), `repaint` (`:4935–4990`, `:4951`),
+`clear` (`:4992–5015`, `:5008`) and `finish`'s screen write
+(`:5033–5069`, `:5062`). `finish` is split deliberately: the transcript
+record above the gate still runs, so the outcome line is never lost — only
+withheld from the screen until the disarm's replay. The live prompt render
+takes ownership before it draws (`render_prompt_with_run` `:5503`), and the
+arm releases it (`zone_arm` `:1508` on the too-short degrade, `:1520`
+before the zone lock).
 
-Depends on: T-82 (the marker's place is part of the composition T-84
-composes).
+**The handoff.** Arming at the submit sites alone made the zone a property
+of the keypress rather than of the turn. A 150 ms reconcile arm in the
+input loop (`ZONE_RECONCILE_MS` `:2994–2999`, the arm `:3936–3968`) arms
+the zone the moment `turn_in_flight` is seen with no zone armed, and
+disarms it on the mirror condition (`!turn_in_flight && zone_armed &&
+is_ready`) with the same replay the release path performs. That covers the
+paths the loop cannot see — a peer prompt over IPC (`src/agent.rs:308`
+calls `process_turn` on the agent's own channel, never through `input_tx`),
+a queued prompt the agent dequeued itself, and the window after
+`zone_disarm()` + `render_prompt()`. The ticker is skipped while the
+overlay is active, because that screen's pin already carries the elapsed
+row (`draw_scrolled`, D-61). `zone_arm` (`:1501`) no longer re-seeds an
+armed zone's anchor: it refreshes the session and the two visibility flags
+and keeps the editor's extent, so the next beat composes over the true span
+rather than the bare one-row prompt.
 
-Design trace: design §1 (D-61), §2 (TPR-23b), §3 (the composition-agreement,
-mouse-arms and recording angles), §4 (W-61).
+**The floor.** `zone_beat`'s two paint loops stop at their own floor
+(`:1739–1756`): the clock block at `sweep_to` (the span's top) and the peer
+band at `block_home.min(sweep_to)`. The order of the rows makes the
+truncation tolerable — the block's first row is the elapsed row, so what a
+short terminal loses is reasoning text, never the elapsed display.
 
-## T-85 — FR-40's pins (✅, depends on T-84)
+The elapsed row therefore stands above the span, composed by the armed
+zone: the four regions' own place. The transcript's recording rules are
+untouched — `renderer.render` writes rows, `finish_line` (`:1106`) is the
+only recorder.
 
-Delivered, green. The composition pin
-`the_prompt_span_holds_the_bottom_rows_with_subagents_pinned`
-(`:7466–7498`) reads the order off `scrolled_block_plan` — the peer rows on
-top, the elapsed row, the marker, then the prompt span at the bottom rows.
-The elapsed-row pin
-`the_scrolled_screen_keeps_the_elapsed_row_and_adds_the_marker`
-(`:7610–7656`) was re-derived from
-`the_scrolled_screen_swaps_the_clock_for_the_marker` and binds the running
-display staying on screen with the marker added above it;
-`elapsed_clock_survives_scrolling_during_a_running_turn`
-(`:7735–7772`) binds the same row while the gesture is live — and binds it
-out of the recorded transcript. The no-drop pin is the shipped
-`drag_release_resolves_at_the_release_time_offset` (`:7096–7123`),
-re-bound: a press, a drag and a release at a given pointer row resolve to
-the same content row the screen shows, so opening the scrolled screen from
-the live composition does not re-map the pointer. The arms-agreement pin
-is `the_line_survives_the_intersections_and_the_screen_shows_it`
-(`:7408–7423`), whose budget equality holds in the mixed states (a turn
-running, the view at the bottom, the marker present or absent, peers
-present or absent). The superseded geometry pins were re-derived with the
-correction (NFR-13): `the_clock_row_is_not_the_subagent_lines_price`
-(`:7392–7405`, the pending budget growing from the clock's row to the
-span's rows plus the elapsed row) and `wheel_range_ends_above_the_clock_row`
-(`:7775–7798`, the range ending above the composed block).
-`finishing_a_turn_while_scrolled_leaves_the_outcome_line`
-(`:7801–7828`) holds the handoff at the turn's end.
+Depends on: nothing (it touches `src/app.rs` alone, disjoint from T-87).
 
-Depends on: T-84.
+Design trace: design §1 (D-63), §2 (TPR-24b), §3 (the ownership,
+arm-and-handoff and floor angles), §4 (W-64).
 
-Design trace: design §1 (D-61), §3 (the mouse-arms, recording and
-superseded-pins angles), §4 (W-62).
+## T-90 — FR-42's pins (✅, depends on T-89)
 
-## T-86 — the version carry (✅, after the delivery)
+Delivered, green, both first made to fail against the shape they replace.
 
-Carried on the user's direction after the cycle closed: `Cargo.toml`
-0.39.0 → 0.40.0, `Cargo.lock` reloaded by the build, the release commit
-`505097a` ("Release 0.40.0: the display corrections carry the version")
-carrying the two version files alone. No source, no ledger-of-record and
-no pin changed with it; the gates were run at that tip and stand as the
-cycle certified them (645 unit + 6 integration, 0 failed; clippy at the
-baseline). The version trail above names it, the requirements document's
-§13 records it, and the work log `2026-11-05_005.md` carries it. The
-cycle itself published no release; the tag `v0.39.0` stands where it was.
+`the_indicator_never_paints_over_the_live_prompt_block` (`:8400–8452`):
+with ownership set, `tick` writes nothing, `paint` writes nothing, `repaint`
+writes nothing, `clear` writes nothing, and `finish` still records its
+outcome while writing nothing to the screen; with ownership released, each
+writes again. It was first written against the ungated writers, where the
+paint reached the prompt's row.
 
-Depends on: T-82–T-85.
+`arming_the_zone_takes_the_rows_from_the_prompt_block` (`:8455–8470`):
+with the prompt block owning its rows, arming the zone clears the
+ownership, so the block's bookkeeping is dropped and the beat — not the
+indicator — becomes the writer of the rows above the span. It was first
+written against the arm that left the ownership standing, where a peer
+prompt's beat and the indicator's repaint both wrote the same rows.
 
-Design trace: design §5 (the cycle's close), requirements §13 (State at
-exit).
+The previous cycles' geometry pins stand green and unmoved in meaning:
+`the_clock_row_is_not_the_subagent_lines_price` (`:7573`),
+`the_line_survives_the_intersections_and_the_screen_shows_it` (`:7589`),
+`the_prompt_span_holds_the_bottom_rows_with_subagents_pinned` (`:7647`),
+`the_scrolled_prompt_pin_carries_the_marker_row` (`:7720`),
+`the_scrolled_screen_keeps_the_elapsed_row_and_adds_the_marker` (`:7791`),
+`elapsed_clock_survives_scrolling_during_a_running_turn` (`:7916`),
+`wheel_range_ends_above_the_clock_row` (`:7956`),
+`finishing_a_turn_while_scrolled_leaves_the_outcome_line` (`:7982`). D-63
+moves no row those pins bind; it decides who writes them.
+
+Depends on: T-89.
+
+Design trace: design §1 (D-63), §3 (the pins angle), §4 (W-64).
+
+## T-91 — the documents corrected to the source (✅)
+
+Delivered. The instruction's second sentence is a work item, and three
+corrections followed from reading the documents against the source:
+
+- **`C-09` retired and rewritten.** The shipped constraint certified
+  "clippy output stays identical to the pre-change baseline", and the
+  baseline was four warning classes — a constraint that asked the tree to
+  stay as noisy as it was, which is the waste the instruction's first
+  sentence names. FR-41 fixes the seven warnings at their sites; the
+  constraint is now **clippy stays silent**, and the retirement is recorded
+  as a specification change in the requirements' §6 (NFR-13).
+- **The citations re-read.** The display fix's +258 rows shifted every
+  `src/app.rs` citation the ledger held. Each was re-read at the delivered
+  tip content-by-content rather than renumbered arithmetically, and written
+  with the number the tree answers (NFR-11).
+- **The documents brought to the source's shape.** FR-41/FR-42, BL-M43–
+  BL-M45, D-62–D-64, TPR-24a/b, T-87–T-92, W-63–W-65, AC-35, C-09 and C-13
+  are written from the tree, not from the previous cycles' text.
+
+Depends on: T-87–T-90.
+
+Design trace: design §1 (D-64), §3 (the documentation angle), §4 (W-65).
+
+## T-92 — the cycle's record and delivery (✅)
+
+Delivered. The work log `2026-11-05_006.md` embeds the instruction verbatim
+(364 bytes, sha256 `9929f174…`) and carries the cycle; the three documents
+are mutually consistent (C-08); the instruction was re-verified byte-exact
+at exit; and the delivery is committed per the user's direction (AC-35),
+with the refactoring's commit already standing on its own (`eec12f9`) so
+the display repair and the ledger's record stand apart from it. The cycle
+published no release of its own and carried no version: the version stands
+at 0.40.0 (commit `505097a`, recorded by `856c2bf`), and no `v0.40.0` tag
+exists.
+
+Depends on: T-87–T-91.
+
+Design trace: design §4 (W-65), requirements §13 (State at exit).
 
 ## Cross-cutting gates (✅)
 
-- Unit + integration: green at the delivered tip — **645 unit + 6
-  integration, 0 failed**, the baseline held exactly (C-09).
-- Clippy: identical to the pre-change baseline — the same four warning
-  classes on the same sites (`commands.rs:137`, `update.rs:303`,
-  `commands.rs:1296`/`:1317–1318`, `send_to.rs:320`/`:335`/`:412`), all
-  outside this cycle's diff.
-- The `.aiprj` documents mutually consistent (C-08), the work logs written
-  (`2026-11-05_002.md` the recording, `2026-11-05_003.md` the execution;
-  Art. 6/7), the delivery committed per the user's direction (AC-34) and
-  named by the ledger's own follow-up, not by itself.
+- Unit + integration: green at the delivered tip — **647 unit + 6
+  integration, 0 failed**. The baseline's 645 + 6 held through the
+  refactoring, and the two new pins of FR-42 account for the two added; no
+  test was lost and none was adjusted (C-09, NFR-13).
+- Clippy: **0 warnings** on the whole tree. The seven baseline warnings are
+  fixed at their sites (`commands.rs:140`, `update.rs:303`,
+  `commands.rs:1296`/`:1304`, `send_to.rs:326`/`:386`/`:433`/`:402`,
+  `commands.rs:1317`) rather than tolerated, so C-09's "identical to the
+  baseline" is superseded by "clippy stays silent" (the requirements' §6).
+- The `.aiprj` documents mutually consistent (C-08), the work log written
+  (`2026-11-05_006.md`; Art. 6/7), the instruction byte-exact at exit, and
+  the delivery committed per the user's direction (AC-35).
 - The boundary §6's items (the queue contracts, the bare-`Enter` guard, the
   cancel keys, the approval takeover, the headless/piped paths, the
-  mouse-capture and clipboard contracts, the peer rows' face and stacking)
-  unchanged — verified by the pins standing green and the shipped flows
-  untouched (NFR-14).
+  mouse-capture and clipboard contracts, the peer rows' face and stacking,
+  the four display regions and FR-39/FR-40's geometry) unchanged — verified
+  by the pins standing green and the shipped flows untouched (NFR-14).
 
 ## The previous cycles' record
+
+**"the display corrections — during mouse scrolling the `Message below`
+marker stands above the prompt, not below it; and during a running turn a
+mouse selection no longer makes the elapsed display vanish nor drop the
+selection one row" (FR-39, FR-40)** — closed, 2026-11-05, delivered at
+commit `db68d3f`, its sha named by the ledger's follow-up `306f425`, with
+the follow-up's own work log `85f9ce9`. Its two decisions stand as the
+ground D-63 is measured against: D-60 (the marker on the row immediately
+above the prompt block's first row — `scrolled_block_plan` `:2150–2166`,
+`scrolled_marker_rows` `:1376–1380`, the renderer's marker arm
+`:1201–1213`, the fold `:1258`) and D-61 (the scrolled screen's mid-turn
+composition — the prompt span at the bottom rows, the elapsed row above
+it, the marker above that, the peers above that — carried by one
+`ScrollBottom` struct `:2085–2102` and one budget `scrolled_bottom_rows`
+`:2179–2197` that the drawer `:2330–2338`, the wheel arm `:3299–3307` and
+the drag arm `:3376–3385` all ask, with `view_moved =
+overlay.view_active()` ungated by the turn). Its pins stand green
+(`:7573`, `:7589`, `:7647`, `:7720`, `:7791`, `:7916`, `:7956`, `:7982`).
+The cycle published no release of its own; the version was afterwards
+carried to 0.40.0 (`505097a`, recorded by `856c2bf`).
 
 **"the terminal's display regions — from the top, the scrollable and
 mouse-selection-copyable log, the spinner-and-elapsed run display, the
@@ -277,29 +358,26 @@ commit `39afeb2` ("During a turn the terminal composes the four display
 regions and a bare Enter is ignored"), its sha named by the tracked
 ledger's follow-up `fb46cc0` ("Name the delivery commit in the ledger: the
 trail's follow-up"), the ledger re-certified at that tip (BL-M36–BL-M42).
-The mechanism stands in the tree and this cycle's corrections are measured
-against it: the transcript-backed turn zone as the live screen's sole
-writer during a run (`static TURN_ZONE` `src/app.rs:1458`, the struct
-`:1414`, the arm `:1503`, the beat `:1664–1756` over the pure
-`zone_beat_plan` `:1628–1636`, the span paint `zone_paint_span` `:1810`,
-the re-anchor `:1762`, the park `:1592`, the hide/show
-`:1777`/`:1787`, the handoff `zone_disarm` `:1536` over
-`zone_disarm_plan` `:1650–1661`); the peer rows' processing content over
+The mechanism stands and D-63 is measured against it: the transcript-backed
+turn zone as the live screen's sole writer during a run (`static TURN_ZONE`
+`src/app.rs:1456`, the struct `:1412`, the arm `:1501`, the beat
+`:1683–1756` over the pure `zone_beat_plan` `:1647–1657`, the span paint
+`zone_paint_span` `:1845`, the re-anchor `:1797`, the park `:1611`, the
+hide/show `:1812`/`:1822`, the handoff `zone_disarm` `:1555` over
+`zone_disarm_plan` `:1669–1681`); the peer rows' processing content over
 the measured registry transport (`RegistryEntry.turn`,
 `src/ipc/registry.rs:45`, the writes `:215`/`:231`, the reader
-`live_children_states` `:2221–2243`, the face `peer_status_rows`
-`:2201–2215`); and the bare-`Enter` guard at the editor's arm
-(`:2620–2632`, the empty check `:2627–2629`). Its pins stand (`:6905`ff,
-`:7126`ff, `:7285`ff); the gates at the close **645 unit + 6 integration,
+`live_children_states` `:2256–2278`, the face `peer_status_rows`
+`:2236–2250`); and the bare-`Enter` guard at the editor's arm
+(`:2657–2669`, the empty check `:2664–2666`). Its decisions D-56/D-58/D-59
+are the ground D-60/D-61 and D-63 stand on. Its pins stand (`:7088`ff,
+`:7309`ff, `:7468`ff); the gates at the close **645 unit + 6 integration,
 0 failed**, clippy at the baseline. The cycle published no release of its
-own; the version was afterwards carried to 0.40.0 (`505097a`, T-86). Its
-two superseded **display** statements (the
-marker's beneath-the-block place, the clock-only mid-turn pin) are this
-cycle's corrections.
+own; the version was afterwards carried to 0.40.0 (`505097a`).
 
 **FR-36's display ask** — superseded by FR-37a's record and delivered with
 it; the FR-36 cycle never published a version or a tag. Its worktree block
-(`src/app.rs:1328–1714` at `5257729`) was carried to delivery as T-76's
+(`src/app.rs:1328–1747` at `5257729`) was carried to delivery as T-76's
 transcript-backed turn zone.
 
 **"prompt input during a running turn — accepted and queued; the queue
@@ -308,14 +386,16 @@ delivered at commit `c02862d` ("Prompts typed while a turn runs are queued
 and run in order when it ends"), `Cargo.toml` **0.38.0**, the tag
 `v0.38.0`, the GitHub release published **2026-11-04T03:52:18Z**; the
 gates at the close **633 unit + 6 integration, 0 failed**, clippy
-identical to the baseline. The mechanism stands in the tree and survives
-this cycle untouched (the requirements' §6): the `Pending` branch's
-acceptor feeding the shared `InputState` in both REPL loops, `Enter`
-enqueueing `AgentInput::UserPrompt`, the helpers `queued_count`/
-`queue_release_allowed`/`paint_queue_status` (the `[queued: N]` face,
-`src/app.rs:1312`/`:1327`/`:1337`), the drain as shipped, the
-approval-draft snapshot `DraftSnapshot`/`snapshot_draft`/`restore_draft`
-(`src/app.rs:2592–2605`), the pins rewritten
+identical to the baseline (a reading D-62 supersedes for this and every
+later tree — C-09 in the requirements' §6). The mechanism stands in the
+tree and survives this cycle untouched (the requirements' §6): the
+`Pending` branch's acceptor feeding the shared `InputState` in both REPL
+loops, `Enter` enqueueing `AgentInput::UserPrompt`, the helpers
+`queued_count` (`src/app.rs:1320`)/`queue_release_allowed` (`:1335`)/
+`paint_queue_status` (`:1345`, the `[queued: N]` face), the drain as
+shipped, the approval-draft snapshot
+`DraftSnapshot`/`snapshot_draft`/`restore_draft` (`src/app.rs:2610–2642`),
+the pins rewritten
 (`a_prompt_typed_during_a_turn_is_queued_and_arrives_while_it_runs`
 superseding the shipped pending-loss pin, and its five companions). T-74/
 T-75 stand ✅ in that cycle's closed ledger.
@@ -331,11 +411,13 @@ records rode its commit) → `5257729` (the FR-36 documents' rewrite) →
 delivery commit — the cycle's implementation, records and work log) →
 `fb46cc0` (the tracked ledger's follow-up, naming `39afeb2` — the rule that
 a delivery commit's sha is nameable only from the commit that follows it) →
-`db68d3f` (the FR-39/FR-40 delivery commit — the cycle's corrections, its
-records and its work logs) → `306f425` (the trail's follow-up, naming
-`db68d3f`) → `85f9ce9` (that follow-up's own work log) → v0.40.0 `505097a`
-(the version carry the user directed after the delivery — `Cargo.toml` and
-`Cargo.lock` alone, T-86).
+`db68d3f` (the FR-39/FR-40 delivery commit) → `306f425` (the trail's
+follow-up, naming `db68d3f`) → `85f9ce9` (that follow-up's own work log) →
+v0.40.0 `505097a` (the version carry the user directed after the delivery)
+→ `856c2bf` (the version carry's own record in the tracked ledger) →
+`eec12f9` (this cycle's refactoring — one HTTP error chain, one test
+context, no dead code; 26 files, +139/−314) → the display fix and the
+ledger's record (this cycle's delivery).
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: **"the subagents' auto-exit — permanent (FR-32),
@@ -348,13 +430,13 @@ live `[tools] enabled`; **"the click rule's exclusion of the elapsed
 display; the cancelled-by-user display" (FR-27/FR-28)** — v0.34.0
 (`c022909`; the tag's final target `745dbb2`); **"the scroll marker's face
 — 「Message below」…" (FR-26)** — v0.33.0 (`6cc6661`), its face and its
-`view_active` gate standing, its **place** on the prompt pin this cycle's
-FR-39; **the agent's running display cycle (FR-22–FR-24)** — v0.32.0
+`view_active` gate standing, its **place** on the prompt pin FR-39's
+correction; **the agent's running display cycle (FR-22–FR-24)** — v0.32.0
 (`e8ad594` + `e0ecb1b`; the clock as the screen's bottom row then — the
-geometry FR-37a superseded and FR-40 now brings the scrolled screen into
-line with); **the mouse defects cycle (FR-18–FR-21)** — v0.31.0
-(`052e230`), its drag/release-offset rule standing and re-bound by FR-40;
-**add strata (FR-13–FR-17)** — v0.30.0–0.30.2 (`b706889`, `70e6b5b`,
-`a766757`); **the peer-prompt cycles** — v0.29.0 (`045d569`), v0.28.0
-(`d237a7a`), v0.27.0 (`afcbe70`); **the mouse input cycle** — v0.25.0
-(`3884d16`) with the three 機能追加 addenda closed as v0.26.0 (`251a5bb`).
+geometry FR-37a superseded and FR-40 brought the scrolled screen into line
+with); **the mouse defects cycle (FR-18–FR-21)** — v0.31.0 (`052e230`), its
+drag/release-offset rule standing and re-bound by FR-40; **add strata
+(FR-13–FR-17)** — v0.30.0–0.30.2 (`b706889`, `70e6b5b`, `a766757`); **the
+peer-prompt cycles** — v0.29.0 (`045d569`), v0.28.0 (`d237a7a`), v0.27.0
+(`afcbe70`); **the mouse input cycle** — v0.25.0 (`3884d16`) with the three
+機能追加 addenda closed as v0.26.0 (`251a5bb`).
