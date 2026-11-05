@@ -336,10 +336,14 @@ error chain, one test context, no dead code; 26 files, +139/−314) →
 at `122f320` ("Add the codex-code backend driving the installed Codex CLI
 like claude-code" — the backend, the wiring, the docs, the version carry
 to 0.42.0, the ledger's FR-44 record and the work logs `_008`/`_009`),
-named by this trail's tail per the rule that a delivery commit's sha
-is nameable only from the commit that follows it. This ledger's own
-follow-up (the next commit, its work log `2026-11-05_010.md`) carries
-the naming commit.
+named by the follow-up `af82155` (its work log `2026-11-05_010.md`). The
+FR-44d amendment's delivery lands at `4fee899` ("Refresh the example's
+sample models to the newest evidenced ids: the FR-44d amendment" — the
+example's refreshed ids, the quoting surfaces, the version carry to
+0.43.0, the ledger's FR-44d record and the work log `_011`), named by
+the follow-up that lands after it — the trail rule holds that a
+delivery commit's sha is nameable only from the commit that follows it.
+This follow-up's own work log is `2026-11-05_012.md`.
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: **"the subagents' auto-exit — permanent (FR-32),
