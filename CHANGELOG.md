@@ -4,6 +4,23 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.44.0]
+
+### Removed
+
+- **Prompts typed while a turn runs are no longer queued — the REPL ignores
+  them until the turn ends, as it did before v0.38.0.** With the queueing
+  feature removed, the prompt stays reserved for the running turn:
+  only `Esc` (or `Ctrl+C`) acts while the agent is streaming a response or
+  running a tool — it stops the turn and hands the prompt straight back —
+  and every other keypress is ignored. The `[queued: N]` notice is gone,
+  and the prompt returns to you as soon as the current turn finishes.
+  To send a second message while a turn runs, stop the turn first
+  (`Esc`), then submit everything you need. Shell (`!`) and slash-command
+  (`/`) lines keep running only at the idle prompt, unchanged, and the
+  queued-delivery drain of a shutdown (`stop queued` …) is a separate
+  mechanism and keep its behaviour.
+
 ## [0.43.0]
 
 ### Changed
