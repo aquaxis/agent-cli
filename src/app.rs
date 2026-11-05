@@ -377,7 +377,6 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let initial_persona = resolution.persona.clone();
     let agent = Agent {
         id: id.clone(),
-        name: name.clone(),
         group: group.clone(),
         persona: resolution.persona,
         provider,
@@ -721,7 +720,6 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
 
     let agent = Agent {
         id: id.clone(),
-        name: name.clone(),
         group: group.clone(),
         persona: resolution.persona,
         provider,

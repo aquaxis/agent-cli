@@ -167,15 +167,12 @@ pub enum AgentEvent {
 
 pub struct Agent {
     pub id: AgentId,
-    #[allow(dead_code)]
-    pub name: Option<String>,
     /// Group this agent belongs to, forwarded to the `spawn` tool so a spawned
     /// peer inherits the same group.
     pub group: Option<crate::id::GroupId>,
     pub persona: Persona,
     pub provider: Box<dyn Provider>,
     pub tools: ToolRegistry,
-    #[allow(dead_code)]
     pub config: Config,
     /// Path to this agent's config file, forwarded to the `spawn` tool so a
     /// spawned peer inherits the same config (hence the same registry_dir).
@@ -1291,7 +1288,6 @@ mod tests {
         let cancel = Arc::new(CancelToken::default());
         let agent = Agent {
             id: AgentId::new(),
-            name: Some("test".into()),
             group: None,
             persona: Persona::builtin_default(),
             provider: Box::new(MockProvider::new(scripts)),

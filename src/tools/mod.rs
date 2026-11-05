@@ -194,11 +194,35 @@ impl ToolRegistry {
             .collect()
     }
 
-    #[allow(dead_code)]
     pub fn names(&self) -> Vec<String> {
         let mut v: Vec<String> = self.tools.keys().cloned().collect();
         v.sort();
         v
+    }
+}
+
+/// A `ToolCtx` for tool tests: a fresh agent id, no group or event channel,
+/// no ancestors, and the default spawn bounds. Every tool's test module uses
+/// this one context so a field added to `ToolCtx` is filled in one place.
+#[cfg(test)]
+pub(crate) fn test_ctx() -> ToolCtx {
+    test_ctx_in(PathBuf::from("/tmp"))
+}
+
+/// The same test context, pointed at the registry directory a test's fixture
+/// lives in. A tool that resolves peers (`send_to`) needs the directory; every
+/// other field keeps the defaults `test_ctx` documents.
+#[cfg(test)]
+pub(crate) fn test_ctx_in(registry_dir: PathBuf) -> ToolCtx {
+    ToolCtx {
+        self_id: AgentId::new(),
+        group: None,
+        registry_dir,
+        config_source: Default::default(),
+        event_tx: None,
+        ancestors: Vec::new(),
+        spawn_limits: crate::swarm::SpawnLimits::default(),
+        spawn_exit_when_idle: true,
     }
 }
 

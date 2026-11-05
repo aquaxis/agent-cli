@@ -6,8 +6,8 @@ use serde_json::{json, Value};
 
 use crate::ai::tool_bridge::to_ollama_tools;
 use crate::ai::{
-    extract_request_id, Capabilities, EventStream, Message, Provider, ProviderContext,
-    ProviderError, ProviderEvent, ToolSpec,
+    http_error, Capabilities, EventStream, Message, Provider, ProviderContext, ProviderEvent,
+    ToolSpec,
 };
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
@@ -206,17 +206,7 @@ impl Provider for OllamaProvider {
                         attempt += 1;
                         continue;
                     }
-                    let request_id = extract_request_id(&headers, &text);
-                    return Err(ProviderError::new("ollama")
-                        .with_http(
-                            status.as_u16(),
-                            status.canonical_reason().unwrap_or("").to_string(),
-                        )
-                        .with_body(text)
-                        .with_request_id(request_id)
-                        .with_context(&self.context)
-                        .detect_hint()
-                        .into_app_error());
+                    return Err(http_error("ollama", status, &headers, text, &self.context));
                 }
                 Err(e) => {
                     // Network-level failure: retry connect/timeout errors, which

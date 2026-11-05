@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 use crate::ai::stream::SseAccumulator;
 use crate::ai::tool_bridge::to_openai_tools;
 use crate::ai::{
-    extract_request_id, Capabilities, EventStream, Message, Provider, ProviderContext,
-    ProviderError, ProviderEvent, ToolSpec,
+    http_error, Capabilities, EventStream, Message, Provider, ProviderContext, ProviderError,
+    ProviderEvent, ToolSpec,
 };
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
@@ -187,17 +187,13 @@ impl Provider for CodexProvider {
             let headers = resp.headers().clone();
             let text = resp.text().await.unwrap_or_default();
             tracing::debug!(target: "agent_cli::ai::codex", status = %status, body = %text, "provider HTTP error");
-            let request_id = extract_request_id(&headers, &text);
-            return Err(ProviderError::new(self.kind_label)
-                .with_http(
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("").to_string(),
-                )
-                .with_body(text)
-                .with_request_id(request_id)
-                .with_context(&self.context)
-                .detect_hint()
-                .into_app_error());
+            return Err(http_error(
+                self.kind_label,
+                status,
+                &headers,
+                text,
+                &self.context,
+            ));
         }
 
         let byte_stream = resp.bytes_stream();

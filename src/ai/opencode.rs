@@ -31,8 +31,8 @@ use crate::ai::claude::{handle_frame, to_anthropic_messages, ClaudeParseState};
 use crate::ai::stream::SseAccumulator;
 use crate::ai::tool_bridge::{to_anthropic_tools, to_openai_tools};
 use crate::ai::{
-    extract_request_id, Capabilities, EventStream, Message, Provider, ProviderContext,
-    ProviderError, ProviderEvent, ToolSpec,
+    http_error, Capabilities, EventStream, Message, Provider, ProviderContext, ProviderEvent,
+    ToolSpec,
 };
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
@@ -172,18 +172,13 @@ impl OpenCodeProvider {
         })
     }
 
-    fn provider_error(&self, status: reqwest::StatusCode, headers: &reqwest::header::HeaderMap, text: String) -> AppError {
-        let request_id = extract_request_id(headers, &text);
-        ProviderError::new("opencode")
-            .with_http(
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("").to_string(),
-            )
-            .with_body(text)
-            .with_request_id(request_id)
-            .with_context(&self.context)
-            .detect_hint()
-            .into_app_error()
+    fn provider_error(
+        &self,
+        status: reqwest::StatusCode,
+        headers: &reqwest::header::HeaderMap,
+        text: String,
+    ) -> AppError {
+        http_error("opencode", status, headers, text, &self.context)
     }
 
     /// Everything about a cloud request that does not need the network: URL,

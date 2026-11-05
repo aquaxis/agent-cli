@@ -317,22 +317,13 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    fn build_ctx(registry_dir: &PathBuf) -> ToolCtx {
-        ToolCtx {
-            self_id: AgentId::new(),
-            group: None,
-            registry_dir: registry_dir.clone(),
-            config_source: Default::default(),
-            event_tx: None,
-            ancestors: Vec::new(),
-            spawn_limits: crate::swarm::SpawnLimits::default(),
-            spawn_exit_when_idle: true,
-        }
+    fn build_ctx(registry_dir: &Path) -> ToolCtx {
+        crate::tools::test_ctx_in(registry_dir.to_path_buf())
     }
 
     /// Write a registry entry JSON file manually (without RegistryHandle, so it
     /// is not cleaned up by Drop when the setup function returns).
-    fn write_registry_entry(dir: &PathBuf, entry: &crate::ipc::registry::RegistryEntry) {
+    fn write_registry_entry(dir: &Path, entry: &crate::ipc::registry::RegistryEntry) {
         let meta_path = dir.join(format!("{}.json", entry.id.as_str()));
         let raw = serde_json::to_vec_pretty(entry).unwrap();
         std::fs::write(&meta_path, raw).unwrap();
@@ -393,7 +384,7 @@ mod tests {
     /// spawn a task that receives a Prompt and sends a PromptReply to the
     /// specified reply_to socket.
     async fn setup_mock_peer_with_reply(
-        registry_dir: &PathBuf,
+        registry_dir: &Path,
         name: &str,
         reply_text: &str,
     ) -> crate::ipc::registry::RegistryEntry {
@@ -408,18 +399,16 @@ mod tests {
         let reply_text = reply_text.to_string();
         tokio::spawn(async move {
             let _server = server;
-            if let Some(msg) = rx.recv().await {
-                if let IpcMessage::Prompt {
-                    reply_to: Some(reply_socket),
-                    ..
-                } = msg
-                {
-                    let reply = IpcMessage::PromptReply {
-                        from: AgentId::new(),
-                        text: reply_text,
-                    };
-                    let _ = client::send(&reply_socket, &reply).await;
-                }
+            if let Some(IpcMessage::Prompt {
+                reply_to: Some(reply_socket),
+                ..
+            }) = rx.recv().await
+            {
+                let reply = IpcMessage::PromptReply {
+                    from: AgentId::new(),
+                    text: reply_text,
+                };
+                let _ = client::send(&reply_socket, &reply).await;
             }
         });
 
@@ -442,7 +431,7 @@ mod tests {
 
     /// Create a mock peer that does NOT send a reply (for fire-and-forget test).
     async fn setup_mock_peer_no_reply(
-        registry_dir: &PathBuf,
+        registry_dir: &Path,
         name: &str,
     ) -> crate::ipc::registry::RegistryEntry {
         use crate::ipc::registry::RegistryEntry;

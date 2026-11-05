@@ -60,8 +60,9 @@ pub struct GroupId(pub String);
 impl GroupId {
     /// Generate a fresh, collision-resistant group id (`group-<ULID>`).
     /// Reserved for auto-created groups (a launcher forming a cohort id for its
-    /// spawned children); currently used only by tests.
-    #[allow(dead_code)]
+    /// spawned children); no caller forms one yet, so it is compiled for tests
+    /// only.
+    #[cfg(test)]
     pub fn generate() -> Self {
         GroupId(format!("group-{}", Ulid::new()))
     }

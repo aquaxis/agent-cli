@@ -27,10 +27,12 @@ bare-`Enter` guard) is delivered, was re-certified at this ledger's tip
 `fb46cc0`, and stands: its asks are not withdrawn here, they are the
 ground the two corrections are measured against (§12, §13). The two new
 asks are recorded as **FR-39** and **FR-40** (§5) with their baselines
-verified in the tree at this update (BL-M40, BL-M41, §3), the design
-decisions D-60/D-61 (`AI_PRJ_DESIGN.md` §1) and the tasks T-82–T-85
-(`AI_PRJ_TASKS.md`). No product source is changed by this update: the
-requirements are recorded and the tasks open (C-13, §13).
+verified in the tree as the previous cycle shipped them (BL-M40, BL-M41,
+§3), the design decisions D-60/D-61 (`AI_PRJ_DESIGN.md` §1) and the tasks
+T-82–T-86 (`AI_PRJ_TASKS.md`). The cycle was then executed against those
+baselines: both corrections stand in the product tree, pinned, with the
+gates green at the delivered tip and the version carried to 0.40.0
+afterwards on the user's direction (§12, §13).
 
 The standing method applies (C-12): investigation and repair are to be
 performed by multi-angle subagent analysis, with every load-bearing
@@ -74,12 +76,13 @@ the selected row), not about new regions, new faces or new keys (§3.1).
 
 ## 3. Baseline — verified in the tree at this update
 
-Verified 2026-11-05 at HEAD `fb46cc0` (the `main` tip; the worktree
-carrying only this update's three documents; `Cargo.toml` 0.39.0, the tag
-`v0.39.0` on `4f7fad6`). Every citation below is the tree's own line. The
-version was carried to **0.40.0** after the delivery (§12); the baselines
-below are the shapes the corrections were measured against and keep the
-line numbers they were read at.
+Verified 2026-11-05 at `fb46cc0`, the `main` tip at the time of the
+recording (the worktree carrying only that update's three documents;
+`Cargo.toml` 0.39.0, the tag `v0.39.0` on `4f7fad6`). Every citation below
+is the tree's own line. The version was carried to **0.40.0** after the
+delivery (§12), and the tip has since moved past it to the ledger's own
+follow-ups; the baselines below are the shapes the corrections were
+measured against and keep the line numbers they were read at.
 
 | ID | Fact | Evidence |
 |---|---|---|
@@ -176,7 +179,7 @@ path, no recording rule and no wire shape changes (NFR-14).
 | C-08 | The three `.aiprj` documents are kept mutually consistent at every update. |
 | C-09 | Suite regression: unit + integration counts stay green; clippy output stays identical to the pre-change baseline. Certified at this update against `fb46cc0`: **645 unit + 6 integration, 0 failed**, and the same four clippy warning classes outside the cycle's diff (`commands.rs:137`, `update.rs:303`, `commands.rs:1296`/`:1317–1318`, `send_to.rs:320`/`:335`/`:412`). |
 | C-12 | The instruction's method — multi-angle subagent analysis — is performed for the investigation and the repair. |
-| C-13 | Write surface for the `.aiprj` documents: the three documents plus the required work logs. This update records the cycle and leaves the product tree unchanged; the corrections are the next execution's deliverable (FR-39/FR-40 are coding asks), recorded here without attribution. |
+| C-13 | Write surface for the `.aiprj` documents: the three documents plus the required work logs. The cycle's recording wrote those documents alone; its execution then carried the product tree with the corrections (FR-39/FR-40 are coding asks), and the version was carried afterwards on the user's direction (T-82–T-86, §13). No document carries any mark of authorship or tooling (NFR-12). |
 
 ## 9. Acceptance criteria
 
@@ -298,4 +301,4 @@ v0.31.0 (`052e230`). **"add strata…"** — v0.30.0–0.30.2 (`b706889`,
 | FR-39 (the marker above the prompt) | **Delivered.** The marker paints on the row immediately above the prompt block's first row, in one composition with the running turn's rows: the renderer's `above_rows` counts it and folds it into `cursor_row` so the next erase climbs past it (`src/app.rs` `render` `:1156–1260`, the marker arm `:1201–1213`, the fold `:1258`, `clear_block` `:1078–1102`); the text is produced from `overlay.view_active()` at `:5347–5350` and handed over as the pin's `text` field (`:5343–5350`), read back by `marker_row()` (`:2073–2075`). One pure plan answers the place and the count for the drawer and both arms (`scrolled_block_plan` `:2115–2131`, `scrolled_bottom_rows` `:2144–2162`, delegated to by `bottom_block_rows` `:2170–2191`); the wheel arm (`:3250–3256`) and the drag arm (`:3327–3333`) ask that same budget. Pinned by `the_scrolled_prompt_pin_carries_the_marker_row` (`:7539–7607`), re-derived failure-first (NFR-13); T-82/T-83 ✅. |
 | FR-40 (the running turn's elapsed row and the selection's rows) | **Delivered.** `ScrollBottom` is a single struct carrying `run_row` beside the prompt's fields (`:2050–2062`, the accessor `:2077–2082`), so the scrolled screen composes the live order in every state: the prompt span at the bottom-most rows, the elapsed row directly above it, the marker above that, the peers above that (`run_row_rows` `:2088–2090`, `scrolled_block_plan` `:2115–2131`). `draw_scrolled` (`:5379–5412`) takes the row from `overlay_status_row()` (`:4779–4786`) and hands it to `render_prompt_with_run` (`:5303–5374`); the renderer paints it above the block (`:1189–1199`), display-only (`finish_line` `:1108–1139` is the only recorder). Both mouse arms pass `view_moved = overlay.view_active()` with no turn gate (`:3249`, `:3326`), so a press, a drag and a release resolve against the rows the screen shows (AS-62). Pinned by `the_scrolled_screen_keeps_the_elapsed_row_and_adds_the_marker` (`:7610–7656`), `the_prompt_span_holds_the_bottom_rows_with_subagents_pinned` (`:7466–7498`), `elapsed_clock_survives_scrolling_during_a_running_turn` (`:7735–7772`) and the re-derived `wheel_range_ends_above_the_clock_row` (`:7775–7798`), `the_clock_row_is_not_the_subagent_lines_price` (`:7392–7405`), `the_line_survives_the_intersections_and_the_screen_shows_it` (`:7408–7423`), `drag_release_resolves_at_the_release_time_offset` (`:7096–7123`); T-84/T-85 ✅. |
 | FR-37 / FR-38 (the previous cycle) | Closed and standing (BL-M42, commit `39afeb2`, named by `fb46cc0`). Neither ask is withdrawn; both corrections were measured against their delivered shape and neither is touched by them. |
-| State at exit | The instruction is re-verified byte-exact (595 bytes, sha256 `eca9d4fc…`, mtime 2026-11-05 09:31:00.875090395 +0900); the cycle is recorded and delivered in the three documents (FR-39/FR-40, BL-M40–BL-M42, D-60/D-61, TPR-23a/b, T-82–T-85, W-60–W-62, NFR-13/NFR-14, AC-34, AS-59–AS-62, C-13) and in the product tree. The gates are green at the delivered tip: **645 unit + 6 integration, 0 failed** (the baseline held); clippy the same four warning classes on the same sites, all outside the cycle's diff (C-09). The cycle published no release of its own; afterwards, on the user's direction, the version was carried **0.39.0 → 0.40.0** — commit `505097a` "Release 0.40.0: the display corrections carry the version" (`Cargo.toml` and `Cargo.lock` alone, the gates green at it). The work logs `2026-11-05_002.md` (the ledger's recording), `2026-11-05_003.md` (the execution) and `2026-11-05_005.md` (the version carry) carry the cycle; the delivery is committed per the user's direction (AC-34) and named by the ledger's own follow-up, not by itself. |
+| State at exit | The instruction is re-verified byte-exact (595 bytes, sha256 `eca9d4fc…`, mtime 2026-11-05 09:31:00.875090395 +0900); the cycle is recorded and delivered in the three documents (FR-39/FR-40, BL-M40–BL-M42, D-60/D-61, TPR-23a/b, T-82–T-86, W-60–W-62, NFR-13/NFR-14, AC-34, AS-59–AS-62, C-13) and in the product tree. The gates are green: **645 unit + 6 integration, 0 failed** (the baseline held); clippy the same four warning classes on the same sites, all outside the cycle's diff (C-09) — re-executed live at this update and identical to the delivered tip's certification. The cycle published no release of its own; afterwards, on the user's direction, the version was carried **0.39.0 → 0.40.0** — commit `505097a` "Release 0.40.0: the display corrections carry the version" (`Cargo.toml` and `Cargo.lock` alone, the gates green at it), and that carry was recorded in the tracked ledger by the follow-up `856c2bf` ("Record the version carry in the ledger: 0.40.0 named from behind" — the three documents and the work log `2026-11-05_005.md`). No `v0.40.0` tag exists; the tag `v0.39.0` stands on `4f7fad6`. The work logs `2026-11-05_002.md` (the ledger's recording), `2026-11-05_003.md` (the execution), `2026-11-05_004.md` (the trail's follow-up) and `2026-11-05_005.md` (the version carry) carry the cycle; the delivery is committed per the user's direction (AC-34) and named by the ledger's own follow-up, not by itself. |

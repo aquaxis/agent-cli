@@ -114,21 +114,7 @@ impl Tool for MonitorTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::AgentId;
-    use std::path::PathBuf;
-
-    fn ctx() -> ToolCtx {
-        ToolCtx {
-            self_id: AgentId::new(),
-            group: None,
-            registry_dir: PathBuf::from("/tmp"),
-            config_source: Default::default(),
-            event_tx: None,
-            ancestors: Vec::new(),
-            spawn_limits: crate::swarm::SpawnLimits::default(),
-            spawn_exit_when_idle: true,
-        }
-    }
+    use crate::tools::test_ctx as ctx;
 
     #[tokio::test]
     async fn monitor_collects_output_lines() {

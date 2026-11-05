@@ -172,6 +172,32 @@ pub(crate) fn stream_mid_body(provider: &str, model: &str, raw: &str) -> String 
     )
 }
 
+/// Build the diagnostic error for a response the provider rejected.
+///
+/// Every provider assembles the same chain from the same three facts (status,
+/// headers, body) plus its own context, so the chain lives here once: the
+/// request id is recovered from headers or body, the status and body are
+/// attached, the provider's config/key context is folded in, and the
+/// pattern-specific hint is derived.
+pub(crate) fn http_error(
+    provider: &str,
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    text: String,
+    context: &ProviderContext,
+) -> AppError {
+    let request_id = extract_request_id(headers, &text);
+    ProviderError::new(provider)
+        .with_http(
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("").to_string(),
+        )
+        .with_body(text)
+        .with_request_id(request_id)
+        .with_context(context)
+        .detect_hint()
+        .into_app_error()
+}
 
 /// Diagnostic information for provider HTTP errors (FR-09-3 / design doc 5.1).
 ///

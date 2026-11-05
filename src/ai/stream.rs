@@ -1,6 +1,3 @@
-use bytes::Bytes;
-use futures::stream::{Stream, StreamExt};
-
 /// Iterator-style helper that extracts SSE frames.
 /// Accumulates bytes from the server line by line and yields "data: ..." blocks separated by blank lines.
 pub struct SseAccumulator {
@@ -38,34 +35,6 @@ impl SseAccumulator {
         }
         out
     }
-}
-
-#[allow(dead_code)]
-pub fn bytes_to_lines<S>(s: S) -> impl Stream<Item = std::io::Result<String>>
-where
-    S: Stream<Item = reqwest::Result<Bytes>>,
-{
-    let mut buf = String::new();
-    s.flat_map(move |chunk| {
-        let mut out: Vec<std::io::Result<String>> = Vec::new();
-        match chunk {
-            Ok(bytes) => match std::str::from_utf8(&bytes) {
-                Ok(s) => {
-                    buf.push_str(s);
-                    while let Some(idx) = buf.find('\n') {
-                        let line: String = buf.drain(..=idx).collect();
-                        out.push(Ok(line.trim_end_matches('\n').to_string()));
-                    }
-                }
-                Err(e) => out.push(Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    e.to_string(),
-                ))),
-            },
-            Err(e) => out.push(Err(std::io::Error::other(e.to_string()))),
-        }
-        futures::stream::iter(out)
-    })
 }
 
 #[cfg(test)]

@@ -5,7 +5,6 @@ use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("config error: {0}")]
@@ -16,9 +15,6 @@ pub enum AppError {
 
     #[error("provider error ({provider}): {message}")]
     Provider { provider: String, message: String },
-
-    #[error("tool error ({tool}): {message}")]
-    Tool { tool: String, message: String },
 
     #[error("ipc error: {0}")]
     Ipc(String),
@@ -31,12 +27,6 @@ pub enum AppError {
 
     #[error("persona error: {0}")]
     Persona(String),
-
-    #[error("ui error: {0}")]
-    Ui(String),
-
-    #[error("agent error: {0}")]
-    Agent(String),
 
     #[error("io error: {0}")]
     Io(#[from] io::Error),
@@ -60,7 +50,6 @@ pub enum AppError {
     Other(String),
 }
 
-#[allow(dead_code)]
 impl AppError {
     pub fn config(msg: impl Into<String>) -> Self {
         AppError::Config(msg.into())
@@ -69,13 +58,6 @@ impl AppError {
     pub fn provider(provider: impl Into<String>, message: impl Into<String>) -> Self {
         AppError::Provider {
             provider: provider.into(),
-            message: message.into(),
-        }
-    }
-
-    pub fn tool(tool: impl Into<String>, message: impl Into<String>) -> Self {
-        AppError::Tool {
-            tool: tool.into(),
             message: message.into(),
         }
     }
@@ -96,11 +78,4 @@ impl AppError {
         AppError::Persona(msg.into())
     }
 
-    pub fn agent(msg: impl Into<String>) -> Self {
-        AppError::Agent(msg.into())
-    }
-
-    pub fn ui(msg: impl Into<String>) -> Self {
-        AppError::Ui(msg.into())
-    }
 }

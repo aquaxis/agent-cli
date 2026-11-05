@@ -80,22 +80,8 @@ impl Tool for EditTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::AgentId;
-    use std::path::PathBuf;
+    use crate::tools::test_ctx as ctx;
     use tempfile::TempDir;
-
-    fn ctx() -> ToolCtx {
-        ToolCtx {
-            self_id: AgentId::new(),
-            group: None,
-            registry_dir: PathBuf::from("/tmp"),
-            config_source: Default::default(),
-            event_tx: None,
-            ancestors: Vec::new(),
-            spawn_limits: crate::swarm::SpawnLimits::default(),
-            spawn_exit_when_idle: true,
-        }
-    }
 
     async fn setup(content: &str) -> (TempDir, std::path::PathBuf) {
         let dir = TempDir::new().unwrap();

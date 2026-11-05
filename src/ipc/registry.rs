@@ -104,10 +104,7 @@ pub fn ancestors_to_env(chain: &[AgentId]) -> String {
 }
 
 pub struct RegistryHandle {
-    #[allow(dead_code)]
-    pub dir: PathBuf,
     pub meta_path: PathBuf,
-    #[allow(dead_code)]
     pub socket_path: PathBuf,
 }
 
@@ -125,7 +122,6 @@ impl RegistryHandle {
         let raw = serde_json::to_vec_pretty(entry)?;
         tokio::fs::write(&meta_path, raw).await?;
         Ok(Self {
-            dir: dir.to_path_buf(),
             meta_path,
             socket_path,
         })

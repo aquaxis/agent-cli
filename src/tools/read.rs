@@ -81,23 +81,9 @@ impl Tool for ReadTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id::AgentId;
+    use crate::tools::test_ctx as ctx;
     use std::io::Write;
-    use std::path::PathBuf;
     use tempfile::NamedTempFile;
-
-    fn ctx() -> ToolCtx {
-        ToolCtx {
-            self_id: AgentId::new(),
-            group: None,
-            registry_dir: PathBuf::from("/tmp"),
-            config_source: Default::default(),
-            event_tx: None,
-            ancestors: Vec::new(),
-            spawn_limits: crate::swarm::SpawnLimits::default(),
-            spawn_exit_when_idle: true,
-        }
-    }
 
     fn write_tmp(content: &str) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();

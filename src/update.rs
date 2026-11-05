@@ -300,7 +300,7 @@ fn newest_tag_from_tags_json(body: &str) -> Option<String> {
             None => continue,
         };
         if let Some(ver) = parse_semver(name) {
-            if best.as_ref().map_or(true, |(bv, _)| ver > *bv) {
+            if best.as_ref().is_none_or(|(bv, _)| ver > *bv) {
                 best = Some((ver, name.to_string()));
             }
         }

@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -11,7 +10,6 @@ use crate::id::AgentId;
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[allow(dead_code)]
 pub enum LogEvent<'a> {
     User {
         text: &'a str,
@@ -60,8 +58,6 @@ pub enum LogEvent<'a> {
 
 pub struct ConversationLog {
     file: Arc<Mutex<tokio::fs::File>>,
-    #[allow(dead_code)]
-    pub path: PathBuf,
 }
 
 impl ConversationLog {
@@ -77,7 +73,6 @@ impl ConversationLog {
             .await?;
         Ok(Self {
             file: Arc::new(Mutex::new(file)),
-            path,
         })
     }
 
