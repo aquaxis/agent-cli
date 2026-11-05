@@ -24,3 +24,6 @@ Cargo.lock.bak
 
 # localfile
 report_*
+
+# codex-code backend: oneshot transport writes the final reply here
+.agent-cli-codex-code-last.txt

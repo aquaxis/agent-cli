@@ -460,6 +460,18 @@ pub async fn providers(cfg: &Config) -> Result<()> {
                     Err(_) => format!("bin {raw}: NOT found"),
                 }
             }
+            // Same shape as claude-code: no api_key_env — the provider runs
+            // the codex CLI, which carries its own authentication. What
+            // matters is whether the binary exists.
+            ("codex-code", entry) => {
+                let raw = entry
+                    .and_then(|e| e.bin.clone())
+                    .unwrap_or_else(|| "codex".into());
+                match ai::codex_code::resolve_bin(&raw) {
+                    Ok(path) => format!("bin {}", path.display()),
+                    Err(_) => format!("bin {raw}: NOT found"),
+                }
+            }
             (_, _) => "no config".into(),
         };
         println!("  - {kind:<12} model={model:<20} {key_status}");
@@ -559,6 +571,52 @@ pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
             .unwrap_or_else(|| "claude".into());
         print!("[doctor] claude binary   : {raw} ... ");
         match ai::claude_code::resolve_bin(&raw) {
+            Ok(path) => {
+                let version = tokio::time::timeout(
+                    Duration::from_secs(20),
+                    tokio::process::Command::new(&path)
+                        .arg("--version")
+                        .output(),
+                )
+                .await;
+                match version {
+                    Ok(Ok(out)) if out.status.success() => println!(
+                        "OK ({}, {})",
+                        path.display(),
+                        String::from_utf8_lossy(&out.stdout).trim()
+                    ),
+                    Ok(Ok(out)) => {
+                        println!("FAIL (exit {} at {})", out.status, path.display());
+                        all_ok = false;
+                    }
+                    Ok(Err(e)) => {
+                        println!("FAIL ({e})");
+                        all_ok = false;
+                    }
+                    Err(_) => {
+                        println!("FAIL (--version timed out)");
+                        all_ok = false;
+                    }
+                }
+            }
+            Err(e) => {
+                println!("NOT found");
+                println!("[doctor]   {e}");
+                all_ok = false;
+            }
+        }
+    }
+
+    // Codex Code check: same shape as claude-code — no api_key_env of its
+    // own; the `codex` CLI carries the authentication. Check the binary.
+    let kind = cfg.provider.kind.as_str();
+    if kind == "codex-code" {
+        let raw = cfg
+            .provider_entry(kind)
+            .and_then(|e| e.bin.clone())
+            .unwrap_or_else(|| "codex".into());
+        print!("[doctor] codex binary    : {raw} ... ");
+        match ai::codex_code::resolve_bin(&raw) {
             Ok(path) => {
                 let version = tokio::time::timeout(
                     Duration::from_secs(20),

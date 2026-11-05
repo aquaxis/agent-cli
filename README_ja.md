@@ -8,7 +8,7 @@
 
 - スタンドアロン — tmux 不要。`agent-cli` を実行するだけです（引数なしは `agent-cli run` と等価）。
 - ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（REPL とツール自体は `claude` CLI を呼び出しません）。なお `claude` CLI を駆動する方法は、後述の `claude-code` バックエンドとして別途選択できます。
-- 8 つのバックエンド: `claude` / `claude-code` / `codex` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
+- 9 つのバックエンド: `claude` / `claude-code` / `codex` / `codex-code` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
 - マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します（`--report` でターンなしのレポート、`--ask` で回答を待つ ask も指定可能）。
 - デタッチドエージェント — `agent-cli spawn`（または `/spawn`）は、起動元プロセスに依存せず独自セッションで動くヘッドレスなピアを作成します。`agent-cli stop <peer>`（または `/stop`）で停止します。自分が起動したピアが稼働中の間、REPL には実行状態（名前と経過時間、稼働中の子ごとに 1 行、新しいものが下端に近い）が最下行ブロックの**上**に積まれ（スピナーの時計は画面最下行のまま）、ピアが終わるとその行は消えます。
 - グループ — 起動したコホートを `--group <id>` でタグ付け（デタッチドな子が継承）。`agent-cli list --group <id>` で絞り込み、`agent-cli groups` で稼働中のコホートを検出します。
@@ -43,6 +43,7 @@
 | claude | Anthropic Claude (Messages, SSE) | `claude-opus-4-7` |
 | claude-code | ローカルの Claude Code CLI を子プロセスとして駆動（API キー不要） | Claude Code 自身のデフォルト |
 | codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
+| codex-code | ローカルの Codex CLI を子プロセスとして駆動（API キー不要） | Codex 自身のデフォルト |
 | strata | OpenAI Chat Completions (SSE、キーレスのローカルエンジン) | `strata` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
 | opencode | OpenCode — デュアルモード（下記参照） | `claude-sonnet-4-5` |
@@ -105,11 +106,34 @@ Claude Code 側がツールを実行するため、agent-cli のツールレジ�
 
 必須の検証対象は `claude` と `ollama`（モデル `glm-5.1:cloud`）です。
 
-| 機能 | claude | claude-code | codex | ollama | opencode | llama.cpp |
-|------------|--------|-------------|-------|--------|----------|-----------|
-| ストリーミング | ✓ | ✓（`transport = "stream"`） | ✓ | ✓ | ✓（クラウド SSE / ローカルはバッファ） | ✓ |
-| ツール使用 | ✓ | ✓ delegation モード（Claude Code **内部**で実行） | ✓（function calling） | ✓（モデル依存） | ✓ クラウド / ✗ ローカル (v1) | ✓（サーバービルド依存） |
-| 思考 | ✓ (`thinking_delta`) | ✓（`transport = "stream"`） | ✗ | ✓（モデル依存, `message.thinking`） | ✗ | ✗ |
+**`codex-code`** は、マシンにインストール済みの OpenAI Codex CLI（`codex`）を子プロセスとして
+起動し、`claude-code` と同様にプロバイダー抽象に適合させます。委譲
+（Codex が自身のサンドボックス内でツールを実行し、ツール使用とセッション動作は
+`claude-code` と同じ）と、Codex 自身のスレッド ID によるセッション維持、API キー不要
+（Codex 自身の認証—ChatGPT ログイン等—をそのまま使う）が特徴です。`claude-code` が
+トークン単位でストリーミングするのに対し、codex-code はターン単位のアイテム配信：
+`item.completed` ごとにテキスト全体が届きます。トランスポートは `items`（デフォルト、
+`--json`）と `oneshot`（`-o`、ターン終了時に応答全体）の2種。Codex にゲートウェイ
+モードはありません（`--tools ""` の相当物なし — codex の子は自身のエージェントを
+実行するため）。また system-prompt の専用フラグもなく、ペルソナはターンペイロードに
+乗ります。
+[`doc/providers/codex-code.md`](doc/providers/codex-code.md) を参照してください。
+
+```toml
+[provider]
+kind = "codex-code"
+
+[provider.codex-code]
+transport = "items"        # ターン単位のアイテムストリーム（--json、デフォルト）
+session   = "persistent"   # codex exec resume <thread_id> がセッションを維持
+sandbox   = "workspace-write"  # -s; codex 自身のデフォルトは read-only
+```
+
+| 機能 | claude | claude-code | codex | codex-code | ollama | opencode | llama.cpp |
+|------------|--------|-------------|-------|------------|--------|----------|-----------|
+| ストリーミング | ✓ | ✓（`transport = "stream"`） | ✓ | ✓（`transport = "items"`） | ✓ | ✓（クラウド SSE / ローカルはバッファ） | ✓ |
+| ツール使用 | ✓ | ✓ delegation モード（Claude Code **内部**で実行） | ✓（function calling） | ✓ delegation — Codex **内部**で実行 | ✓（モデル依存） | ✓ クラウド / ✗ ローカル (v1) | ✓（サーバービルド依存） |
+| 思考 | ✓ (`thinking_delta`) | ✓（`transport = "stream"`） | ✗ | ✗ | ✓（モデル依存, `message.thinking`） | ✗ | ✗ |
 
 `opencode-go` の機能は `opencode`（クラウドモード）と同じです。設定のショートカットであり、別のバックエンドではありません。
 
@@ -628,7 +652,7 @@ You are a senior reviewer. Always propose minimal-diff fixes.
 - [`doc/tools.md`](doc/tools.md) — 組み込みツールの仕様
 - [`doc/architecture.md`](doc/architecture.md) — アーキテクチャ概要
 - [`doc/troubleshooting.md`](doc/troubleshooting.md) — 既知の不具合と対処
-- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`strata.md`](doc/providers/strata.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — バックエンド別ガイド
+- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`codex-code.md`](doc/providers/codex-code.md) / [`strata.md`](doc/providers/strata.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — バックエンド別ガイド
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — 開発ガイド
 - [`CHANGELOG.md`](CHANGELOG.md) — リリースノート
 

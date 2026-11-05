@@ -12,6 +12,7 @@ use crate::error::{AppError, Result};
 pub mod claude;
 pub mod claude_code;
 pub mod codex;
+pub mod codex_code;
 pub mod llamacpp;
 pub mod ollama;
 pub mod opencode;
@@ -140,6 +141,9 @@ pub fn build(cfg: &mut Config, source: &ConfigSource) -> Result<Box<dyn Provider
         )?)),
         "codex" => Ok(Box::new(codex::CodexProvider::from_config(cfg, source)?)),
         "strata" => Ok(Box::new(codex::CodexProvider::from_config(cfg, source)?)),
+        "codex-code" => Ok(Box::new(codex_code::CodexCodeProvider::from_config(
+            cfg, source,
+        )?)),
         "ollama" => Ok(Box::new(ollama::OllamaProvider::from_config(cfg, source)?)),
         "opencode" => Ok(Box::new(opencode::OpenCodeProvider::from_config(
             cfg, source,
@@ -155,6 +159,7 @@ pub const SUPPORTED: &[&str] = &[
     "claude",
     "claude-code",
     "codex",
+    "codex-code",
     "ollama",
     "opencode",
     "opencode-go",

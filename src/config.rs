@@ -9,8 +9,8 @@ use crate::theme::ColorMode;
 const DEFAULT_CONFIG: &str = r#"# agent-cli configuration
 
 [provider]
-# Backend to use: "claude" | "claude-code" | "codex" | "strata" | "ollama" |
-# "opencode" | "opencode-go" | "llama.cpp"
+# Backend to use: "claude" | "claude-code" | "codex" | "codex-code" |
+# "strata" | "ollama" | "opencode" | "opencode-go" | "llama.cpp"
 kind = "claude"
 
 [provider.claude]
@@ -39,6 +39,26 @@ thinking    = true
 # max_budget_usd     = 1.0               # --max-budget-usd
 # system_prompt_mode = "append"          # "append" | "replace"
 # extra_args         = []                # passed through verbatim
+
+[provider.codex-code]
+# Drives the locally installed OpenAI Codex CLI (`codex exec`) as a backend.
+# No API key: it uses whatever authentication Codex itself already has (e.g. a
+# ChatGPT login). Delegation only — codex runs its own tools inside its own
+# sandbox; agent-cli's tools cannot be offered to it.
+# bin        = "codex"              # executable name (resolved via PATH) or path
+# model      = "gpt-5.1"            # -m; omit to use Codex's own default
+# transport  = "items"              # "items" (--json item stream) | "oneshot"
+#                                   # ("oneshot" buffers the whole turn and
+#                                   # yields the final reply once, via -o)
+# session    = "persistent"         # "persistent" (resume the codex thread)
+#                                   # | "ephemeral" (--ephemeral, sessionless)
+# sandbox           = "workspace-write"  # -s read-only|workspace-write|danger-full-access
+# add_dir           = []                 # --add-dir, repeated per directory
+# approval_policy   = "never"            # -c approval_policy=...
+# bypass_sandbox_and_approvals = false   # --dangerously-bypass-approvals-and-sandbox
+# skip_git_repo_check = true            # --skip-git-repo-check
+# turn_timeout_secs = 900
+# extra_args        = []                 # passed through verbatim
 
 [provider.codex]
 model       = "gpt-4.1"
@@ -276,6 +296,8 @@ pub struct ProviderRoot {
     pub claude_code: Option<ProviderEntry>,
     #[serde(default)]
     pub codex: Option<ProviderEntry>,
+    #[serde(default, rename = "codex-code")]
+    pub codex_code: Option<ProviderEntry>,
     #[serde(default)]
     pub strata: Option<ProviderEntry>,
     #[serde(default)]
@@ -411,10 +433,40 @@ pub struct ProviderEntry {
     /// `--system-prompt`. Unknown values are rejected.
     #[serde(default)]
     pub system_prompt_mode: Option<String>,
-    /// claude-code only: extra CLI arguments appended verbatim before the
-    /// prompt argument. Escape hatch for flags this config does not model.
+    /// CLI child backends (`claude-code`, `codex-code`) only: extra CLI
+    /// arguments appended verbatim before the prompt. Escape hatch for flags
+    /// this config does not model.
     #[serde(default)]
     pub extra_args: Option<Vec<String>>,
+    /// codex-code only: sandbox policy passed as `-s` on every turn.
+    /// `"workspace-write"` by default — codex's own default is read-only,
+    /// which would block every command delegation must run. The accepted
+    /// values are codex's: `read-only` | `workspace-write` |
+    /// `danger-full-access`. Passed through unvalidated; codex rejects
+    /// unknown values itself.
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    /// codex-code only: additional directories codex may write alongside the
+    /// workspace (repeated `--add-dir` flags).
+    #[serde(default)]
+    pub add_dir: Option<Vec<String>>,
+    /// codex-code only: approval policy passed as `-c approval_policy=...`.
+    /// codex's values (`untrusted`, `on-failure`, `on-request`, `never`) are
+    /// passed through unvalidated.
+    #[serde(default)]
+    pub approval_policy: Option<String>,
+    /// codex-code only: pass `--dangerously-bypass-approvals-and-sandbox`,
+    /// skipping every approval and sandboxing (dangerous; intended for
+    /// externally-sandboxed environments). `None`/absent => flag omitted.
+    #[serde(default)]
+    pub bypass_sandbox_and_approvals: Option<bool>,
+    /// codex-code only: pass `--skip-git-repo-check` so codex runs outside a
+    /// trusted git directory. `true` by default — agent-cli may legitimately
+    /// run codex from a directory that is not a git repository at all, and
+    /// delegation is exactly the shape that must not ask before each tool;
+    /// set `false` to honor codex's own trust gate.
+    #[serde(default)]
+    pub skip_git_repo_check: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1176,6 +1228,7 @@ impl Config {
             "claude" => self.provider.claude.as_ref(),
             "claude-code" => self.provider.claude_code.as_ref(),
             "codex" => self.provider.codex.as_ref(),
+            "codex-code" => self.provider.codex_code.as_ref(),
             "ollama" => self.provider.ollama.as_ref(),
             "opencode" | "opencode-go" => self.provider.opencode.as_ref(),
             "llama.cpp" => self.provider.llamacpp.as_ref(),
@@ -1225,6 +1278,11 @@ impl Config {
                     .get_or_insert_with(Default::default),
             ),
             "codex" => Some(self.provider.codex.get_or_insert_with(Default::default)),
+            "codex-code" => Some(
+                self.provider
+                    .codex_code
+                    .get_or_insert_with(Default::default),
+            ),
 
             "ollama" => Some(self.provider.ollama.get_or_insert_with(Default::default)),
             "opencode" | "opencode-go" => Some(self.provider.opencode.get_or_insert_with(Default::default)),

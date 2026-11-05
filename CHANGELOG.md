@@ -4,7 +4,46 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.42.0]
+
+### Added
+
+- **A new backend, `codex-code`: the locally installed OpenAI Codex CLI driven
+  the way `claude-code` drives `claude`.** `provider.kind = "codex-code"`
+  spawns `codex exec` per turn and maps its `--json` event stream onto the
+  usual provider events, so the REPL, personas, peer IPC, conversation
+  logging and custom slash commands wrap around Codex with no API key — the
+  CLI's own authentication (ChatGPT login) is inherited. Sessions persist
+  codex-side: the first turn's `thread.started` thread id feeds
+  `codex exec resume <thread_id>` from the second turn on, and the
+  transcript is never re-sent (only new user turns ride the prompt, which
+  arrives on stdin). Delegation only: Codex runs its own tools inside its
+  own sandbox and reports them executed (`command_execution` items are
+  never converted to agent-cli tool calls, which would run them twice) —
+  agent-cli's tool registry and approval prompt are not involved, and
+  Codex offers no gateway-mode counterpart of `--tools ""`. Configured
+  over `[provider.codex-code]`: `bin`, `model` (`-m`), `transport`
+  (`items` — the turn-grain `--json` stream, texts whole per completed
+  item, no token deltas on the probed CLI — or `oneshot`, the whole reply
+  read back from `--output-last-message`), `session` (`persistent`, the
+  default, or `ephemeral` via `--ephemeral`), `sandbox` (`-s`; the backend
+  default `workspace-write` because Codex's own default is read-only and
+  would block every delegated tool), `add_dir` (`--add-dir`),
+  `approval_policy` (`-c approval_policy=…`),
+  `bypass_sandbox_and_approvals`
+  (`--dangerously-bypass-approvals-and-sandbox`), `skip_git_repo_check`
+  (default `true` — outside a trusted git directory codex refuses to run
+  without it) and `turn_timeout_secs` over the claude-code defaults. A
+  lost thread (the CLI's "no rollout found for thread id" signature)
+  clears the recorded id and the next turn re-enters fresh; a timed-out
+  child is killed likewise. New guide
+  [`doc/providers/codex-code.md`](doc/providers/codex-code.md).
+- `agent-cli providers` reports the resolved `codex` binary for the
+  codex-code backend, and `agent-cli doctor` checks it plus `--version`
+  when `provider.kind = "codex-code"`.
+
 ## [0.41.0]
+
 
 ### Changed
 

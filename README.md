@@ -8,7 +8,7 @@
 
 - Standalone — no tmux required. Just run `agent-cli` (the no-arg form is equivalent to `agent-cli run`).
 - Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch — the REPL and tools never call out to the `claude` CLI. (Driving that CLI is available separately, as the opt-in `claude-code` backend below.)
-- Eight backends: `claude` / `claude-code` / `codex` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
+- Nine backends: `claude` / `claude-code` / `codex` / `codex-code` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>` (a report that costs the peer no turn, or an ask that waits for its answer, with `--report` / `--ask`).
 - Detached agents — `agent-cli spawn` (or `/spawn`) creates a headless peer in its own session that outlives the launcher; stop it with `agent-cli stop <peer>` (or `/stop`). While a peer you spawned runs, the REPL stacks its run state — name and elapsed time, one row per live child, newest nearest the bottom — directly above the bottom block (the spinner's clock stays the screen's bottom row), and the row is gone when the peer finishes.
 - Groups — tag a launched cohort with `--group <id>` (detached children inherit it); filter with `agent-cli list --group <id>` and discover running cohorts with `agent-cli groups`.
@@ -43,6 +43,7 @@
 | claude | Anthropic Claude (Messages, SSE) | `claude-opus-4-7` |
 | claude-code | Local Claude Code CLI as a child process (no API key) | Claude Code's own |
 | codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
+| codex-code | Local Codex CLI as a child process (no API key) | Codex's own default |
 | strata | OpenAI Chat Completions (SSE, keyless local engine) | `strata` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
 | opencode | OpenCode — dual mode (see below) | `claude-sonnet-4-5` |
@@ -104,13 +105,35 @@ prompt are not involved; and in `gateway` mode (`--tools ""`) nothing executes
 at all, because `claude -p` accepts no external tool definitions. See
 [`doc/providers/claude-code.md`](doc/providers/claude-code.md).
 
+**`codex-code`** runs the OpenAI Codex CLI installed on the machine and adapts
+it to the provider interface the same way — delegation (Codex runs its own
+tools inside its own sandbox, so the tool-use and session behavior matches
+`claude-code`), session persistence carried by Codex's own thread id, and no
+API key (Codex brings its own authentication, e.g. a ChatGPT login). Where
+claude-code streams token deltas, codex-code streams turn-level items:
+whole texts per `item.completed`, with the granularities `items` (default,
+`--json`) and `oneshot` (`-o`, the whole reply at end of turn) as transports.
+Codex has no gateway mode (no `--tools ""` counterpart — its child runs its
+own agent) and no system-prompt flag (a persona rides the turn payload).
+See [`doc/providers/codex-code.md`](doc/providers/codex-code.md).
+
+```toml
+[provider]
+kind = "codex-code"
+
+[provider.codex-code]
+transport = "items"        # turn-level item stream via --json (default)
+session   = "persistent"   # codex exec resume <thread_id> carries the session
+sandbox   = "workspace-write"  # -s; codex's own default is read-only
+```
+
 The mandatory verification targets are `claude` and `ollama` (with model `glm-5.1:cloud`).
 
-| Capability | claude | claude-code | codex | ollama | opencode | llama.cpp |
-|------------|--------|-------------|-------|--------|----------|-----------|
-| Streaming  | ✓ | ✓ (`transport = "stream"`) | ✓ | ✓ | ✓ (cloud SSE; local buffered) | ✓ |
-| Tool use   | ✓ | ✓ delegation mode — run **inside** Claude Code | ✓ (function calling) | ✓ (model-dependent) | ✓ cloud / ✗ local (v1) | ✓ (server-build dependent) |
-| Thinking   | ✓ (`thinking_delta`) | ✓ (`transport = "stream"`) | ✗ | ✓ (model-dependent, `message.thinking`) | ✗ | ✗ |
+| Capability | claude | claude-code | codex | codex-code | ollama | opencode | llama.cpp |
+|------------|--------|-------------|-------|------------|--------|----------|-----------|
+| Streaming  | ✓ | ✓ (`transport = "stream"`) | ✓ | ✓ (`transport = "items"`) | ✓ | ✓ (cloud SSE; local buffered) | ✓ |
+| Tool use   | ✓ | ✓ delegation mode — run **inside** Claude Code | ✓ (function calling) | ✓ delegation — run **inside** Codex | ✓ (model-dependent) | ✓ cloud / ✗ local (v1) | ✓ (server-build dependent) |
+| Thinking   | ✓ (`thinking_delta`) | ✓ (`transport = "stream"`) | ✗ | ✗ | ✓ (model-dependent, `message.thinking`) | ✗ | ✗ |
 
 `opencode-go` has the same capabilities as `opencode` (cloud mode); it is a config shortcut, not a separate backend.
 
@@ -628,7 +651,7 @@ Full frontmatter reference, validation rules, and operational scenarios are in [
 - [`doc/tools.md`](doc/tools.md) — built-in tool specifications
 - [`doc/architecture.md`](doc/architecture.md) — architecture overview
 - [`doc/troubleshooting.md`](doc/troubleshooting.md) — known failures and fixes
-- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`strata.md`](doc/providers/strata.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
+- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`codex-code.md`](doc/providers/codex-code.md) / [`strata.md`](doc/providers/strata.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development guide
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
 

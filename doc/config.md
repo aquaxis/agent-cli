@@ -99,6 +99,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 [provider.claude]           # claude backend-specific settings
 [provider.claude-code]      # claude-code backend (drives the local `claude` CLI)
 [provider.codex]            # codex (OpenAI) backend-specific settings
+[provider.codex-code]       # codex-code backend (drives the local `codex` CLI)
 [provider.ollama]           # ollama backend-specific settings
 [provider.opencode]         # opencode backend (local serve / OpenCode Zen)
 [provider."llama.cpp"]      # llama.cpp server-specific settings (key must be quoted)
@@ -123,7 +124,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
-| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"claude-code"` / `"codex"` / `"strata"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
+| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"claude-code"` / `"codex"` / `"codex-code"` / `"strata"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
 
 ### `[provider.claude]` / `[provider.codex]` / `[provider.strata]` / `[provider.ollama]` / `[provider.opencode]` / `[provider."llama.cpp"]`
 
@@ -206,6 +207,42 @@ Two consequences worth knowing before choosing a mode:
   turned into agent-cli tool calls (that would execute everything twice).
   Control permissions with `permission_mode` / `tools` / `allowed_tools` /
   `disallowed_tools`.
+
+### `[provider.codex-code]`
+
+Drives the locally installed **Codex CLI** (`codex exec`) as a backend — the
+codex sibling of `[provider.claude-code]`. It takes no `api_key_env`,
+`base_url`, or `request_timeout_secs`: authentication belongs to Codex itself
+(e.g. a ChatGPT login). Every key below is optional, and the whole section may
+be omitted. See [`doc/providers/codex-code.md`](providers/codex-code.md).
+
+| Key | Type | Default | Description |
+|------|----|------|------|
+| `bin` | string | `"codex"` | Executable. A value containing a path separator is used as-is; otherwise it is resolved on `PATH`. A missing binary is a startup error |
+| `model` | string | (Codex's own) | `-m` |
+| `transport` | string | `"items"` | `"items"` — `--json`, events as they arrive (turn-grain: whole texts per completed item); `"oneshot"` — no `--json`, reply read from `--output-last-message` once the turn ends |
+| `session` | string | `"persistent"` | `"persistent"` — the first turn's `thread.started` thread id is resumed with `codex exec resume`; `"ephemeral"` — `--ephemeral`, each conversation stands alone |
+| `sandbox` | string | `"workspace-write"` | `-s`. Codex's own default is read-only, which would block every delegated tool, so the backend default is `workspace-write`; `read-only` / `workspace-write` / `danger-full-access` |
+| `add_dir` | array | `[]` | Repeated `--add-dir`: additional directories codex may write |
+| `approval_policy` | string | unset | `-c approval_policy=...` |
+| `bypass_sandbox_and_approvals` | bool | `false` | `--dangerously-bypass-approvals-and-sandbox` (overrides `-s`; unattended use at your own risk) |
+| `skip_git_repo_check` | bool | `true` | `--skip-git-repo-check`. Without it codex refuses to run outside a trusted git directory; set `false` to honor codex's own trust gate |
+| `turn_timeout_secs` | int | `900` | Per-turn wall clock. On expiry the child is killed and the recorded thread is dropped, so the next turn re-enters fresh |
+| `extra_args` | array | `[]` | Extra CLI flags appended verbatim before the `resume` subcommand / prompt |
+
+Unknown values for `transport` or `session` are rejected at startup with the
+accepted set listed.
+
+Two consequences worth knowing before choosing this backend:
+
+- **Delegation only.** Codex runs its own agent and accepts no external tool
+  list, so agent-cli's tool registry and approval prompt are never involved
+  (no gateway mode — the `--tools ""` counterpart claude-code has does not
+  exist). Tool activity arrives already executed inside codex's sandbox and is
+  reported, not re-run.
+- **The stream is turn-grain.** Codex emits whole texts per completed item on
+  the `--json` surface — no token-level deltas — so the display shows one
+  block per item rather than streaming characters.
 
 `opencode` runs in two modes selected by **API-key presence**: no resolved key → **local** mode against a running `opencode serve` (native session API); key resolved → **cloud** mode against OpenCode Zen (OpenAI-compatible). `opencode-go` is a convenience alias that sets `base_url` to the Go endpoint, `api` to `"openai"`, `model` to one the Go endpoint serves, and `api_key_env` to `"OPENCODE_API_KEY"`. It still uses `[provider.opencode]` for overrides. See [`doc/providers/opencode.md`](providers/opencode.md).
 
