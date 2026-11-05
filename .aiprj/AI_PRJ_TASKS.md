@@ -70,7 +70,7 @@ The ask's baselines, as the tree stood when each was verified:
 | T-96 | The cycle's record and consistency (Art. 2, C-08): the three documents written from the probed evidence with the shared identifiers (FR-43 a/b/c, BL-M46–BL-M48, TPR-25, D-65/D-66, W-66, T-95/T-96, AC-36, AS-63–AS-65), mutually consistent; the boundary §6's shipped contracts named untouched; the instruction re-verified byte-exact at exit; the work log written per Art. 6/7; no product source, config, test, pin, release or version change | — (NFR-12, NFR-13, NFR-14, C-08, C-09, C-13, AC-36) | design §3 (the docs angle), §4 (W-66) | T-95 | ✅ |
 | T-97 | The backend (FR-44a; design §1 D-67, §2 TPR-26): `src/ai/codex_code.rs` — the codex sibling of `claude_code.rs`, built on the investigation's probes (BL-M47): delegation only, thread-id session, the transports `items`/`oneshot`, session `persistent`/`ephemeral`, the sandbox/trust knobs codex-side, the resume-not-found and timeout recoveries, no gateway mode (D-65's recorded gap), the persona riding the turn payload |
 | T-98 | The wiring, the pins and the docs (FR-44a/FR-44b; design §1 D-68, §2 TPR-26): the dispatch `build()` arm and `SUPPORTED`, the `[provider.codex-code]` slot (`codex_code` field, `provider_entry`/`_mut` arms, the sample block in `DEFAULT_CONFIG`), `providers()`/`doctor()`'s arms, the `--provider`/`spawn` lists, and the docs set — the two READMEs (「Eight backends」→「Nine」, the backend row, the capability column, the claude-code-style section, the link), the guide `doc/providers/codex-code.md`, `doc/config.md` §2/§3, the CHANGELOG `[0.42.0]` — every statement bound to the code or a live probe |
-| T-99 | The completion (FR-44c; design §1 D-69, §4 W-67): the version carry 0.41.0 → 0.42.0 (`Cargo.toml`, `Cargo.lock`, the CHANGELOG's `[0.42.0]` heading), the delivery commit(s) pushed to `origin/main` (AS-68), the ledger's rewrite riding its own commit per the trail rule (a commit's sha is nameable only from the commit that follows it), the instruction re-verified byte-exact at exit | — (NFR-12, NFR-13, NFR-14, C-12, C-14, W-67, AC-37) | design §1 (D-69), §4 (W-67) | T-97, T-98 | ✅ |
+| T-99 | The completion (FR-44c; design §1 D-69, §4 W-67): the version carry 0.41.0 → 0.42.0 (`Cargo.toml`, `Cargo.lock`, the CHANGELOG's `[0.42.0]` heading), the delivery commit(s) pushed to `origin/main` (AS-68), the ledger's rewrite riding the delivery commit, its sha named in the follow-up per the trail rule (a commit's sha is nameable only from the commit that follows it), the instruction re-verified byte-exact at exit | — (NFR-12, NFR-13, NFR-14, C-12, C-14, W-67, AC-37) | design §1 (D-69), §4 (W-67) | T-97, T-98 | ✅ |
 
 Sections below the table are the execution record (Article 3) — written as
 each task's status changes.
@@ -321,10 +321,16 @@ record in the tracked ledger) → `eec12f9` (the refactoring — one HTTP
 error chain, one test context, no dead code; 26 files, +139/−314) →
 `064ce50` (the display fix and the ledger's record) → v0.41.0 `25fe13c`
 (the version carry the user directed after the delivery) → `3badc04`
-(the trail's follow-up naming `25fe13c`). The FR-43 cycle's ledger
-rewrite rode the FR-44 delivery: the implementation tree, its records
-and its work logs stand in the FR-44 delivery commit (named in the
-trail's tail below). Earlier cycles stand in the requirements document's §12 and the design
+(the trail's follow-up naming `25fe13c`). The FR-44 cycle's delivery lands
+at `122f320` ("Add the codex-code backend driving the installed Codex CLI
+like claude-code" — the backend, the wiring, the docs, the version carry
+to 0.42.0, the ledger's FR-44 record and the work logs `_008`/`_009`),
+named by this trail's tail per the rule that a delivery commit's sha
+is nameable only from the commit that follows it. This ledger's own
+follow-up (the next commit, its work log `2026-11-05_010.md`) carries
+the naming commit.
+
+Earlier cycles stand in the requirements document's §12 and the design
 document's §5: **"the subagents' auto-exit — permanent (FR-32),
 configurable and default-on (FR-33); the 'prompt too long' repair
 (FR-34)"** — closed, 2026-11-03 (FR-34 released v0.37.0, the tag on
