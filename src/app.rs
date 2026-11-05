@@ -1146,10 +1146,12 @@ impl PromptRenderer {
     /// extra row at the top of the block, which `clear_block` removes on the
     /// next render (it moves to the block top and clears downward). The
     /// subagent status rows (`peer_lines`, FR-23) print above the whole
-    /// tracked region and are erased with it. When `marker` is `Some`, the
-    /// scroll state row (FR-25b: `Message below`) is painted once below the
-    /// block's rows and the cursor restored — a display row outside the
-    /// tracked region, swept by the screen's next pass.
+    /// tracked region and are erased with it. When `run_row` is `Some`, the
+    /// running turn's elapsed row (FR-40) is printed above the block's rows —
+    /// display-only, never recorded — and when `marker` is `Some`, the scroll
+    /// state row (FR-39: `Message below`) is printed on the row immediately
+    /// above the block's first row. Both are part of the tracked region, so the
+    /// fold below counts them and the next render's erase reaches past them.
     #[allow(clippy::too_many_arguments)]
     fn render(
         &mut self,
@@ -1160,6 +1162,7 @@ impl PromptRenderer {
         state: &InputState,
         suggestion: Option<&str>,
         peer_lines: &[String],
+        run_row: Option<&str>,
         marker: Option<&str>,
     ) {
         use crossterm::cursor::{MoveDown, MoveToColumn, MoveUp};
@@ -1182,6 +1185,32 @@ impl PromptRenderer {
             let _ = stdout.execute(Print("\r\n"));
         }
         self.peer_rows = peer_lines.len() as u16;
+
+        // 2.5 The running turn's elapsed row (FR-40): display-only, printed
+        //     above the block's rows — the row the live screen stands directly
+        //     above the prompt span, so the scrolled screen keeps it in sight
+        //     while a selection is made. It is never recorded here: only
+        //     `finish_line` writes the transcript.
+        let mut above_rows = 0u16;
+        if let Some(run_row) = run_row {
+            let _ = stdout.execute(Print(theme.err(Role::Progress, run_row)));
+            let _ = stdout.execute(Print("\r\n"));
+            above_rows += 1;
+        }
+
+        // 2.6 The scroll marker (FR-39): the row immediately above the block's
+        //     first row, so the prompt the eye is on stays the last thing on
+        //     the screen and the marker names what the view has left below.
+        //     It is part of the tracked region now, so the fold at the end
+        //     counts it and the next render's erase climbs past it.
+        if let Some(marker) = marker {
+            let _ = stdout.execute(Print(theme.out(
+                Role::Scrolled,
+                &crate::editor::truncate_display(marker, width.saturating_sub(1)),
+            )));
+            let _ = stdout.execute(Print("\r\n"));
+            above_rows += 1;
+        }
 
         // 3. Print the candidate hint first, on its own row above the prompt block.
         //    Skipped when the terminal is too narrow to be useful (e.g. a pty
@@ -1220,32 +1249,13 @@ impl PromptRenderer {
         }
         let _ = stdout.execute(MoveToColumn(cursor_col as u16));
 
-        // 5.5 The scroll marker (FR-25b): when the scrolled view sits off the
-        //    bottom of the log, one row beneath the block names the condition —
-        //    the block still owns the screen's bottom rows above it, so the
-        //    marker takes the row below the last one. Painted after the cursor
-        //    is placed and restored around, so the cursor arithmetic is
-        //    untouched: the row is outside the tracked region's counters (it is
-        //    not part of the block) and is swept by the terminal, the next
-        //    render's erase or the screen restore rather than counted here.
-        if let Some(marker) = marker {
-            // k = rows the content spans below the block's first row, +1 for
-            // the marker row itself — always one row below the block's last.
-            let k = (end_row.max(cursor_row) - cursor_row) + 1;
-            let _ = stdout.execute(MoveDown(k as u16));
-            let _ = stdout.execute(MoveToColumn(0));
-            let _ = stdout.execute(Print(theme.out(
-                Role::Scrolled,
-                &crate::editor::truncate_display(marker, width.saturating_sub(1)),
-            )));
-            let _ = stdout.execute(MoveUp(k as u16));
-            let _ = stdout.execute(MoveToColumn(cursor_col as u16));
-        }
-
         // 6. Remember where the cursor ended up for the next render, counting
         //    the hint row so `clear_block` moves all the way back to the top
-        //    of the tracked region (the peer rows included).
-        self.cursor_row = sug_rows + cursor_row as u16;
+        //    of the tracked region (the peer rows included), plus the rows
+        //    printed above the block — the running turn's elapsed row (FR-40)
+        //    and the scroll marker (FR-39) — so the next erase climbs past
+        //    them and neither leaves a stale row behind.
+        self.cursor_row = above_rows + sug_rows + cursor_row as u16;
         let _ = stdout.flush();
     }
 }
@@ -1355,28 +1365,16 @@ const APPROVAL_PROMPT: &str = "approve? [y/N]: ";
 /// nothing of the enqueued text is shown.
 const QUEUED_NOTICE_PREFIX: &str = "[queued: ";
 
-/// The scrolled-view marker (FR-25): the text the pinned bottom row shows
-/// while the wheel's view has moved off the bottom of the log — the elapsed
-/// display's row on the Status pin, an extra row under the prompt block on
-/// the Prompt pin. The up-arrow points at the log continuing below the view.
+/// The scrolled-view marker (FR-25): the text the pinned block shows while the
+/// wheel's view has moved off the bottom of the log — one row immediately above
+/// the prompt block's first row (FR-39). The marker points at the log
+/// continuing below the view.
 const SCROLLED_MARK: &str = "Message below";
 
-/// The pinned bottom row's text on the Status pin (FR-25): the scrolled-view
-/// marker while the view has moved off the bottom of the log — the elapsed
-/// display is withheld there — and the spinner's row at the bottom. Pure so
-/// the drawer's row choice is pin-bound without a terminal; both branches are
-/// cut to the same one-row budget (`width − 1`) the status row already keeps.
-fn pinned_status_text(row: &str, view_active: bool, width: usize) -> String {
-    let shown: &str = if view_active { SCROLLED_MARK } else { row };
-    crate::editor::truncate_display(shown, width.saturating_sub(1))
-}
-
-/// Rows the scrolled-view marker adds to the Prompt pin's footprint (FR-25):
-/// one while the view is off the bottom, none once it is back. The Status pin
-/// swaps its clock text for the marker inside the row it already owns, so
-/// this is only asked beside the Prompt pin — by the drawer's budget and by
-/// the wheel/drag budgets, which must agree on where the body ends. Pure so
-/// the three sites share one arithmetic.
+/// Rows the scrolled-view marker adds to the pinned block's footprint (FR-39):
+/// one while the view is off the bottom, none once it is back. The drawer and
+/// the wheel/drag budgets all ask this, so they agree on where the body ends.
+/// Pure so the sites share one arithmetic.
 fn scrolled_marker_rows(view_active: bool) -> u16 {
     u16::from(view_active)
 }
@@ -2040,65 +2038,135 @@ impl Drop for ScrollOverlay {
     }
 }
 
-/// What is pinned to the bottom of the scrolled screen: the prompt when the
-/// REPL is waiting for input, the running turn's spinner row when it is not —
-/// and, either way, the subagent run-state rows (FR-20) pinned beneath it.
+/// What is pinned to the bottom of the scrolled screen: one block, composed
+/// the way the live screen composes — the prompt span at the bottom-most rows,
+/// the running turn's elapsed row directly above it (FR-40), the subagent
+/// run-state rows (FR-20) above that, and the scroll marker (FR-39) on the row
+/// immediately above the prompt's first row.
 ///
-/// The scroll marker's text rides the prompt variant: when the view is off the
-/// bottom the prompt block takes the `Message below` row beneath it (FR-25b,
-/// D-28) — `None` at the bottom. The clock's variant carries none: the marker
-/// replaces the clock's own text in its row (FR-25a, D-27).
-enum ScrollBottom<'a> {
-    Prompt {
-        role: Role,
-        prompt: &'a str,
-        input: &'a InputState,
-        suggestion: Option<&'a str>,
-        peer_lines: Vec<String>,
-        /// `Message below` while the view is off the log's bottom, `None` at it.
-        text: Option<String>,
-    },
-    Status {
-        row: String,
-        peer_lines: Vec<String>,
-    },
+/// One composition for every state is what keeps a pointer honest: the row a
+/// press lands on is the row the screen shows, whether a turn runs or not
+/// (FR-40's second half).
+struct ScrollBottom<'a> {
+    role: Role,
+    prompt: &'a str,
+    input: &'a InputState,
+    suggestion: Option<&'a str>,
+    peer_lines: Vec<String>,
+    /// The running turn's elapsed row, painted above the block — display-only,
+    /// never recorded (FR-40).
+    run_row: Option<String>,
+    /// `Message below` while the view is off the log's bottom, `None` at it
+    /// (FR-39: painted above the block, never beneath it).
+    text: Option<String>,
 }
 
 impl ScrollBottom<'_> {
     /// The subagent rows the block carries (empty when none).
     fn peer_lines(&self) -> Vec<String> {
-        match self {
-            ScrollBottom::Prompt { peer_lines, .. } | ScrollBottom::Status { peer_lines, .. } => {
-                peer_lines.clone()
-            }
-        }
+        self.peer_lines.clone()
     }
 
-    /// The scroll marker row the prompt block takes beneath it, `None` when the
-    /// block carries none: the prompt block paints the `Message below` row
-    /// beneath itself when the view is off the bottom (FR-25b, D-28). The pinned
-    /// clock's arm consults `overlay.view_active()` itself — the marker replaces
-    /// its own text there (FR-25a, D-27), so this method answers `None` for it.
+    /// The scroll marker row, `None` when the block carries none: the block
+    /// paints `Message below` on the row immediately above its first row while
+    /// the view is off the bottom (FR-39).
     fn marker_row(&self) -> Option<&str> {
-        match self {
-            ScrollBottom::Prompt { text, .. } => text.as_deref(),
-            ScrollBottom::Status { .. } => None,
-        }
+        self.text.as_deref()
+    }
+
+    /// The running turn's elapsed row, `None` when no turn is tracked: the
+    /// block paints it above itself so the elapsed display stays on screen
+    /// while the scrolled view is exercised (FR-40).
+    fn run_row(&self) -> Option<&str> {
+        self.run_row.as_deref()
     }
 }
 
-/// Rows the pinned bottom block occupies: the spinner's single row while a turn
-/// runs, the prompt block otherwise, plus one row per live subagent (FR-20's
-/// transient lines, additive to whichever block is pinned). The suggestion row
-/// is not counted — it only shifts the clamp by one row.
+/// Rows the running turn's elapsed row adds above the prompt span (FR-40): one
+/// while a turn is tracked, none otherwise. Pure so the drawer and both mouse
+/// arms share the arithmetic.
+fn run_row_rows(running: bool) -> u16 {
+    u16::from(running)
+}
+
+/// The scrolled screen's pinned block, read top-down as one plan (FR-39,
+/// FR-40): one row per live subagent (FR-20's transient lines, oldest on top —
+/// the painter walks downward, AS-26), the running turn's elapsed row (FR-40),
+/// the scroll marker (FR-39), then the prompt span's own rows at the bottom.
+/// Rows are block-relative, so the pin binds the order without a terminal.
 ///
-/// While the view is scrolled with the prompt pinned, the scroll marker (D-28)
-/// takes the row below the block, so the block's budget grows by that row; the
-/// `view_moved` flag is the read-time signal (`offset > 0`). The pending-turn
-/// branch is gated by the same flag per D-27: a running turn's own redraws
-/// carry the signal, the wheel moves the view only at an idle prompt, and the
-/// one-wheel-arm budget stays a superset of the drawer's true count in every
-/// mixed state (NFR-14).
+/// The order is the live screen's, with the marker inserted between the run
+/// display and the prompt: the elapsed row stands directly above the prompt
+/// span and the peer rows above it, exactly as `zone_beat_plan` stacks the live
+/// screen's regions (D-61). The marker is the last row before the prompt, so a
+/// wrapped prompt keeps it directly above the block's first row (AS-59).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScrolledBlockPlan {
+    /// The running turn's elapsed row, when a turn is tracked.
+    run_row: Option<u16>,
+    /// The marker's row, when the view is off the log's bottom.
+    marker_row: Option<u16>,
+    /// The prompt span's first row.
+    prompt_top: u16,
+    /// The block's whole footprint, the prompt span's rows included.
+    rows: u16,
+}
+
+fn scrolled_block_plan(
+    prompt_rows: u16,
+    peer_lines: usize,
+    running: bool,
+    view_moved: bool,
+) -> ScrolledBlockPlan {
+    let peer_rows = peer_lines as u16;
+    let run_rows = run_row_rows(running);
+    let marker_rows = scrolled_marker_rows(view_moved);
+    let prompt_top = peer_rows + run_rows + marker_rows;
+    ScrolledBlockPlan {
+        run_row: running.then_some(peer_rows),
+        marker_row: view_moved.then_some(peer_rows + run_rows),
+        prompt_top,
+        rows: prompt_top + prompt_rows,
+    }
+}
+
+/// The scrolled screen's pinned block, counted once: the prompt span's rows,
+/// the running turn's elapsed row above them (FR-40), the scroll marker's row
+/// above that (FR-39) and one row per live subagent (FR-20's transient lines,
+/// additive to the block). The suggestion row takes the same additive slot when
+/// the drawer counts it — the mouse arms leave it out, so their budget stays a
+/// subset of the drawer's true count in every mixed state (NFR-14).
+///
+/// One function is the whole point of FR-40's second half: the drawer's
+/// `bottom_rows`, the wheel arm's body and the drag arm's body cannot disagree
+/// about where the log ends, so a pointer row means the same content row the
+/// screen shows (AS-62).
+fn scrolled_bottom_rows(
+    prompt: &str,
+    input_state: &InputState,
+    width: usize,
+    sug_rows: u16,
+    peer_lines: usize,
+    running: bool,
+    view_moved: bool,
+) -> u16 {
+    let prompt_cols = crate::editor::str_display_width(prompt);
+    let prompt_rows = prompt_block_rows(
+        prompt_cols,
+        input_state.display_cursor(),
+        prompt_cols + input_state.display_width(),
+        sug_rows,
+        width,
+    );
+    scrolled_block_plan(prompt_rows, peer_lines, running, view_moved).rows
+}
+
+/// Rows the pinned bottom block occupies, as the mouse arms measure it: the
+/// same composition the drawer paints (FR-40's D-61), without the suggestion
+/// row the arms have never counted. A running turn keeps the prompt span on
+/// screen and carries its elapsed row above it, so the arms' body shrinks by
+/// exactly the rows the screen shows — the press, the drag and the release all
+/// resolve against what is drawn (AS-62).
 fn bottom_block_rows(
     prompt_state: &PromptState,
     input_state: &InputState,
@@ -2106,26 +2174,20 @@ fn bottom_block_rows(
     peer_lines: usize,
     view_moved: bool,
 ) -> u16 {
-    if prompt_state.is_pending() {
-        return if view_moved {
-            2 + peer_lines as u16
-        } else {
-            1 + peer_lines as u16
-        };
-    }
     let p = if prompt_state.is_awaiting_approval() {
         APPROVAL_PROMPT
     } else {
         PROMPT
     };
-    let prompt_cols = crate::editor::str_display_width(p);
-    prompt_block_rows(
-        prompt_cols,
-        input_state.display_cursor(),
-        prompt_cols + input_state.display_width(),
-        peer_lines as u16,
+    scrolled_bottom_rows(
+        p,
+        input_state,
         width,
-    ) + scrolled_marker_rows(view_moved)
+        0,
+        peer_lines,
+        prompt_state.is_pending(),
+        view_moved,
+    )
 }
 
 /// The peer's situation face (FR-37b): one row per live direct child of this
@@ -2230,23 +2292,15 @@ fn draw_scroll_overlay(
     let width = PromptRenderer::terminal_width();
     let height = terminal_height();
     let peer_lines = bottom.peer_lines();
-    let bottom_rows = match &bottom {
-        ScrollBottom::Prompt { prompt, input, suggestion, .. } => {
-            let prompt_cols = crate::editor::str_display_width(prompt);
-            prompt_block_rows(
-                prompt_cols,
-                input.display_cursor(),
-                prompt_cols + input.display_width(),
-                suggestion_rows(*suggestion, width),
-                width,
-            ) + peer_lines.len() as u16
-                // The scroll marker's row below the block, when the block
-                // carries it (FR-25b, D-28) — the one arithmetic both
-                // budgets' counts derive from.
-                + scrolled_marker_rows(bottom.marker_row().is_some())
-        }
-        ScrollBottom::Status { .. } => 1 + peer_lines.len() as u16,
-    };
+    let bottom_rows = scrolled_bottom_rows(
+        bottom.prompt,
+        bottom.input,
+        width,
+        suggestion_rows(bottom.suggestion, width),
+        peer_lines.len(),
+        bottom.run_row().is_some(),
+        bottom.marker_row().is_some(),
+    );
     let body = crate::scroll::body_rows(height, bottom_rows);
     let rows = body_slice_at(width, body, overlay.view.offset());
     // A drag made on a different offset describes rows that are no longer
@@ -2277,70 +2331,23 @@ fn draw_scroll_overlay(
     // The prompt goes through its own renderer, so the cursor arithmetic —
     // wrapping, multibyte widths, the suggestion row — has one implementation.
     renderer.reset();
-    match bottom {
-        ScrollBottom::Prompt {
-            role,
-            prompt,
-            input,
-            suggestion,
-            ..
-        } => {
-            // The scroll marker (FR-25b) is drawn below the block, so it rides
-            // the renderer's paint — after the last block row and restored
-            // around, leaving the cursor arithmetic untouched — and it stays
-            // outside the tracked rows, swept with the screen's next pass.
-            renderer.render(
-                stdout,
-                theme,
-                role,
-                prompt,
-                input,
-                suggestion,
-                &peer_lines,
-                bottom.marker_row(),
-            );
-        }
-        ScrollBottom::Status { row, .. } => {
-            // The pinned clock is display-only: it is erased and redrawn with
-            // the screen and is NOT recorded into the transcript, so the
-            // wheel's scrollable history holds the turn's output — not the
-            // spinner beats. The outcome line (`✔ <elapsed>`, recorded by the
-            // indicator's `finish`) is the clock the log keeps.
-            // The clock stays the screen's bottom row; the subagent rows stack
-            // above it, one per live child, oldest on top and the newest just
-            // above the clock (FR-23, AS-26: 下から順番に — from the bottom). The
-            // rows are transient state, never recorded into the transcript
-            // (FR-20), and `body` already shrank by exactly this count, so the
-            // slice cannot reach past the topmost row.
-            let plan = subagent_row_plan(body, peer_lines.len());
-            for (i, line) in peer_lines.iter().enumerate() {
-                let _ = crossterm::queue!(
-                    stdout,
-                    MoveTo(0, plan.peers[i]),
-                    terminal::Clear(ClearType::UntilNewLine),
-                    Print(theme.err(Role::Peer, line))
-                );
-            }
-            // While the view is scrolled (FR-25a) the elapsed display is
-            // withheld from this pin: the marker's row replaces the clock's, so
-            // the bottom row shows the scroll state and the beat rows stay out
-            // of the log exactly as before. The overlay's own view answers the
-            // condition — a drag at the bottom of the log (the overlay taken
-            // with the view live) keeps the clock.
-            let (bottom_text, style_role) = if overlay.view_active() {
-                (pinned_status_text(&row, true, width), Role::Scrolled)
-            } else {
-                (row, Role::Progress)
-            };
-            let _ = crossterm::queue!(
-                stdout,
-                MoveTo(0, plan.bottom),
-                terminal::Clear(ClearType::UntilNewLine),
-                Print(theme.err(style_role, &bottom_text))
-            );
-            let _ = stdout.flush();
-        }
-    }
+    // One composition for every state (FR-39, FR-40): the prompt goes through
+    // its own renderer, so wrapping, multibyte widths and the suggestion row
+    // keep one implementation, and the running turn's elapsed row and the
+    // scroll marker are printed above it by the same path. Nothing here is
+    // recorded: only `finish_line` writes the transcript, so the elapsed row
+    // stays display-only.
+    renderer.render(
+        stdout,
+        theme,
+        bottom.role,
+        bottom.prompt,
+        bottom.input,
+        bottom.suggestion,
+        &peer_lines,
+        bottom.run_row(),
+        bottom.marker_row(),
+    );
     overlay.last_draw = std::time::Instant::now();
 }
 
@@ -2359,24 +2366,6 @@ fn esc_return_redraw(prompt_state: &PromptState) -> Option<(Role, &'static str)>
         Some((Role::Confirm, APPROVAL_PROMPT))
     } else {
         Some((Role::PromptSymbol, PROMPT))
-    }
-}
-
-/// Row geometry for the pinned zone's subagent rows (FR-23, D-24): the stack
-/// sits above whichever block holds the screen's bottom row. `body` is the
-/// zone's first row and `n` the number of live children; rows are numbered
-/// from the top of the stack, so a downward painter takes `peers[i]` in the
-/// composer's order (spawn order, oldest first) and the bottom block takes
-/// `clock`. Pure so the drawer's geometry is pin-bound without a terminal.
-struct SubagentRowPlan {
-    peers: Vec<u16>,
-    bottom: u16,
-}
-
-fn subagent_row_plan(body: usize, n: usize) -> SubagentRowPlan {
-    SubagentRowPlan {
-        peers: (0..n).map(|i| (body + i) as u16).collect(),
-        bottom: (body + n) as u16,
     }
 }
 
@@ -3250,14 +3239,14 @@ async fn run_input_loop_raw(
                             let width = PromptRenderer::terminal_width();
                             let peer_lines =
                                 live_peer_lines(&state.registry_dir, &state.id, width).len();
-                            // The marker row joins the budget when the prompt is
-                            // the pin and the view is off the bottom (FR-25b);
-                            // during a turn the Status pin carries none (D-27),
-                            // and the drawer recomputes its exact count at the
-                            // draw, so a first notch at a live view only risks a
-                            // notch-shallower clamp before the next pass.
-                            let view_moved =
-                                overlay.view_active() && !prompt_state.is_pending();
+                            // The marker row joins the budget whenever the view
+                            // is off the bottom — a running turn included, since
+                            // the pin composes the prompt span in every state
+                            // (FR-39, FR-40). The drawer recomputes the exact
+                            // count at the draw, so a first notch taken at a
+                            // live view only risks a notch-shallower clamp
+                            // before the next pass.
+                            let view_moved = overlay.view_active();
                             let bottom_rows = bottom_block_rows(
                                 &prompt_state,
                                 &input_state,
@@ -3328,13 +3317,13 @@ async fn run_input_loop_raw(
                         {
                             use crossterm::event::{MouseButton, MouseEventKind};
                             let width = PromptRenderer::terminal_width();
-                            // The same gate the wheel arm applies (FR-25b): the
-                            // marker row joins the body's budget when the prompt
-                            // is pinned and the view is off the bottom, so a
-                            // drag and its release resolve against the rows the
-                            // screen will actually show.
-                            let view_moved =
-                                overlay.view_active() && !prompt_state.is_pending();
+                            // The same gate the wheel arm applies (FR-39,
+                            // FR-40): the marker row joins the body's budget
+                            // whenever the view is off the bottom, so a drag and
+                            // its release resolve against the rows the screen
+                            // will actually show — the prompt span's rows, the
+                            // elapsed row and the marker included.
+                            let view_moved = overlay.view_active();
                             let bottom_rows = bottom_block_rows(
                                 &prompt_state,
                                 &input_state,
@@ -5292,6 +5281,35 @@ async fn render_prompt(
     state: &Arc<ReplState>,
     input_state: &InputState,
 ) {
+    render_prompt_with_run(
+        overlay,
+        renderer,
+        stdout,
+        role,
+        prompt,
+        state,
+        input_state,
+        None,
+    )
+    .await;
+}
+
+/// The prompt's one drawing path, with the running turn's elapsed row (FR-40)
+/// as a parameter: `None` on the live screen (the zone or the indicator owns
+/// that row there) and on the scrolled screen with no turn tracked, `Some` on
+/// the scrolled screen mid-turn — where the row stands directly above the
+/// prompt span, exactly as the live screen composes it (D-61).
+#[allow(clippy::too_many_arguments)]
+async fn render_prompt_with_run(
+    overlay: &mut ScrollOverlay,
+    renderer: &mut PromptRenderer,
+    stdout: &mut std::io::Stdout,
+    role: Role,
+    prompt: &str,
+    state: &Arc<ReplState>,
+    input_state: &InputState,
+    run_row: Option<String>,
+) {
     // The slash-command hint belongs to the input prompt; the approval prompt
     // takes a y/N answer and never has one.
     let sug = if matches!(role, Role::PromptSymbol) {
@@ -5320,12 +5338,13 @@ async fn render_prompt(
             stdout,
             renderer,
             &state.theme,
-            ScrollBottom::Prompt {
+            ScrollBottom {
                 role,
                 prompt,
                 input: input_state,
                 suggestion: sug.as_deref(),
                 peer_lines: peers.clone(),
+                run_row,
                 text: overlay
                     .view_active()
                     .then(|| SCROLLED_MARK.to_string()),
@@ -5349,6 +5368,7 @@ async fn render_prompt(
             sug.as_deref(),
             &peers,
             None,
+            None,
         );
     }
 }
@@ -5365,42 +5385,30 @@ async fn draw_scrolled(
     _pending: bool,
     awaiting_approval: bool,
 ) {
-    {
-        // The block is suspended while the overlay owns the screen, so the
-        // spinner is advanced here — and the pin is the turn's clock whenever
-        // a turn is tracked, not only while the prompt is Pending: a peer
-        // prompt answered at an idle prompt, or a `/send --ask` in flight,
-        // keeps its elapsed time on the scrolled screen exactly the same way.
-        // `overlay_status_row` answers `None` when nothing is tracked, so the
-        // not-running prompt below is the same arm as before.
-        let row = {
-            let mut ind = lock_indicator(&state.indicator);
-            ind.overlay_status_row()
-        };
-        if let Some(row) = row {
-            draw_scroll_overlay(
-                overlay,
-                stdout,
-                renderer,
-                &state.theme,
-                ScrollBottom::Status {
-                    row,
-                    peer_lines: live_peer_lines(
-                        &state.registry_dir,
-                        &state.id,
-                        PromptRenderer::terminal_width(),
-                    ),
-                },
-            );
-            return;
-        }
-    }
+    // The block is suspended while the overlay owns the screen, so the spinner
+    // is advanced here and its face is handed to the prompt pin as the row
+    // above the span (FR-40). `overlay_status_row` answers `None` when nothing
+    // is tracked, so the not-running prompt below is the same arm as before.
+    let run_row = {
+        let mut ind = lock_indicator(&state.indicator);
+        ind.overlay_status_row()
+    };
     let (role, prompt) = if awaiting_approval {
         (Role::Confirm, APPROVAL_PROMPT)
     } else {
         (Role::PromptSymbol, PROMPT)
     };
-    render_prompt(overlay, renderer, stdout, role, prompt, state, input_state).await;
+    render_prompt_with_run(
+        overlay,
+        renderer,
+        stdout,
+        role,
+        prompt,
+        state,
+        input_state,
+        run_row,
+    )
+    .await;
 }
 
 async fn handle_repl_command(
@@ -7382,14 +7390,15 @@ mod tests {
 
     #[test]
     fn the_clock_row_is_not_the_subagent_lines_price() {
-        // The budget is additive: the pinned clock keeps its one row with the
-        // peer lines present, and the prompt block keeps its rows.
+        // The budget is additive: the running block keeps the prompt span and
+        // the elapsed row above it with the peer lines present (FR-40), and the
+        // peer lines pay for no part of either.
         let pending_clock =
             bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 0, false);
         let pending_both =
             bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 2, false);
-        assert_eq!(pending_clock, 1, "the clock's row alone");
-        assert_eq!(pending_both, 3, "clock + two peer rows: additive");
+        assert_eq!(pending_clock, 2, "the prompt span and its elapsed row alone");
+        assert_eq!(pending_both, 4, "block + two peer rows: additive");
         let prompt = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 2, false);
         let bare = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 0, false);
         assert_eq!(prompt, bare + 2, "the prompt block's rows are not taken");
@@ -7400,14 +7409,17 @@ mod tests {
         // The drawer's budget: peer rows ride beneath the pinned block on the
         // scrolled screen, and the body must shrink by exactly that many rows.
         let height = 24usize;
-        let bottom = 1u16; // the pinned clock
+        // The running block: the prompt span on the bottom row and the elapsed
+        // row directly above it (FR-40).
+        let bottom = bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 0, false);
+        assert_eq!(bottom, 2, "the prompt span plus the elapsed row above it");
         let body = crate::scroll::body_rows(height, bottom + 2);
-        assert_eq!(body, 21, "two peer rows cost two body rows, not the clock's");
+        assert_eq!(body, 20, "two peer rows cost two body rows, not the block's");
         // The overlay bottom block and the live-screen budget agree.
         let peers: Vec<String> = vec!["peer alpha · 1.0s".to_string()];
         let budget =
             bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, peers.len(), false);
-        assert_eq!(budget, 1 + peers.len() as u16);
+        assert_eq!(budget, bottom + peers.len() as u16);
     }
 
     #[test]
@@ -7451,33 +7463,38 @@ mod tests {
     }
 
     #[test]
-    fn the_clock_stays_the_bottom_row_with_subagents_pinned() {
-        // FR-22 with FR-23 present: the pinned zone's bottom block is the
-        // screen's last row whatever the live children count, the subagent
-        // stack fills the rows from the zone's first row downward (the newest
-        // nearest the clock, AS-26), and the wheel's range ends above the
-        // topmost row. Fold check: the shipped beneath-the-block shape (peers
-        // at `body + 1 + i`, the clock at `body`) fails the bottom-row pin.
+    fn the_prompt_span_holds_the_bottom_rows_with_subagents_pinned() {
+        // FR-40 (D-61) re-derives FR-22/FR-23's geometry: the pinned block's
+        // bottom-most rows are the prompt span in every state — the live
+        // screen's four-region order — so with n live children the peer rows
+        // stack above the span and the span still ends the screen. Fold check:
+        // the shipped clock-at-the-bottom stack (the clock on the screen's last
+        // row, the prompt span dropped) fails the bottom-rows assert.
         let height = 24usize;
-        for n in 0..4u16 {
-            let body = crate::scroll::body_rows(height, 1 + n);
-            let plan = subagent_row_plan(body, n as usize);
+        let prompt_rows = 1u16;
+        for n in 0..4usize {
+            let plan = scrolled_block_plan(prompt_rows, n, false, false);
+            assert_eq!(plan.rows, n as u16 + prompt_rows, "peers + the span");
             assert_eq!(
-                plan.bottom, (height - 1) as u16,
-                "with {n} subagent(s) the clock is still the screen's bottom row"
+                plan.prompt_top, n as u16,
+                "with {n} subagent(s) the peer rows stack above the span"
             );
+            // The block owns the screen's bottom rows: `body_rows` leaves
+            // exactly the plan's rows under the log.
+            let body = crate::scroll::body_rows(height, plan.rows);
             assert_eq!(
-                plan.peers.first().copied().unwrap_or(plan.bottom),
-                body as u16,
-                "the stack begins at the zone's first row, outside the wheel's range"
+                body as u16 + plan.rows,
+                height as u16,
+                "the block owns the screen's bottom rows whatever the child count"
             );
         }
-        // Row order: a downward painter takes the composer's list top-down, so
-        // the first row is the oldest child and the last is the newest — the
-        // one nearest the clock.
-        let body = crate::scroll::body_rows(height, 3);
-        let plan = subagent_row_plan(body, 2);
-        assert!(plan.peers[0] < plan.peers[1] && plan.peers[1] < plan.bottom);
+        // A running turn inserts the elapsed row between the peers and the
+        // span, so the span still ends the screen and the elapsed row is its
+        // top neighbour (FR-40, AS-26's bottom-up order).
+        let running = scrolled_block_plan(prompt_rows, 2, true, false);
+        assert_eq!(running.run_row, Some(2), "the elapsed row sits above the span");
+        assert_eq!(running.run_row.unwrap() + 1, running.prompt_top);
+        assert_eq!(running.rows, 4, "two peers + the elapsed row + the span");
     }
 
     #[test]
@@ -7501,6 +7518,7 @@ mod tests {
                 "peer beta · 2.0s".to_string(),
             ],
             None,
+            None,
         );
         assert_eq!(
             renderer.peer_rows, 2,
@@ -7519,14 +7537,15 @@ mod tests {
 
     #[test]
     fn the_scrolled_prompt_pin_carries_the_marker_row() {
-        // FR-25b (D-28): with the view off the bottom and the prompt pinned,
-        // the marker takes one extra row beneath the block — the drawer's and
-        // the wheel/drag budgets grow by exactly that row, so the wheel's
-        // range and the draw agree on where the body ends. The marker paints
-        // outside the tracked counters; a marker whose rows were counted into
-        // `peer_rows`/`cursor_row` (the fold: counting it) would make the
-        // erase climb over the block's own row. No row when the view is at
-        // the bottom (the shipped shape).
+        // FR-39 (D-60): with the view off the bottom and the prompt pinned, the
+        // marker stands on the row **immediately above** the block's first row —
+        // not beneath the block's last row as the shipped shape painted it. The
+        // drawer's budget and the wheel/drag budgets grow by exactly that row,
+        // so the wheel's range and the draw agree on where the body ends. The
+        // marker is part of the tracked region now, so `cursor_row` counts it
+        // and the next render's erase climbs past it. Fold check: the shipped
+        // beneath-the-block place fails the place asserts here and the
+        // `cursor_row` fold below.
         let mut renderer = PromptRenderer::new();
         let mut stdout = std::io::stdout();
         renderer.render(
@@ -7537,43 +7556,103 @@ mod tests {
             &InputState::new(),
             None,
             &[],
+            None,
             Some(SCROLLED_MARK),
         );
+        // The marker is printed above the block's one row, so the tracked
+        // region is two rows ending on the prompt row (cursor row 0 relative to
+        // the prompt); the fold counts the row above it.
         assert_eq!(renderer.peer_rows, 0);
-        assert_eq!(renderer.cursor_row, 0);
-        // The helper is the shared arithmetic: one row off the bottom, none
-        // at it.
+        assert_eq!(
+            renderer.cursor_row, 1,
+            "the marker's row is inside the tracked region, above the block"
+        );
+        // The place, block-relative: no rows when the view is at the bottom;
+        // the marker directly above the span when it has moved.
+        let at_bottom = scrolled_block_plan(1, 0, false, false);
+        assert_eq!(at_bottom.marker_row, None, "no marker at the log's bottom");
+        assert_eq!(at_bottom.prompt_top, 0, "the span owns the bottom row");
+        let moved = scrolled_block_plan(1, 0, false, true);
+        assert_eq!(
+            moved.marker_row,
+            Some(0),
+            "the marker takes the row above the block's first row"
+        );
+        assert_eq!(
+            moved.prompt_top, 1,
+            "the prompt's first row is one below the marker"
+        );
+        assert_eq!(moved.rows, 2, "the marker's row joins the footprint");
+        // A wrapped prompt keeps the marker directly above its first row (AS-59)
+        let wrapped = scrolled_block_plan(3, 0, false, true);
+        assert_eq!(wrapped.marker_row, Some(0));
+        assert_eq!(wrapped.prompt_top, 1, "the marker is above the block's top");
+        assert_eq!(wrapped.rows, 4, "the span's three rows plus the marker");
+        // The helper is the shared arithmetic: one row off the bottom, none at
+        // it — and the three arithmetic sites all ask it.
         assert_eq!(scrolled_marker_rows(true), 1);
         assert_eq!(scrolled_marker_rows(false), 0);
-        // The budgets grow by exactly the helper's row (D-28): the pending
-        // branch (the clock pin) is gated by the same flag (D-27); the prompt
-        // branch takes the marker's row only when the view moved.
         let view_moved = scrolled_marker_rows(true) > 0;
-        let moved = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 2, view_moved);
-        let at_bottom = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 2, false);
-        assert_eq!(moved, at_bottom + 1, "the marker's row joins the budget");
+        let shifted = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 2, view_moved);
+        let still = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 2, false);
+        assert_eq!(shifted, still + 1, "the marker's row joins the budget");
+        // Mid-turn the same row joins the live composition's count (FR-40):
+        // the span, the elapsed row, the marker and the peers.
         let pending_moved =
             bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 0, view_moved);
-        assert_eq!(pending_moved, 2, "clock + marker under the D-27 gate");
+        assert_eq!(
+            pending_moved, 3,
+            "the span + the elapsed row + the marker"
+        );
     }
 
     #[test]
-    fn the_scrolled_screen_swaps_the_clock_for_the_marker() {
-        // FR-26a: while the view is off the bottom, the Status pin's single
-        // bottom row shows `Message below` instead of the spinner-and-elapsed
-        // display, and the row is the unchanged spinner row once the view is
-        // back. One row either way: the swap happens inside the row the pin
-        // already owns, so the wheel's range is untouched (the D-27 budget).
-        // The log's cleanliness rides on the row's producer:
-        // `overlay_status_row` keeps its shipped contract — the beat rows stay
-        // out of the scrollable history, pinned by
-        // `elapsed_clock_survives_scrolling_during_a_running_turn`.
-        let spinner = "⠋ 1.0s";
-        assert_eq!(pinned_status_text(spinner, true, 80), SCROLLED_MARK);
-        assert_eq!(pinned_status_text(spinner, false, 80), spinner);
-        // Both faces ride the same one-row cut, so a narrow terminal swaps
-        // cleanly too.
-        assert_eq!(pinned_status_text("⠋ 123.4s", true, 8), "Messag…");
+    fn the_scrolled_screen_keeps_the_elapsed_row_and_adds_the_marker() {
+        // FR-40 (D-61) re-derives FR-26a's swap. The shipped shape replaced the
+        // elapsed row with `Message below` in the one row the Status pin owned,
+        // so a running turn's clock vanished as soon as the log was scrolled.
+        // The corrected composition keeps the elapsed row on screen and adds
+        // the marker beside it: the span at the bottom rows, the elapsed row
+        // above it, the marker above that (FR-39's place), the peers above.
+        // Fold check: the shipped single-row swap (the marker in the clock's
+        // row, the elapsed row withheld) fails the "the clock is still drawn"
+        // assert.
+        let running = scrolled_block_plan(1, 0, true, true);
+        assert_eq!(
+            running.run_row,
+            Some(0),
+            "the elapsed row stays, on the row above the span"
+        );
+        assert_eq!(
+            running.marker_row,
+            Some(1),
+            "the marker takes the row above the elapsed row"
+        );
+        assert_eq!(running.prompt_top, 2, "the span owns the bottom row");
+        assert_eq!(running.rows, 3, "the elapsed row, the marker, the span");
+        // Both rows are drawn, so the composition carries them both — the one
+        // row the shipped swap could show becomes three.
+        let shipped_swap_rows = 1u16;
+        assert!(
+            running.rows > shipped_swap_rows,
+            "the corrected pin is taller than the swap it replaces: {} > {}",
+            running.rows,
+            shipped_swap_rows
+        );
+        // At the log's bottom there is no marker and the elapsed row stands
+        // directly above the span, as the live screen draws it.
+        let at_bottom = scrolled_block_plan(1, 0, true, false);
+        assert_eq!(at_bottom.marker_row, None);
+        assert_eq!(at_bottom.run_row, Some(0));
+        assert_eq!(at_bottom.prompt_top, 1);
+        assert_eq!(at_bottom.rows, 2, "the elapsed row above the span");
+        // With no turn tracked the marker's row and the span are the whole
+        // block: the shipped not-running prompt pin, with the marker's place
+        // corrected (FR-39).
+        let idle = scrolled_block_plan(1, 0, false, true);
+        assert_eq!(idle.run_row, None, "no elapsed row without a turn");
+        assert_eq!(idle.marker_row, Some(0));
+        assert_eq!(idle.rows, 2);
     }
 
     #[test]
@@ -7699,13 +7778,13 @@ mod tests {
         for i in 0..30 {
             crate::scroll::record_line(&format!("log line {i}"));
         }
-        // A running turn's pin: one bottom row, so the wheel's body is
-        // height minus that row — the clock row is never part of the
-        // scrollable range.
+        // A running turn's pin: the prompt span and the elapsed row above it
+        // (FR-40), so the wheel's body is height minus those rows — neither
+        // is ever part of the scrollable range.
         let bottom = bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 0, false);
-        assert_eq!(bottom, 1, "the tracked turn pins one row");
+        assert_eq!(bottom, 2, "the tracked turn pins the span and its clock");
         let body = crate::scroll::body_rows(24, bottom);
-        assert_eq!(body, 23);
+        assert_eq!(body, 22);
         let mut overlay = ScrollOverlay::new();
         let _max = crate::scroll::with(|t| crate::scroll::max_offset(t, 80, body)).unwrap();
         overlay.wheel(true, 80, body);
