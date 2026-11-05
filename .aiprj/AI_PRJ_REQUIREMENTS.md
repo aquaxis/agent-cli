@@ -5,8 +5,11 @@ Cycle: "the codex-code backend — the installed codex CLI is driven the way the
 claude-code backend drives `claude`, as a ninth `provider.kind` with its own
 `[provider.codex-code]` section, and it is documented, version-carried and
 pushed"
-(FR-44 a/b/c)
-(`.aiprj/instructions.md`, rewritten 2026-11-05 16:46 (+0900))
+(FR-44 a/b/c/d)
+(`.aiprj/instructions.md`, rewritten 2026-11-05 16:46 (+0900), then
+2026-11-05 17:37 (+0900) — the same ask clause, the later rewrite adding
+the standing delivery sentence 「機能追加した場合は、ドキュメント更新、
+example更新、マイナーバージョンアップ、commit, push」)
 Paired with: `AI_PRJ_DESIGN.md`, `AI_PRJ_TASKS.md`
 
 ---
@@ -53,7 +56,12 @@ cycle's own record (§12).
 `.aiprj/instructions.md` as reloaded in this session (rewritten
 2026-11-05 16:46:10.974056706 +0900, 365 bytes; sha256
 `918d14a7d104579e62a53ecc914cb103e592c2f2e1b2dfe0e124a4cc77f1bb22`;
-verified byte-exact at this session's gates and re-verified at exit):
+**rewritten again 2026-11-05 17:37:34.229351159 +0900, 421 bytes; sha256
+`b9799f5eef663a67e9013977a34883cb1a0e988444c8a5bf4e57fb7ce6c792b3` — the
+same ask clause, the last rewrite adding the standing delivery sentence
+after 「作業は多角サブエージェント解析で実施する」, quoted in full at
+§2b below; verified byte-exact at this session's gates and re-verified
+at exit**):
 
 ````text
 # agent-cliの機能追加
@@ -67,17 +75,38 @@ claude codeへのアクセスと同様にcodexへのアクセスを実装して�
 完成後、マイナーバージョンアップ、commit, pushする
 ````
 
+### 2b. The instruction after the 17:37 rewrite (the governing text, 421 bytes)
+
+````text
+# agent-cliの機能追加
+
+作業は多角サブエージェント解析で実施する
+機能追加した場合は、ドキュメント更新、example更新、マイナーバージョンアップ、commit, push
+
+## 最優先事項
+
+claude codeへのアクセスと同様にcodexへのアクセスを実装してください
+ドキュメント、config.tomlのテンプレートなどの更新を実施して下さい
+
+````
+
 (Translation: **Feature additions to agent-cli. The work is to be performed
-by multi-angle subagent analysis. Top priority — implement codex access
-the same way claude code access is implemented. Carry out the updates of
-the documentation, the config.toml template, and so on. After completion,
-a minor version bump, a commit, a push.**)
+by multi-angle subagent analysis. When a feature is added, the
+documentation is updated, the example is updated, a minor version bump,
+a commit, a push. Top priority — implement codex access the same way
+claude code access is implemented. Carry out the updates of the
+documentation, the config.toml template, and so on.**)
 
 The instruction names three asks in order: **実装** (implement, the
 claude-code-like codex access), **更新** (update the docs and the
 config.toml template), and **完成後** (after completion — the minor
 version bump, the commit, the push). All three are this cycle's
-deliverables (FR-44a/b/c).
+deliverables (FR-44a/b/c), and the rewrite's standing post-addition
+sentence (「機能追加した場合は、ドキュメント更新、example更新、マイナー
+バージョンアップ、commit, push」) extends the cycle with **FR-44d** (the
+example amendment — the newest sample models, the shipped surfaces that
+quote them, the version carry 0.42.0 → 0.43.0, the commit and the push;
+design §1, D-70).
 
 ## 3. Baseline — verified in the tree at this update
 
@@ -120,6 +149,10 @@ cycle then make, per the trail rule, name it in the ledger's follow-up):
 - **FR-44c** — the completion: the minor version carry (0.41.0 → 0.42.0:
   `Cargo.toml` + `Cargo.lock` + the CHANGELOG heading), the commit, the
   push.
+- **FR-44d** — the standing post-addition clause's amendment (the
+  instruction as rewritten 17:37, the user's chat ask riding it): the
+  example's sample models stand at the newest ids, the surfaces that
+  quote them follow, and the version carries again (0.42.0 → 0.43.0).
 
 ### 4.2 Out of scope
 
@@ -134,6 +167,7 @@ cycle then make, per the trail rule, name it in the ledger's follow-up):
 | FR-44a | The implementation, standing in the tree per BL-M49 and named in the ledger: the `codex-code` backend behind the same `Provider` trait — delegation only (command_execution items never become agent-cli tool calls, capabilities carried accordingly), session continuity by codex's own thread id with the probe-verified exec-flag geometry, transports `items`/`oneshot`, session `persistent`/`ephemeral`, the sandbox/approval knobs codex-side, the resume-not-found and timeout recoveries, no gateway mode (recorded as not implementable, D-65's verdict carried), no system-prompt flag (the persona rides the turn payload). Wired end to end: `build()`, `provider.kind = "codex-code"`, the `[provider.codex-code]` table, the `--provider`/`spawn` lists, `providers`/`doctor`. |
 | FR-44b | The documentation updated: the two READMEs (「Eight backends」→「Nine」, the `codex-code` row in the backend table, the capability table's codex-code column, the claude-code-style section, the per-backend link), the guide `doc/providers/codex-code.md` (the prerequisites, the configuration, the key table, the delegation vs gateway question, the process model, the supported features, the verification, the known limitations, the troubleshooting — the claude-code guide's own shapes), `doc/config.md` (§2 the layout comment; §3 the kind row; the `[provider.codex-code]` item reference), and the CHANGELOG's 0.42.0 entry. Every statement bound to the code or a live probe. |
 | FR-44c | The completion: the minor version carry 0.41.0 → 0.42.0 (`Cargo.toml`, `Cargo.lock`, the CHANGELOG's `[0.42.0]` heading), the delivery commit(s) of the implementation and the documents (the trail rule — a commit's sha is nameable only from the commit that follows it — governs the naming), and the push to `origin/main`. |
+| FR-44d | The post-delivery amendment (the standing 機能追加 sentence of the instruction as rewritten 2026-11-05 17:37, on the user's chat ask): `example/config.example.toml` refreshed to the newest sample models, each evidenced live (claude `claude-opus-5-5`, claude-code `opus`, codex and codex-code `gpt-5.6-terra`, ollama `glm-5.3-flash:cloud`, opencode `claude-sonnet-5-5`, opencode-go `minimax-m3.1-flash`); the shipped sample surfaces that quote the example follow — the two READMEs (the backend tables, the sample blocks, the run examples, the verification-target and thinking sentences, opencode-go's prose), `doc/config.md` §3's defaults table and §4.2/§4.3's sample blocks, the per-backend guides (`claude.md`, `claude-code.md`, `codex.md`, `ollama.md`, `opencode.md`, `codex-code.md`), `doc/usage.md`, `doc/tools.md`, `doc/personas.md`, `doc/architecture.md`, `doc/troubleshooting.md`; the **code defaults untouched** (the `unwrap_or_else` fallbacks, `DEFAULT_CONFIG`'s own rows — shipped contracts, NFR-14). The live probe re-ran the verification target on the refreshed id: `glm-5.3-flash:cloud` answered `AIPROBE-93` (321B, thinking-streamed) — the id is live-verified, not just a catalogue pointer. The version carries again 0.42.0 → **0.43.0** (`Cargo.toml`, `Cargo.lock`, the CHANGELOG `[0.43.0]`), and the delivery commits the amendment per the standing clause. |
 
 ## 6. Boundary: FR-44 vs the shipped contracts
 
@@ -183,6 +217,7 @@ or a wire shape (NFR-14).
 | AS-66 | 「同様に」 carries the previous cycle's verdict forward as the measuring stick: the delegation semantics, the session continuity, the per-turn shape and the capabilities the claude-code backend gives the project (AS-64 of FR-43) are what the codex-code backend is built to match, within the codex CLI's own knobs (the sandbox/trust/approval flags, the thread-id session) and the recorded costs (no deltas, no gateway, no system-prompt flag). | Carried from D-65's verdict clauses and the requirements §3 of FR-43's cycle; applied in FR-44a. |
 | AS-67 | 「マイナーバージョンアップ」 is the minor bump 0.41.0 → **0.42.0** — the new backend is a feature (SemVer's minor), and the project's own trail carried 0.39→0.40→0.41 the same way. | Read from the tree's trail (BL-M51) and from SemVer; applied in FR-44c. |
 | AS-68 | The completion clause's 「commit, push」 means the delivery commits of this cycle's tree (implementation, docs, version carry, ledger) pushed to `origin/main`; a tag and a GitHub release are not named and stand unasked. | Read from the instruction and the tree's trail (§12's trail: releases are carries of a version the user names); applied in FR-44c. |
+| AS-69 | The FR-44d amendment's 「最新のモデル」 (newest models) means the newest ids each evidenced live at this update, within each backend's own contract — the example is a sample the user edits, not the code's defaults (NFR-14 shields `DEFAULT_CONFIG` and the `unwrap_or_else` fallbacks); the shipped surfaces that quote the example's pointers follow the new ids, the shipped default rows stand. | Read from the instruction's rewrite and the tree (the example vs `src/config.rs`'s shipped contracts); applied in FR-44d (design §1, D-70). |
 
 ## 11. Traceability
 
@@ -191,6 +226,7 @@ or a wire shape (NFR-14).
 | FR-44a | design §1 (D-67), §2 (TPR-26), §3 | T-97 |
 | FR-44b | design §1 (D-68), §2 (TPR-26), §3, §4 (W-67) | T-98 |
 | FR-44c | design §1 (D-69), §4 (W-67) | T-99 |
+| FR-44d | design §1 (D-70), §2 (TPR-26), §3, §4 (W-68) | T-100 |
 | NFR-13 | design §3 (the pins angle), §4 | T-97 |
 | NFR-15 | design §3 (the live-verdict angle, the argv falsification) | T-97 |
 | C-09 | design §4 (W-67) | T-97 |
@@ -252,5 +288,6 @@ v0.31.0 (`052e230`). **add strata** — v0.30.0–0.30.2 (`b706889`,
 | Item | State |
 |---|---|
 | FR-44 (the codex-code backend: implementation, docs, version, commit, push) | **Delivered.** The backend stands behind the same `Provider` trait with the probed delegation semantics (FR-44a; BL-M49; D-67), the documentation stands written everywhere the ask names (FR-44b; T-98), the version carried to **0.42.0** (FR-44c; the release files + the CHANGELOG `[0.42.0]`), the gates green at the close (**669 unit + 6 integration, 0 failed; clippy 0 warnings**), and the delivery committed and pushed (AC-37). The trail: the delivery commit(s) of this cycle's implementation tree, named in the ledger's follow-up per the trail rule. |
+| FR-44d (the post-delivery amendment: the example's newest sample models, the quoting surfaces, version 0.43.0, commit, push) | **Delivered.** `example/config.example.toml` carries the newest live-evidenced ids (claude `claude-opus-5-5`, claude-code `opus`, codex/codex-code `gpt-5.6-terra`, ollama `glm-5.3-flash:cloud` — AIPROBE-93, opencode `claude-sonnet-5-5`, opencode-go `minimax-m3.1-flash`); every shipped surface quoting the example follows (the two READMEs, `doc/config.md` §3/§4.2/§4.3, all eight providers guides, `doc/usage.md`, `doc/tools.md`, `doc/personas.md`, `doc/architecture.md`, `doc/troubleshooting.md`; D-70); the code defaults untouched (NFR-14); the version carried again **0.42.0 → 0.43.0** (CHANGELOG `[0.43.0]`); the gates stand green. |
 | FR-43 (the investigation, previous cycle) | Closed and standing (§12); its D-65/D-66 verdict is the shape this cycle implemented (D-67). |
-| State at exit | The instruction is re-verified byte-exact (365 bytes, sha256 `918d14a7…`, mtime 2026-11-05 16:46:10.974056706 +0900); the cycle is recorded in the three documents (FR-44 a/b/c, BL-M49–BL-M51, TPR-26, D-67–D-69, T-97–T-99, W-67, AC-37, AS-66–AS-68, C-12/C-14) and in the work log `2026-11-05_009.md` (embedding the instruction verbatim). The product tree stands at the version 0.42.0 with the gates green; the delivery and its ledger follow-up make the cycle's commits, pushed to `origin/main` (C-14, FR-44c); the FR-43 cycle's ledger rewrite rode the delivery commit together with the FR-44 record, and the delivery commit's sha is named in the ledger's follow-up per the trail rule (the work log `2026-11-05_010.md`). |
+| State at exit | The instruction as rewritten 2026-11-05 17:37 is re-verified byte-exact (421 bytes, sha256 `b9799f5e…`, mtime 2026-11-05 17:37:34 +0900) at the cycle's exit; the cycle is recorded in the three documents (FR-44 a/b/c/d, BL-M49–BL-M51, TPR-25/26, D-67–D-70, T-97–T-100, W-67/68, AC-37, AS-66–AS-69, C-08/C-09/C-12/C-14) and in the work logs `_009`/`_011` (each embedding the instruction verbatim). |

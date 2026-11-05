@@ -5,9 +5,12 @@ Cycle: "the codex-code backend — the installed codex CLI is driven the way the
 claude-code backend drives `claude`, as a ninth `provider.kind` with its own
 `[provider.codex-code]` section, and it is documented, version-carried and
 pushed"
-(FR-44 a/b/c)
+(FR-44 a/b/c/d)
 (`.aiprj/instructions.md`, rewritten 2026-11-05 15:55 (+0900), then
-2026-11-05 16:46 (+0900))
+2026-11-05 16:46 (+0900), then 2026-11-05 17:37 (+0900) — the same ask
+clause each time, the last rewrite adding the standing delivery sentence
+「機能追加した場合は、ドキュメント更新、example更新、マイナーバージョン
+アップ、commit, push」)
 Paired with `AI_PRJ_REQUIREMENTS.md`, `AI_PRJ_TASKS.md`
 
 Requirement IDs (FR-/NFR-/AS-/AC-) refer to `AI_PRJ_REQUIREMENTS.md`.
@@ -97,10 +100,56 @@ recorded with the probes' own transcripts.
   this rewrite, and the carry commit afterwards names it from behind; the
   push sends both.
 
+- **D-70 — the post-delivery example amendment refreshes the sample
+  models everywhere the example surfaces, and re-carries the version.**
+  The user's chat ask (the newest sample models in
+  `example/config.example.toml`) and the instruction's rewritten standing
+  sentence (example更新 + マイナーバージョンアップ + commit, push after
+  any 機能追加) are recorded as **FR-44d** with task T-100. The example
+  file's sample models were refreshed to the newest ids, each evidenced
+  live (D-67's sandbox/trust defaults unchanged — the refresh touches the
+  example's pointers, not the code): claude `claude-opus-5-5`; claude-code
+  `opus` (the alias the running `~/.claude/settings.json` itself carries);
+  codex and codex-code `gpt-5.6-terra` (the Codex CLI's own live default,
+  `codex exec` verified on the probe machine; `gpt-6-luna` rejected by the
+  probe — its Chat Completions function calling requires
+  `reasoning_effort=none`, which the wire backend's shape has no knob
+  for); ollama `glm-5.3-flash:cloud` (the server's own newest-GLM pointer
+  when asked for a newer id); opencode local `claude-sonnet-5-5`; opencode
+  go `minimax-m3.1-flash` (the newest open-weights id with tools on the
+  `/zen/go/v1` catalogue; `hy4` newer but `open_weights: false` —
+  excluded). The same refresh reaches the shipped surfaces that quote the
+  example's pointers: the two READMEs' backend tables and sample blocks
+  and `doc/config.md` §4.2/§4.3's sample blocks stand at the ids above;
+  the guide `doc/providers/codex-code.md`'s sample `model` follows the
+  example (`gpt-5.6-terra`) with the omitted-model sentence unchanged
+  (omitting `model` remains the recommended shape — Codex's own default).
+  The shipped **code defaults** (the `unwrap_or_else` fallbacks in
+  `src/ai/claude.rs`/`codex.rs`/`ollama.rs`/`opencode.rs`,
+  `src/config.rs`'s own sample block) are **not** the example and stand
+  untouched (NFR-14's boundary; they are what an unset `model` resolves
+  to, and renaming them would be a behaviour change the ask does not
+  name). The version carries again **0.42.0 → 0.43.0** (the standing
+  sentence's マイナーバージョンアップ after the amendment), the CHANGELOG
+  carries the `[0.43.0]` entry, and the delivery/push machinery of D-69
+  governs the commits.
+
 The instruction's clauses map one-for-one onto the decisions: 実装 →
 D-67/D-68; ドキュメント & config sample → D-69 and the docs set; the
 method C-12 → AS-66 (the analysis the implementation is measured against);
 マイナーバージョンアップ → D-69's minor bump.
+
+**The post-delivery amendment (FR-44d, the user's chat ask — the sample
+models newest, the standing clause of the instruction as rewritten
+2026-11-05 17:37) adds D-70:** the example configuration is the surface
+the ask names, its sample models stand at the ids evidenced above, and
+the shipped surfaces that quote them (the two READMEs' backend tables
+and sample blocks, `doc/config.md` §4.2/§4.3's sample blocks, the guide's
+sample model) follow; the code's own defaults stand untouched — they
+record shipped contracts, which the example's pointers do not govern.
+The version carries **0.42.0 → 0.43.0** (`Cargo.toml`, `Cargo.lock`),
+the CHANGELOG's `[0.43.0]` entry recording the refresh, and the delivery
+commits are made and pushed per the standing clause.
 
 ## 2. The touchpoints this cycle touches (TPR-26)
 
@@ -141,6 +190,7 @@ method C-12 → AS-66 (the analysis the implementation is measured against);
 | Step | Check | Covers | Task | Status |
 |---|---|---|---|---|
 | W-67 | FR-44 — the backend implemented (the delivery: `src/ai/codex_code.rs`, the dispatch, the config surface, the CLI/provider lists, the sample config, the docs set), the delivery clause satisfied in full — docs, config sample, the minor version carry to **0.42.0** | FR-44a, FR-44b, FR-44c, NFR-11, NFR-14, NFR-15, AS-66, AS-67, AS-68, C-14, TPR-26 | T-97, T-98, T-99 | ✅ |
+| W-68 | FR-44d — the post-delivery amendment delivered: the example's sample models refreshed to the newest live-evidenced ids, every shipped surface quoting the example follows (the two READMEs, `doc/config.md`, the providers guides, `doc/usage.md`/`doc/tools.md`/`doc/personas.md`/`doc/architecture.md`/`doc/troubleshooting.md`), the code defaults untouched (NFR-14), the version carry to **0.43.0** (the CHANGELOG `[0.43.0]`), the commit and the push per the standing clause | FR-44d, NFR-14, AS-69, D-70, TPR-26 | T-100 | ✅ |
 
 *The row stands ✅ at the recorded tip: the gates ran green at the close
 (**669 unit + 6 integration, 0 failed**; clippy **0 warnings**), the live

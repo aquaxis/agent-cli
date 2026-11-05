@@ -162,12 +162,12 @@ Per-backend defaults:
 
 | kind | model default | base_url default | api_key_env default |
 |------|-----------|---------------|-------------------|
-| claude | `claude-opus-4-7` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
-| codex | `gpt-4.1` | `https://api.openai.com/v1` | `OPENAI_API_KEY` (omitting `api_key_env` is now keyless: no header is sent) |
+| claude | `claude-opus-5-5` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
+| codex | `gpt-5.6-terra` | `https://api.openai.com/v1` | `OPENAI_API_KEY` (omitting `api_key_env` is now keyless: no header is sent) |
 | strata | `strata` | `http://127.0.0.1:8080/v1` | (none — keyless by default) |
-| ollama | `glm-5.1:cloud` | `http://127.0.0.1:11434` | (not needed) |
-| opencode | `claude-sonnet-4-5` | `http://127.0.0.1:4096` (local) / `https://opencode.ai/zen/v1` (when key set) | (none = local; set = cloud, e.g. `OPENCODE_API_KEY`) |
-| opencode-go | `qwen3.8-max` (also defaults `api = "openai"`) | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
+| ollama | `glm-5.3-flash:cloud` | `http://127.0.0.1:11434` | (not needed) |
+| opencode | `claude-sonnet-5-5` | `http://127.0.0.1:4096` (local) / `https://opencode.ai/zen/v1` (when key set) | (none = local; set = cloud, e.g. `OPENCODE_API_KEY`) |
+| opencode-go | `minimax-m3.1-flash` (also defaults `api = "openai"`) | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
 | llama.cpp | `default` | `http://127.0.0.1:8080` | (optional) |
 
 ### `[provider.claude-code]`
@@ -521,11 +521,11 @@ kind = "claude"
 
 [provider.claude]
 api_key_env = "ANTHROPIC_API_KEY"
-model       = "claude-opus-4-7"
+model       = "claude-opus-5-5"
 thinking    = true
 
 [provider.ollama]
-model    = "glm-5.1:cloud"
+model    = "glm-5.3-flash:cloud"
 base_url = "http://127.0.0.1:11434"
 
 [runtime]
@@ -565,17 +565,17 @@ kind = "claude"
 
 [provider.claude]
 api_key_env = "ANTHROPIC_API_KEY"
-model       = "claude-opus-4-7"
+model       = "claude-opus-5-5"
 base_url    = "https://api.anthropic.com"
 thinking    = true
 
 [provider.codex]
 api_key_env = "OPENAI_API_KEY"
-model       = "gpt-4.1"
+model       = "gpt-5.6-terra"
 base_url    = "https://api.openai.com/v1"
 
 [provider.ollama]
-model    = "glm-5.1:cloud"
+model    = "glm-5.3-flash:cloud"
 base_url = "http://127.0.0.1:11434"
 
 [provider."llama.cpp"]

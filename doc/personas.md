@@ -294,12 +294,12 @@ The persona's `model` / `temperature` are only overridden on the **active provid
 ---
 name: alice
 role: Strict code reviewer
-model: claude-opus-4-7
+model: claude-opus-5-5
 temperature: 0.1
 ---
 ```
 
-- Launching with `agent-cli run --provider claude --name alice` using the above persona overrides `provider.claude.model` to `claude-opus-4-7` and `provider.claude.temperature` to `0.1`.
+- Launching with `agent-cli run --provider claude --name alice` using the above persona overrides `provider.claude.model` to `claude-opus-5-5` and `provider.claude.temperature` to `0.1`.
 - If launched with `--provider ollama`, the same values are written to `provider.ollama.model` / `provider.ollama.temperature` (note that model names may not be compatible across providers).
 - If the CLI `--model` is also used, the CLI override is applied first, then the persona override (the persona wins in the end).
 - With `--provider claude-code`, `model` is honoured — it becomes the CLI's
@@ -485,7 +485,7 @@ The `persona` field in `<registry_dir>/<agent-id>.json`:
   "id": "agent-01HX...",
   "name": "alice",
   "provider": "claude",
-  "model": "claude-opus-4-7",
+  "model": "claude-opus-5-5",
   "socket": "/tmp/agent-cli/agent-01HX....sock",
   "persona": {
     "role": "Code reviewer",

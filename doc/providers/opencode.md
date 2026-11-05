@@ -48,7 +48,7 @@ kind = "opencode"
 base_url    = "https://opencode.ai/zen/go/v1"
 api         = "openai"
 api_key_env = "OPENCODE_API_KEY"
-model       = "qwen3.8-max"
+model       = "minimax-m3.1-flash"
 ```
 
 You can still override individual defaults by setting them explicitly in
@@ -94,7 +94,7 @@ kind = "opencode"
 
 [provider.opencode]
 base_url = "http://127.0.0.1:4096"
-model    = "claude-sonnet-4-5"        # a model your opencode instance serves
+model    = "claude-sonnet-5-5"        # a model your opencode instance serves
 # persistent_session = true           # opt-in; see below
 ```
 
@@ -104,7 +104,7 @@ Cloud mode (OpenCode Zen) — set `api_key_env`; presence switches to cloud:
 [provider.opencode]
 base_url    = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
-model       = "claude-sonnet-4-5"
+model       = "claude-sonnet-5-5"
 ```
 
 ## Cloud Wire Format — `api` (OpenAI vs Anthropic compatible)
@@ -126,7 +126,7 @@ endpoint:
 base_url    = "https://opencode.ai/zen/go/v1"   # → POST .../zen/go/v1/messages
 api         = "anthropic"
 api_key_env = "OPENCODE_API_KEY"
-model       = "qwen3.8-max"                     # a model the endpoint serves
+model       = "minimax-m3.1-flash"                     # a model the endpoint serves
 ```
 
 OpenAI-compatible "go" endpoint: same but `api = "openai"` (or omit) →

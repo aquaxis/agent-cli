@@ -15,7 +15,7 @@ kind = "claude"
 
 [provider.claude]
 api_key_env  = "ANTHROPIC_API_KEY"
-model        = "claude-opus-4-7"
+model        = "claude-opus-5-5"
 base_url     = "https://api.anthropic.com"   # usually leave as-is
 thinking     = true                           # enable thinking blocks
 prompt_cache = false                          # opt-in; see "Prompt Caching"
@@ -35,7 +35,7 @@ See [`doc/config.md`](../config.md) §11.1.
 
 | Use case | Model |
 |----------|-------|
-| Reasoning-focused / code generation | `claude-opus-4-7` |
+| Reasoning-focused / code generation | `claude-opus-5-5` |
 | Balanced | `claude-sonnet-4-6` |
 | Lightweight / fast | `claude-haiku-4-5-20251001` |
 

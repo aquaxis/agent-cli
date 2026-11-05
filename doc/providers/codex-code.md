@@ -30,7 +30,7 @@ kind = "codex-code"
 
 [provider.codex-code]
 bin       = "codex"        # executable name (resolved via PATH) or full path
-model     = "gpt-5.1"      # -m; omit for Codex's own default
+model     = "gpt-5.6-terra"  # -m; omit for Codex's own default
 transport = "items"        # "items" (--json item stream) | "oneshot"
 session   = "persistent"   # "persistent" | "ephemeral"
 sandbox   = "workspace-write"  # -s: read-only | workspace-write | danger-full-access

@@ -5,8 +5,11 @@ Cycle: "the codex-code backend — the installed codex CLI is driven the way the
 claude-code backend drives `claude`, as a ninth `provider.kind` with its own
 `[provider.codex-code]` section, and it is documented, version-carried and
 pushed"
-(FR-44 a/b/c) (`.aiprj/instructions.md`, rewritten 2026-11-05 15:55 (+0900),
-re-rewritten 2026-11-05 16:46 (+0900))
+(FR-44 a/b/c/d) (`.aiprj/instructions.md`, rewritten 2026-11-05 15:55 (+0900),
+re-rewritten 2026-11-05 16:46 (+0900), then 2026-11-05 17:37 (+0900) — the
+same ask clause each time, the last rewrite adding the standing delivery
+sentence 「機能追加した場合は、ドキュメント更新、example更新、マイナー
+バージョンアップ、commit, push」)
 Paired with `AI_PRJ_REQUIREMENTS.md`, `AI_PRJ_DESIGN.md`.
 
 Status: ⬜ not started / 🟨 in progress / ✅ done / ⛔ blocked
@@ -22,9 +25,10 @@ The instruction (rewritten 2026-11-05 15:55:07 +0900; re-rewritten
 made explicit) names one new ask: **implement** codex access the way the
 claude-code access is implemented, and then update the docs and the config
 template and **carry a minor version, commit and push**. The ask is
-recorded as **FR-44** a/b/c (the backend, the wiring, the docs, the
-release) with the baselines verified in the tree (BL-M49–BL-M51), the
-design decisions **D-67/D-68/D-69** and the tasks **T-97/T-98/T-99** below.
+recorded as **FR-44** a/b/c/d (the backend, the wiring, the docs, the
+release, and the post-delivery example amendment) with the baselines
+verified in the tree (BL-M49–BL-M51), the design decisions
+**D-67/D-68/D-69/D-70** and the tasks **T-97/T-98/T-99/T-100** below.
 
 **The ask is delivered.** The backend is `src/ai/codex_code.rs` — one
 `codex exec` spawn per turn, `--json` items or one-shot, the session
@@ -68,8 +72,8 @@ The ask's baselines, as the tree stood when each was verified:
 |---|---|---|---|---|---|
 | T-95 | The investigation and its report (FR-43a/FR-43b/FR-43c): the six mechanisms the claude-code pattern depends on — dispatch/construction, session continuity, tool ownership, streaming granularity, persona/system-prompt surface, trust and approvals — each answered against the codex CLI's live surface (probes on the installed binary plus the tree's citations, every claim bound to a transcript or a `file:line`, unprobed surfaces recorded as unprobed); the multi-angle subagent analysis performed and reconciled, the probe deciding disagreements; the verdict, the mapping, the costs and the future shape written into the requirements (§1, §3) and the design (D-65, D-66) | FR-43a, FR-43b, FR-43c, NFR-11, NFR-15, C-12 | design §1 (D-65), §2 (TPR-25), §3 | — | ✅ |
 | T-96 | The cycle's record and consistency (Art. 2, C-08): the three documents written from the probed evidence with the shared identifiers (FR-43 a/b/c, BL-M46–BL-M48, TPR-25, D-65/D-66, W-66, T-95/T-96, AC-36, AS-63–AS-65), mutually consistent; the boundary §6's shipped contracts named untouched; the instruction re-verified byte-exact at exit; the work log written per Art. 6/7; no product source, config, test, pin, release or version change | — (NFR-12, NFR-13, NFR-14, C-08, C-09, C-13, AC-36) | design §3 (the docs angle), §4 (W-66) | T-95 | ✅ |
-| T-97 | The backend (FR-44a; design §1 D-67, §2 TPR-26): `src/ai/codex_code.rs` — the codex sibling of `claude_code.rs`, built on the investigation's probes (BL-M47): delegation only, thread-id session, the transports `items`/`oneshot`, session `persistent`/`ephemeral`, the sandbox/trust knobs codex-side, the resume-not-found and timeout recoveries, no gateway mode (D-65's recorded gap), the persona riding the turn payload |
-| T-98 | The wiring, the pins and the docs (FR-44a/FR-44b; design §1 D-68, §2 TPR-26): the dispatch `build()` arm and `SUPPORTED`, the `[provider.codex-code]` slot (`codex_code` field, `provider_entry`/`_mut` arms, the sample block in `DEFAULT_CONFIG`), `providers()`/`doctor()`'s arms, the `--provider`/`spawn` lists, and the docs set — the two READMEs (「Eight backends」→「Nine」, the backend row, the capability column, the claude-code-style section, the link), the guide `doc/providers/codex-code.md`, `doc/config.md` §2/§3, the CHANGELOG `[0.42.0]` — every statement bound to the code or a live probe |
+| T-97 | The backend (FR-44a; design §1 D-67, §2 TPR-26): `src/ai/codex_code.rs` — the codex sibling of `claude_code.rs`, built on the investigation's probes (BL-M47): delegation only, thread-id session, the transports `items`/`oneshot`, session `persistent`/`ephemeral`, the sandbox/trust knobs codex-side, the resume-not-found and timeout recoveries, no gateway mode (D-65's recorded gap), the persona riding the turn payload | FR-44a, NFR-13, NFR-15, C-09 | design §1 (D-67), §2 (TPR-26), §3 | T-96 | ✅ |
+| T-98 | The wiring, the pins and the docs (FR-44a/FR-44b; design §1 D-68, §2 TPR-26): the dispatch `build()` arm and `SUPPORTED`, the `[provider.codex-code]` slot (`codex_code` field, `provider_entry`/`_mut` arms, the sample block in `DEFAULT_CONFIG`), `providers()`/`doctor()`'s arms, the `--provider`/`spawn` lists, and the docs set — the two READMEs (「Eight backends」→「Nine」, the backend row, the capability column, the claude-code-style section, the link), the guide `doc/providers/codex-code.md`, `doc/config.md` §2/§3, the CHANGELOG `[0.42.0]`, `example/config.example.toml` and the usage/tools kind lists — every statement bound to the code or a live probe. The post-delivery amendment (the user's chat ask, the standing post-addition clause of the instruction as rewritten 2026-11-05 17:37) updated `example/config.example.toml` further: the `codex-code` block joined (with the sample model refreshed to `gpt-5.6-terra`, the Codex CLI's own live default on the probe machine, `codex exec` verified) and the sample model lines of the other blocks were refreshed to the newest ids, each evidenced live (claude `claude-opus-5-5`; claude-code `opus`, the alias the running `~/.claude/settings.json` itself carries; codex `gpt-5.6-terra`, the Chat Completions page naming function calling Supported; ollama `glm-5.3-flash:cloud`, the server's own newest-GLM pointer; opencode local `claude-sonnet-5-5`; opencode-go `minimax-m3.1-flash`, the newest open-weights id (`open_weights: true`, tools) on the `/zen/go/v1` catalog; the two usage/tools kind lists joined) | FR-44a, FR-44b, NFR-12, NFR-14, C-08, C-13 | design §1 (D-68), §2 (TPR-26), §3 (the docs angle), §4 (W-67) | T-97 | ✅ |
 | T-99 | The completion (FR-44c; design §1 D-69, §4 W-67): the version carry 0.41.0 → 0.42.0 (`Cargo.toml`, `Cargo.lock`, the CHANGELOG's `[0.42.0]` heading), the delivery commit(s) pushed to `origin/main` (AS-68), the ledger's rewrite riding the delivery commit, its sha named in the follow-up per the trail rule (a commit's sha is nameable only from the commit that follows it), the instruction re-verified byte-exact at exit | — (NFR-12, NFR-13, NFR-14, C-12, C-14, W-67, AC-37) | design §1 (D-69), §4 (W-67) | T-97, T-98 | ✅ |
 
 Sections below the table are the execution record (Article 3) — written as
@@ -77,7 +81,14 @@ each task's status changes.
 
 ## The cycle's record
 
-- **The ask is an investigation, and its deliverable is the ledger.**
+- **The ask is delivered.** FR-44a (the backend), FR-44b (the docs) and
+  FR-44c (the release) stand as T-97/T-98/T-99 below record them, and
+  FR-44d (the post-delivery example amendment: the newest sample models,
+  the missing config-template block, the usage/tools kind lists, the
+  shipped-README/doc sample refresh, the version carry to 0.43.0) as
+  T-100 records it.
+
+- **The ask was an investigation, and its deliverable was the ledger.**
   「調査して報告して下さい」 names two verbs: investigate and report. No
   implementation is asked for and none is made (the requirements' §3.1;
   D-66); the verdict stands in the documents where the next cycle can
@@ -113,8 +124,8 @@ them (BL-M46 for the shipped pattern):
    here, and BL-M47 is the evidence both ways).
 2. **Session continuity — yes, by codex's own id.** The first turn's
    `thread.started` hands over `thread_id`; `codex exec resume
-   <thread_id> --json` continues the thread codex-side ��� five probes on
-   one thread with the history accumulating (`input_tokens` 13,094 →
+   <thread_id> --json` continues the thread codex-side — five probes on one
+   thread with the history accumulating (`input_tokens` 13,094 →
    26,208 → 39,342 → 52,496, mostly cached) and the transcript never
    re-sent. This is claude-code's `session = "persistent"` behaviour
    reached with one spawn per turn; the resume subcommand **is** the
@@ -353,3 +364,45 @@ by FR-40; **add strata (FR-13–FR-17)** — v0.30.0–0.30.2 (`b706889`,
 v0.28.0 (`d237a7a`), v0.27.0 (`afcbe70`); **the mouse input cycle** —
 v0.25.0 (`3884d16`) with the three 機能追加 addenda closed as v0.26.0
 (`251a5bb`).
+
+## T-100 — the post-delivery amendment (✅, depends on T-99)
+
+Delivered. The user's chat ask (「example/config.example.tomlのサンプルモ
+デルを最新のモデルにして」) rode the standing post-addition clause of the
+instruction as rewritten 2026-11-05 17:37 as **FR-44d**:
+
+1. `example/config.example.toml`: the `codex-code` block joined ahead of
+   `--- OpenAI (Codex) ---` and every sample `model` refreshed to the
+   newest ids, each evidenced live — claude `claude-opus-5-5` (the
+   Anthropic lineup the docs name), claude-code `opus` (the alias the
+   running `~/.claude/settings.json` itself carries), codex and codex-code
+   `gpt-5.6-terra` (the Codex CLI's own live default, `codex exec -m`
+   verified; the `gpt-6*` ids ChatGPT auth rejects), ollama
+   `glm-5.3-flash:cloud` (the server's own newest-GLM pointer after it
+   rejected `glm-5.4`), opencode local `claude-sonnet-5-5`, opencode-go
+   `minimax-m3.1-flash` (the newest open-weights id with tools on the
+   `/zen/go/v1` catalogue; `hy4` not open-weights).
+2. The shipped sample surfaces the READMEs and `doc/config.md` carry were
+   refreshed to the same ids — the READMEs' backend tables now
+   `claude-opus-5-5` / `gpt-5.6-terra` / `glm-5.3-flash:cloud` /
+   `claude-sonnet-5-5` (and `opencode-go`'s row to `minimax-m3.1-flash`
+   with its API text), the sample blocks the same, `doc/config.md` §4.3's
+   full-featured block too — because the user's ask (「ドキュメント更新」
+   as the standing clause reads) names the documentation; `doc/config.md`
+   §4.2's verification block and the two READMEs' ollama verification
+   sentences moved to `glm-5.3-flash:cloud` — the refreshed id was itself
+   re-verified live (`glm-5.3-flash:cloud` answered `AIPROBE-93`,
+   thinking-streamed, 321B), so the verification target is a
+   live-tested engine on the newest id, not a catalogue pointer — and
+   `src/config.rs`'s
+   `DEFAULT_CONFIG` and the `unwrap_or_else` fallbacks stand untouched
+   (NFR-14: shipped contracts).
+3. The kind lists in `doc/usage.md` and `doc/tools.md` name `codex-code`
+   (the join the delivery commit left out of the two lists).
+4. The version carried **0.42.0 → 0.43.0** (`Cargo.toml`, `Cargo.lock`),
+   the CHANGELOG's `[0.43.0]` entry recording the refresh.
+
+Depends on: T-99.
+
+Design trace: design §2 (TPR-26), §4 (W-68).
+

@@ -4,6 +4,25 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.43.0]
+
+### Changed
+
+- **The example configuration's sample models stand at the newest ids, each
+  evidenced live.** `example/config.example.toml` — the commented template
+  pointing at [`doc/config.md`](doc/config.md) — refreshed its `model`
+  lines: claude `claude-opus-5-5` and opencode `claude-sonnet-5-5` (the
+  Anthropic lineup the docs name), claude-code `opus` (the alias the
+  running `~/.claude/settings.json` itself carries), codex and codex-code
+  `gpt-5.6-terra` (the Codex CLI's own live default, `codex exec` verified),
+  ollama `glm-5.3-flash:cloud` (the server's own newest-GLM pointer),
+  opencode-go `minimax-m3.1-flash` (the newest open-weights id with tools on
+  the `/zen/go/v1` catalogue). Shipped defaults in
+  `[provider.codex-code]` samples elsewhere are untouched — they record
+  the code's own defaults, not the example's pointers.
+- The `--provider`/spawn provider kind lists in `doc/usage.md` and
+  `doc/tools.md` name `codex-code` beside the other eight kinds.
+
 ## [0.42.0]
 
 ### Added

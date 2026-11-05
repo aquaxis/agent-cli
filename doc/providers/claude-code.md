@@ -28,7 +28,7 @@ kind = "claude-code"
 
 [provider.claude-code]
 bin       = "claude"       # executable name (resolved via PATH) or full path
-model     = "sonnet"       # --model; omit for Claude Code's own default
+model     = "opus"         # --model; omit for Claude Code's own default
 mode      = "delegation"   # "delegation" | "gateway"
 transport = "stream"       # "stream" | "oneshot"
 session   = "persistent"   # "persistent" | "ephemeral" (delegation only)

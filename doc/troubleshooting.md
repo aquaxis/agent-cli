@@ -161,7 +161,7 @@ per layer, so it should not. If it does:
   ```
 - Update `base_url` in your config to match the actual server.
 
-### `glm-5.1:cloud` not found
+### `glm-5.3-flash:cloud` not found
 
 - Cloud models in Ollama may not be available in your local environment.
 - Run `ollama list` to see available model names, and start with `--model <existing>`.
@@ -189,7 +189,7 @@ FAIL: provider error (opencode): HTTP 400 Bad Request
   ```bash
   curl -s -o /dev/null -w '%{http_code}\n' https://opencode.ai/zen/go/v1/chat/completions \
     -H "Authorization: Bearer $OPENCODE_API_KEY" -H 'content-type: application/json' \
-    -d '{"model":"qwen3.8-max","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
+    -d '{"model":"minimax-m3.1-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
   # 400 without, 200 with:
   #   -H 'x-opencode-session: ses_probe_0001'
   ```
@@ -464,9 +464,9 @@ for OSC 52, the prerequisites below.
 - During a session, switch to skip mode with `/auto on` (`/auto off` to return, `/auto status` to check).
 - To persist, add `[runtime] auto_approve_tools = true` to the config file, or use `--auto-approve-tools` at startup.
 
-### Screen filled with `[thinking]` output (especially with `glm-5.1:cloud`)
+### Screen filled with `[thinking]` output (especially with `glm-5.3-flash:cloud`)
 
-Long-reasoning models like `glm-5.1:cloud` emit large amounts of thinking tokens before the response body. agent-cli renders these as `[thinking] <text>` lines, which can fill the terminal and make the actual response hard to see.
+Long-reasoning models like `glm-5.3-flash:cloud` emit large amounts of thinking tokens before the response body. agent-cli renders these as `[thinking] <text>` lines, which can fill the terminal and make the actual response hard to see.
 
 Workaround: change `[ui] show_thinking` in `~/.config/agent-cli/config.toml` and restart `agent-cli`.
 

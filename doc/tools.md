@@ -65,7 +65,7 @@ It is the tool-level equivalent of the `agent-cli spawn` subcommand /
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `name` | string | No | Display name for the new agent |
-| `provider` | string | No | Backend override (`claude` / `claude-code` / `codex` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`) |
+| `provider` | string | No | Backend override (`claude` / `claude-code` / `codex` / `codex-code` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`) |
 | `model` | string | No | Model override |
 | `persona` | string | No | Persona file path |
 | `group` | string | No | Group id for the new agent; omit to inherit this agent's group (see [`usage.md`](usage.md) "Groups") |
@@ -120,7 +120,7 @@ agent's to manage and do not appear. Use `agent-cli list` for the whole machine.
 whether it is a direct `child` or a deeper `descendant (via <name>)`:
 
 ```
-agent-01M27QQ4BX…  name=worker  provider=ollama model=glm-5.1:cloud  group=-  depth=1  child
+agent-01M27QQ4BX…  name=worker  provider=ollama model=glm-5.3-flash:cloud  group=-  depth=1  child
 ```
 
 An empty tree returns `ok` with `no agents below this one` — nothing to manage

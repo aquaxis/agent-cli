@@ -33,21 +33,21 @@
 - Self-update with `agent-cli update` — rebuilds from source into your install prefix, from `main` by default or from any tag/branch with `--ref`; `--check` reports the latest release without changing anything.
 - MCP client — declare external Model Context Protocol servers in `[[mcp.servers]]`; their tools are discovered at startup over **stdio** (a subprocess) or **http** (Streamable HTTP to a URL) and offered to the agent as `mcp__<server>__<tool>`. Inspect them with `agent-cli mcp list`.
 - Configurable tool-use loop cap via `[runtime] max_tool_iterations` (default 24, max `u32::MAX`) — see "[info] max tool-use iterations reached" below.
-- Ollama `message.thinking` field is decoded as `[thinking]` for thinking-capable models such as `glm-5.1:cloud`.
+- Ollama `message.thinking` field is decoded as `[thinking]` for thinking-capable models such as `glm-5.3-flash:cloud`.
 - Opt-in context-efficiency features (all default OFF): Claude prompt caching, opencode local persistent session, and hybrid history-window management (summarize-then-drop). See [`doc/config.md`](doc/config.md) §11.
 
 ## Supported backends
 
 | kind | API | Default model |
 |------|-----|--------------|
-| claude | Anthropic Claude (Messages, SSE) | `claude-opus-4-7` |
+| claude | Anthropic Claude (Messages, SSE) | `claude-opus-5-5` |
 | claude-code | Local Claude Code CLI as a child process (no API key) | Claude Code's own |
-| codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
+| codex | OpenAI Chat Completions (SSE) | `gpt-5.6-terra` |
 | codex-code | Local Codex CLI as a child process (no API key) | Codex's own default |
 | strata | OpenAI Chat Completions (SSE, keyless local engine) | `strata` |
-| ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
-| opencode | OpenCode — dual mode (see below) | `claude-sonnet-4-5` |
-| opencode-go | OpenCode Go cloud (auto-configured shortcut) | `claude-sonnet-4-5` |
+| ollama | Ollama `/api/chat` (NDJSON) | `glm-5.3-flash:cloud` |
+| opencode | OpenCode — dual mode (see below) | `claude-sonnet-5-5` |
+| opencode-go | OpenCode Go cloud (auto-configured shortcut) | `minimax-m3.1-flash` |
 | llama.cpp | OpenAI-compatible `/v1/chat/completions` (SSE) | `default` |
 
 `opencode` selects its mode by API-key presence:
@@ -68,7 +68,7 @@
 **`opencode-go`** is a convenience alias for OpenCode with Go-specific defaults
 already filled in. Set `kind = "opencode-go"` and `api_key_env` only — the
 `base_url` (`https://opencode.ai/zen/go/v1`), `api` (`"openai"`), and
-`model` (`qwen3.8-max`) are auto-populated. The Go endpoint serves open-weight
+`model` (`minimax-m3.1-flash`) are auto-populated. The Go endpoint serves open-weight
 models only (`claude-*` is on `.../zen/v1`); list what it serves with
 `GET {base_url}/models`. You can still override any field in
 `[provider.opencode]`. See the configuration example below.
@@ -127,7 +127,7 @@ session   = "persistent"   # codex exec resume <thread_id> carries the session
 sandbox   = "workspace-write"  # -s; codex's own default is read-only
 ```
 
-The mandatory verification targets are `claude` and `ollama` (with model `glm-5.1:cloud`).
+The mandatory verification targets are `claude` and `ollama` (with model `glm-5.3-flash:cloud`).
 
 | Capability | claude | claude-code | codex | codex-code | ollama | opencode | llama.cpp |
 |------------|--------|-------------|-------|------------|--------|----------|-----------|
@@ -183,7 +183,7 @@ agent-cli                       # uses provider.kind from config
 agent-cli run --provider claude # override at the command line
 
 # 4. In another terminal, start a second agent on Ollama.
-agent-cli run --provider ollama --model glm-5.1:cloud --name bob
+agent-cli run --provider ollama --model glm-5.3-flash:cloud --name bob
 
 # 5. From the first session, send a prompt across.
 > /list
@@ -231,7 +231,7 @@ kind = "claude"
 
 [provider.claude]
 api_key_env  = "ANTHROPIC_API_KEY"  # name of the env var that holds the secret
-model        = "claude-opus-4-7"
+model        = "claude-opus-5-5"
 base_url     = "https://api.anthropic.com"   # usually leave as-is
 thinking     = true                          # enable thinking blocks
 # prompt_cache = true                         # opt-in Anthropic prompt caching
@@ -245,7 +245,7 @@ kind = "claude-code"
 
 [provider.claude-code]
 bin       = "claude"       # executable name (resolved via PATH) or full path
-model     = "sonnet"       # --model; omit for Claude Code's own default
+model     = "opus"         # --model; omit for Claude Code's own default
 mode      = "delegation"   # "delegation" (its own tools) | "gateway" (chat only)
 transport = "stream"       # "stream" (token streaming) | "oneshot"
 session   = "persistent"   # "persistent" | "ephemeral" (delegation only)
@@ -263,7 +263,7 @@ kind = "codex"
 
 [provider.codex]
 api_key_env = "OPENAI_API_KEY"
-model       = "gpt-4.1"
+model       = "gpt-5.6-terra"
 base_url    = "https://api.openai.com/v1"
 ```
 
@@ -274,7 +274,7 @@ base_url    = "https://api.openai.com/v1"
 kind = "ollama"
 
 [provider.ollama]
-model    = "glm-5.1:cloud"
+model    = "glm-5.3-flash:cloud"
 base_url = "http://127.0.0.1:11434"
 ```
 
@@ -287,7 +287,7 @@ kind = "opencode"
 # Local mode (default): a running `opencode serve`, no key needed.
 [provider.opencode]
 base_url = "http://127.0.0.1:4096"
-model    = "claude-sonnet-4-5"
+model    = "claude-sonnet-5-5"
 # persistent_session = true   # opt-in (local only): reuse one server session
 
 # Cloud mode (OpenCode Zen): set api_key_env — its presence switches to cloud.
@@ -551,7 +551,7 @@ While the line starts with `/` and has no space, the matching command names are 
 
 ### Suppressing `[thinking]` output
 
-Long-reasoning models such as `glm-5.1:cloud` emit large amounts of thinking text, which can fill the REPL with `[thinking] ...` lines. Use `[ui] show_thinking` to control the display volume:
+Long-reasoning models such as `glm-5.3-flash:cloud` emit large amounts of thinking text, which can fill the REPL with `[thinking] ...` lines. Use `[ui] show_thinking` to control the display volume:
 
 ```toml
 [ui]

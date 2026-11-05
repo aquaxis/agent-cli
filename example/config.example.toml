@@ -9,15 +9,15 @@
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Provider: the AI backend. Only one `kind` is active at a time.
-# Supported: "claude" | "claude-code" | "codex" | "strata" | "ollama" |
-#            "opencode" | "opencode-go" | "llama.cpp"
+# Supported: "claude" | "claude-code" | "codex" | "codex-code" | "strata" |
+#            "ollama" | "opencode" | "opencode-go" | "llama.cpp"
 # ─────────────────────────────────────────────────────────────────────────────
 [provider]
 kind = "claude"
 
 # --- Anthropic Claude (Messages API) ---
 [provider.claude]
-model       = "claude-opus-4-7"
+model       = "claude-opus-5-5"
 api_key_env = "ANTHROPIC_API_KEY"          # env var holding the key
 base_url    = "https://api.anthropic.com"
 thinking    = true
@@ -29,7 +29,7 @@ thinking    = true
 # Not the same backend as [provider.claude] above, which is the Anthropic API.
 # [provider.claude-code]
 # bin       = "claude"       # executable name (resolved via PATH) or full path
-# model     = "sonnet"       # --model; omit for Claude Code's own default
+# model     = "opus"         # --model; omit for Claude Code's own default
 # mode      = "delegation"   # "delegation" (Claude Code runs its own tools)
 #                            # | "gateway"  (--tools "", chat only: agent-cli's
 #                            #               tools cannot be offered to it)
@@ -44,9 +44,29 @@ thinking    = true
 # system_prompt_mode = "append"          # "append" | "replace"
 # extra_args         = []                # passed through verbatim
 
+# --- Codex CLI (drives the locally installed `codex` binary) ---
+# No API key: it uses whatever authentication Codex itself already has
+# (e.g. a ChatGPT login). Delegation only — codex runs its own tools inside
+# its own sandbox; agent-cli's tools cannot be offered to it.
+# [provider.codex-code]
+# bin        = "codex"              # executable name (resolved via PATH) or path
+# model      = "gpt-5.6-terra"      # -m; omit to use Codex's own default
+# transport  = "items"              # "items" (--json item stream) | "oneshot"
+#                                   # ("oneshot" buffers the whole turn and
+#                                   #  yields the final reply once, via -o)
+# session    = "persistent"         # "persistent" (resume the codex thread)
+#                                   # | "ephemeral" (--ephemeral, sessionless)
+# sandbox           = "workspace-write"  # -s read-only|workspace-write|danger-full-access
+# add_dir           = []                 # --add-dir, repeated per directory
+# approval_policy   = "never"            # -c approval_policy=...
+# bypass_sandbox_and_approvals = false   # --dangerously-bypass-approvals-and-sandbox
+# skip_git_repo_check = true            # --skip-git-repo-check
+# turn_timeout_secs = 900
+# extra_args        = []                 # passed through verbatim
+
 # --- OpenAI (Codex) ---
 # [provider.codex]
-# model       = "gpt-4.1"
+# model       = "gpt-5.6-terra"
 # api_key_env = "OPENAI_API_KEY"
 # base_url    = "https://api.openai.com/v1"
 
@@ -57,20 +77,20 @@ thinking    = true
 
 # --- Ollama (local or cloud tag, OpenAI-compatible /api/chat) ---
 # [provider.ollama]
-# model    = "glm-5.1:cloud"
+# model    = "glm-5.3-flash:cloud"
 # base_url = "http://127.0.0.1:11434"
 
 # --- OpenCode (local `opencode serve` or OpenCode Zen / Go cloud) ---
 # [provider.opencode]
 # # Local mode:
 # base_url = "http://127.0.0.1:4096"
-# model    = "claude-sonnet-4-5"
+# model    = "claude-sonnet-5-5"
 # # Cloud mode (OpenCode Zen / Go): a resolved api_key_env selects cloud mode.
 # base_url    = "https://opencode.ai/zen/go/v1"
 # api_key_env = "OPENCODE_API_KEY"
 # # Go serves open-weight models only (claude-* is on .../zen/v1, not /zen/go/v1).
 # # List what an endpoint serves with GET {base_url}/models.
-# model       = "qwen3.8-max"
+# model       = "minimax-m3.1-flash"
 # # Wire format: "openai" (default, /chat/completions) or "anthropic" (/messages).
 # api = "openai"
 # # Cloud only: the x-opencode-session id sent with every request. Generated per

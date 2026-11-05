@@ -38,7 +38,7 @@ agent-cli [--config <path>] <subcommand>
 | Option | Description |
 |--------|-------------|
 | `--name <name>` | Agent display name |
-| `--provider <kind>` | Override backend: `claude` / `claude-code` / `codex` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp` |
+| `--provider <kind>` | Override backend: `claude` / `claude-code` / `codex` / `codex-code` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp` |
 | `--model <model>` | Override model |
 | `--persona <path>` | Explicit persona file path |
 | `--group <id>` | Group this agent joins; detached children inherit it. Overrides the `[runtime] group` config key. See [Groups](#groups) |
@@ -503,7 +503,7 @@ them. Restrict that backend with its own `tools` / `allowed_tools` /
 
 ### Suppressing `[thinking]` Output
 
-Claude's `thinking_delta` and Ollama's `message.thinking` (e.g. `glm-5.1:cloud`) are passed to the REPL as `AgentEvent::Thinking` and rendered as `[thinking] <text>` lines. Long-reasoning models emit large amounts of thinking text, so `[ui] show_thinking` provides three levels of control:
+Claude's `thinking_delta` and Ollama's `message.thinking` (e.g. `glm-5.3-flash:cloud`) are passed to the REPL as `AgentEvent::Thinking` and rendered as `[thinking] <text>` lines. Long-reasoning models emit large amounts of thinking text, so `[ui] show_thinking` provides three levels of control:
 
 | Value | Behavior |
 |-------|----------|
@@ -542,7 +542,7 @@ agent-cli run --provider claude
 
 ```bash
 ollama serve &
-agent-cli run --provider ollama --model glm-5.1:cloud
+agent-cli run --provider ollama --model glm-5.3-flash:cloud
 ```
 
 ### 3. Local Claude Code CLI (claude-code)
@@ -581,15 +581,15 @@ registry_dir = "/tmp/agent-cli/team"
 agent-cli run --provider claude --name alice
 
 # Terminal B
-agent-cli run --provider ollama --model glm-5.1:cloud --name bob
+agent-cli run --provider ollama --model glm-5.3-flash:cloud --name bob
 ```
 
 From terminal A:
 
 ```text
 > /list
-agent-01HX...    alice    claude    claude-opus-4-7    general assistant
-agent-01HY...    bob      ollama    glm-5.1:cloud      general assistant
+agent-01HX...    alice    claude    claude-opus-5-5    general assistant
+agent-01HY...    bob      ollama    glm-5.3-flash:cloud      general assistant
 
 > /send bob "Give me a one-line review from B's perspective"
 delivered to agent-01HY...

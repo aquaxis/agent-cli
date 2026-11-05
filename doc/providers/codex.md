@@ -15,7 +15,7 @@ kind = "codex"
 
 [provider.codex]
 api_key_env = "OPENAI_API_KEY"
-model       = "gpt-4.1"
+model       = "gpt-5.6-terra"
 base_url    = "https://api.openai.com/v1"
 ```
 
@@ -25,7 +25,7 @@ Choose from OpenAI's official model list; approximate guidance:
 
 | Use case | Example |
 |----------|---------|
-| Reasoning / code | `gpt-4.1` series |
+| Reasoning / code | `gpt-5.6-terra` |
 | General chat | `gpt-4o` series |
 | Lightweight | `gpt-4o-mini` series |
 
@@ -51,7 +51,7 @@ agent-cli selftest --provider codex
 
 ## Known Limitations
 
-- Models that do not support function calling may not produce tool invocations. Use `gpt-4.1` / `gpt-4o` series for best results.
+- Models that do not support function calling may not produce tool invocations. Use a function-calling model such as `gpt-5.6-terra` or the `gpt-4o` series.
 - The implementation flushes remaining tool_calls before the `[DONE]` sentinel. Mid-stream disconnections may affect output.
 
 ## Troubleshooting

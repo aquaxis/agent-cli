@@ -33,21 +33,21 @@
 - `agent-cli update` による自己アップデート — インストール先へソースからビルドし直します。既定は `main`、`--ref` で任意のタグ/ブランチを指定できます。`--check` は変更を加えずに最新リリースとの比較だけを報告します。
 - MCP クライアント — 外部の Model Context Protocol サーバーを `[[mcp.servers]]` に宣言すると、起動時に **stdio**（サブプロセス）または **http**（URL への Streamable HTTP）でツールが検出され、`mcp__<server>__<tool>` としてエージェントに提供されます。`agent-cli mcp list` で確認できます。
 - `[runtime] max_tool_iterations` でツール使用ループ上限を設定可能（デフォルト 24、最大 `u32::MAX`）。下記「[info] max tool-use iterations reached」を参照。
-- Ollama の `message.thinking` フィールドは、`glm-5.1:cloud` のような思考対応モデル向けに `[thinking]` としてデコードされます。
+- Ollama の `message.thinking` フィールドは、`glm-5.3-flash:cloud` のような思考対応モデル向けに `[thinking]` としてデコードされます。
 - オプトインのコンテキスト効率化機能（すべてデフォルト OFF）: Claude プロンプトキャッシュ、opencode ローカル永続セッション、ハイブリッド履歴ウィンドウ管理（要約してから破棄）。[`doc/config.md`](doc/config.md) §11 を参照。
 
 ## 対応バックエンド
 
 | kind | API | デフォルトモデル |
 |------|-----|--------------|
-| claude | Anthropic Claude (Messages, SSE) | `claude-opus-4-7` |
+| claude | Anthropic Claude (Messages, SSE) | `claude-opus-5-5` |
 | claude-code | ローカルの Claude Code CLI を子プロセスとして駆動（API キー不要） | Claude Code 自身のデフォルト |
-| codex | OpenAI Chat Completions (SSE) | `gpt-4.1` |
+| codex | OpenAI Chat Completions (SSE) | `gpt-5.6-terra` |
 | codex-code | ローカルの Codex CLI を子プロセスとして駆動（API キー不要） | Codex 自身のデフォルト |
 | strata | OpenAI Chat Completions (SSE、キーレスのローカルエンジン) | `strata` |
-| ollama | Ollama `/api/chat` (NDJSON) | `glm-5.1:cloud` |
-| opencode | OpenCode — デュアルモード（下記参照） | `claude-sonnet-4-5` |
-| opencode-go | OpenCode Go クラウド（自動設定ショートカット） | `claude-sonnet-4-5` |
+| ollama | Ollama `/api/chat` (NDJSON) | `glm-5.3-flash:cloud` |
+| opencode | OpenCode — デュアルモード（下記参照） | `claude-sonnet-5-5` |
+| opencode-go | OpenCode Go クラウド（自動設定ショートカット） | `minimax-m3.1-flash` |
 | llama.cpp | OpenAI 互換 `/v1/chat/completions` (SSE) | `default` |
 
 `opencode` は API キーの有無でモードを選択します:
@@ -67,7 +67,7 @@
 **`opencode-go`** は、Go 固有のデフォルト値が自動設定される OpenCode の便利なエイリアスです。
 `kind = "opencode-go"` と `api_key_env` だけを設定すれば、`base_url`
 （`https://opencode.ai/zen/go/v1`）、`api`（`"openai"`）、`model`
-（`qwen3.8-max`）が自動的に埋められます。Go エンドポイントはオープンウェイトの
+（`minimax-m3.1-flash`）が自動的に埋められます。Go エンドポイントはオープンウェイトの
 モデルのみを提供します（`claude-*` は `.../zen/v1` 側）。提供中の ID は
 `GET {base_url}/models` で確認できます。`[provider.opencode]`
 で個別に上書きすることもできます。下記の設定例を参照してください。
@@ -104,7 +104,7 @@ Claude Code 側がツールを実行するため、agent-cli のツールレジ�
 `claude -p` は外部のツール定義を受け付けないためです。
 [`doc/providers/claude-code.md`](doc/providers/claude-code.md) を参照してください。
 
-必須の検証対象は `claude` と `ollama`（モデル `glm-5.1:cloud`）です。
+必須の検証対象は `claude` と `ollama`（モデル `glm-5.3-flash:cloud`）です。
 
 **`codex-code`** は、マシンにインストール済みの OpenAI Codex CLI（`codex`）を子プロセスとして
 起動し、`claude-code` と同様にプロバイダー抽象に適合させます。委譲
@@ -183,7 +183,7 @@ agent-cli                       # 設定の provider.kind を使用
 agent-cli run --provider claude # コマンドラインで上書き
 
 # 4. 別のターミナルで Ollama を使う 2 つ目のエージェントを起動します。
-agent-cli run --provider ollama --model glm-5.1:cloud --name bob
+agent-cli run --provider ollama --model glm-5.3-flash:cloud --name bob
 
 # 5. 1 つ目のセッションからプロンプトを送ります。
 > /list
@@ -231,7 +231,7 @@ kind = "claude"
 
 [provider.claude]
 api_key_env  = "ANTHROPIC_API_KEY"  # シークレットを保持する環境変数名
-model        = "claude-opus-4-7"
+model        = "claude-opus-5-5"
 base_url     = "https://api.anthropic.com"   # 通常はそのまま
 thinking     = true                          # 思考ブロックを有効化
 # prompt_cache = true                         # オプトイン: Anthropic プロンプトキャッシュ
@@ -245,7 +245,7 @@ kind = "claude-code"
 
 [provider.claude-code]
 bin       = "claude"       # 実行ファイル名（PATH から解決）またはフルパス
-model     = "sonnet"       # --model。省略時は Claude Code 自身のデフォルト
+model     = "opus"       # --model。省略時は Claude Code 自身のデフォルト
 mode      = "delegation"   # "delegation"（Claude Code 側のツール）| "gateway"（チャットのみ）
 transport = "stream"       # "stream"（トークンストリーミング）| "oneshot"
 session   = "persistent"   # "persistent" | "ephemeral"（delegation のみ）
@@ -263,7 +263,7 @@ kind = "codex"
 
 [provider.codex]
 api_key_env = "OPENAI_API_KEY"
-model       = "gpt-4.1"
+model       = "gpt-5.6-terra"
 base_url    = "https://api.openai.com/v1"
 ```
 
@@ -274,7 +274,7 @@ base_url    = "https://api.openai.com/v1"
 kind = "ollama"
 
 [provider.ollama]
-model    = "glm-5.1:cloud"
+model    = "glm-5.3-flash:cloud"
 base_url = "http://127.0.0.1:11434"
 ```
 
@@ -287,7 +287,7 @@ kind = "opencode"
 # ローカルモード（デフォルト）: 稼働中の `opencode serve`、キー不要。
 [provider.opencode]
 base_url = "http://127.0.0.1:4096"
-model    = "claude-sonnet-4-5"
+model    = "claude-sonnet-5-5"
 # persistent_session = true   # オプトイン（ローカルのみ）: 1 つのサーバーセッションを再利用
 
 # クラウドモード（OpenCode Zen）: api_key_env を設定すると、その存在でクラウドに切り替わります。
@@ -552,7 +552,7 @@ agent-cli mcp list   # 各サーバーへ接続してツールを一覧表示
 
 ### `[thinking]` 出力の抑制
 
-`glm-5.1:cloud` のような長考モデルは大量の思考テキストを出力し、REPL が `[thinking] ...` 行で埋め尽くされることがあります。表示量は `[ui] show_thinking` で制御します:
+`glm-5.3-flash:cloud` のような長考モデルは大量の思考テキストを出力し、REPL が `[thinking] ...` 行で埋め尽くされることがあります。表示量は `[ui] show_thinking` で制御します:
 
 ```toml
 [ui]

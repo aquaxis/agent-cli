@@ -15,7 +15,7 @@ This backend uses a local or cloud [Ollama](https://ollama.com) server. It is on
 kind = "ollama"
 
 [provider.ollama]
-model    = "glm-5.1:cloud"
+model    = "glm-5.3-flash:cloud"
 base_url = "http://127.0.0.1:11434"
 ```
 
@@ -23,10 +23,10 @@ No API key is required (setting `api_key_env` has no effect).
 
 ## Recommended Models
 
-The mandatory verification target is **`glm-5.1:cloud`**. Any model visible in `ollama list` can be specified using the same format.
+The mandatory verification target is **`glm-5.3-flash:cloud`**. Any model visible in `ollama list` can be specified using the same format.
 
 ```bash
-ollama pull glm-5.1:cloud      # cloud version
+ollama pull glm-5.3-flash:cloud      # cloud version
 ollama pull llama3.1:8b        # local model example
 ```
 
@@ -36,13 +36,13 @@ ollama pull llama3.1:8b        # local model example
 |---------|---------|-------|
 | Streaming | ✓ | NDJSON |
 | Tool use | ✓ (model-dependent) | Only works with `tools`-capable models |
-| Thinking | ✓ (model-dependent) | Renders NDJSON `message.thinking` as `[thinking]`. Works with `glm-5.1:cloud` etc. |
+| Thinking | ✓ (model-dependent) | Renders NDJSON `message.thinking` as `[thinking]`. Works with `glm-5.3-flash:cloud` etc. |
 
 `Capabilities` statically returns `tool_use=true` / `thinking=true`, but if the server or model does not support these features, tool calls or thinking output may not be produced (or may be silently ignored).
 
 ### Controlling Thinking Display
 
-When a thinking-capable model like `glm-5.1:cloud` returns the `message.thinking` field, agent-cli renders it as `ProviderEvent::Thinking` with a `[thinking]` prefix in the REPL (emission order: `Thinking` → `Text` → `ToolUse`, consistent with Anthropic convention). Display mode is controlled via `[ui] show_thinking`:
+When a thinking-capable model like `glm-5.3-flash:cloud` returns the `message.thinking` field, agent-cli renders it as `ProviderEvent::Thinking` with a `[thinking]` prefix in the REPL (emission order: `Thinking` → `Text` → `ToolUse`, consistent with Anthropic convention). Display mode is controlled via `[ui] show_thinking`:
 
 | Setting | Behavior |
 |---------|----------|

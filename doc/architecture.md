@@ -222,7 +222,7 @@ Agent::process_turn (auto_approve=false)
   "pid":12345,
   "started_at":"2026-05-01T10:00:00Z",
   "provider":"claude",
-  "model":"claude-opus-4-7",
+  "model":"claude-opus-5-5",
   "socket":"/tmp/agent-cli/agent-01HX....sock",
   "persona": {"role":"...","skills":[...],"description":"...","source_path":"..."}
 }
