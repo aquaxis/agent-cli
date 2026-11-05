@@ -31,10 +31,13 @@ tasks **T-82–T-85** below.
 
 **Both corrections are delivered and pinned.** T-82–T-85 stand ✅ in the
 task list and their execution record stands below it (the cycle's record).
-The version stays 0.39.0; this cycle publishes no release. The tree the
-cycle started from was `fb46cc0` (the `main` tip, the previous cycle's
-ledger follow-up), the worktree carrying the ledger's recording alone; the
-execution then carried the product tree with it. The gates are green at
+The cycle published no release of its own; afterwards, on the user's
+direction, the version was carried **0.39.0 → 0.40.0** by the release
+commit `505097a` "Release 0.40.0: the display corrections carry the
+version" (T-86). The tree the cycle started from was `fb46cc0` (the `main`
+tip, the previous cycle's ledger follow-up), the worktree carrying the
+ledger's recording alone; the execution then carried the product tree with
+it. The gates are green at
 the delivered tip: **645 unit + 6 integration, 0 failed** (the baseline
 held exactly), clippy the same four warning classes on the same sites —
 all outside the cycle's diff.
@@ -78,6 +81,7 @@ The two asks' baselines, as the tree stood before the execution:
 | T-83 | FR-39's pins: failure-first against the shipped beneath-the-block place, then green — the marker's row directly above the block's first row, `cursor_row` including it so the next render erases from the right row, the drawer/wheel/drag arithmetic on one budget, the absent-at-bottom case standing | FR-39, NFR-13 | design §1 (D-60), §4 (W-62) | T-82 | ✅ |
 | T-84 | FR-40's implementation: the scrolled screen's mid-turn composition brought into line with the live four-region order — the prompt pin carrying the running turn's elapsed row above it (the clock face from `overlay_status_row`, display-only as shipped), the peer rows above that, the marker of FR-39 between the run display and the prompt; the mouse arms' `Pending` budget grown from the clock's row to the prompt span's rows plus the clock's row plus the additive peer rows, so `draw_scrolled`, the wheel arm and the drag arm share one arithmetic; the transcript's recording rules untouched | FR-40, NFR-14 | design §1 (D-61), §2 (TPR-23b), §3 | T-82 | ✅ |
 | T-85 | FR-40's pins: failure-first then green — the mid-turn scrolled composition's plan in the four-region order, the elapsed row displayed and in place, a press/drag/release resolving against the rows the screen shows (no one-row drop), the arms' body equal to the drawer's `bottom_rows`, and the clock row still out of the recorded transcript | FR-40, NFR-13 | design §1 (D-61), §4 (W-62) | T-84 | ✅ |
+| T-86 | The version carry on the user's direction after the delivery: `Cargo.toml` 0.39.0 → 0.40.0 with `Cargo.lock` reloaded by the build, the release commit carrying the two files alone and the gates green at it; no source, ledger-of-record or pin change | — (§12) | — | T-82–T-85 | ✅ |
 
 Sections below the table are the execution record (Article 3) — written as
 each task's status changes.
@@ -227,6 +231,23 @@ Depends on: T-84.
 Design trace: design §1 (D-61), §3 (the mouse-arms, recording and
 superseded-pins angles), §4 (W-62).
 
+## T-86 — the version carry (✅, after the delivery)
+
+Carried on the user's direction after the cycle closed: `Cargo.toml`
+0.39.0 → 0.40.0, `Cargo.lock` reloaded by the build, the release commit
+`505097a` ("Release 0.40.0: the display corrections carry the version")
+carrying the two version files alone. No source, no ledger-of-record and
+no pin changed with it; the gates were run at that tip and stand as the
+cycle certified them (645 unit + 6 integration, 0 failed; clippy at the
+baseline). The version trail above names it, the requirements document's
+§13 records it, and the work log `2026-11-05_005.md` carries it. The
+cycle itself published no release; the tag `v0.39.0` stands where it was.
+
+Depends on: T-82–T-85.
+
+Design trace: design §5 (the cycle's close), requirements §13 (State at
+exit).
+
 ## Cross-cutting gates (✅)
 
 - Unit + integration: green at the delivered tip — **645 unit + 6
@@ -270,8 +291,9 @@ the measured registry transport (`RegistryEntry.turn`,
 `:2201–2215`); and the bare-`Enter` guard at the editor's arm
 (`:2620–2632`, the empty check `:2627–2629`). Its pins stand (`:6905`ff,
 `:7126`ff, `:7285`ff); the gates at the close **645 unit + 6 integration,
-0 failed**, clippy at the baseline. The version stayed 0.39.0 — the cycle
-published no release. Its two superseded **display** statements (the
+0 failed**, clippy at the baseline. The cycle published no release of its
+own; the version was afterwards carried to 0.40.0 (`505097a`, T-86). Its
+two superseded **display** statements (the
 marker's beneath-the-block place, the clock-only mid-turn pin) are this
 cycle's corrections.
 
@@ -310,7 +332,10 @@ delivery commit — the cycle's implementation, records and work log) →
 `fb46cc0` (the tracked ledger's follow-up, naming `39afeb2` — the rule that
 a delivery commit's sha is nameable only from the commit that follows it) →
 `db68d3f` (the FR-39/FR-40 delivery commit — the cycle's corrections, its
-records and its work logs).
+records and its work logs) → `306f425` (the trail's follow-up, naming
+`db68d3f`) → `85f9ce9` (that follow-up's own work log) → v0.40.0 `505097a`
+(the version carry the user directed after the delivery — `Cargo.toml` and
+`Cargo.lock` alone, T-86).
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: **"the subagents' auto-exit — permanent (FR-32),

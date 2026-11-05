@@ -218,8 +218,10 @@ editor's arm (`:2620–2632`, the empty check `:2627–2629`). Its decisions
 D-56/D-58/D-59 are the ground D-60/D-61 stand on; its superseded display
 statements (the marker's beneath-the-block place, the clock-only mid-turn
 pin) are the two this cycle corrects, recorded as specification changes in
-the requirements' §6 (NFR-13). The version stays 0.39.0 — the cycle
-published no release.
+the requirements' §6 (NFR-13). The cycle published no release of its own;
+the version was afterwards carried to **0.40.0** by the release commit
+`505097a` "Release 0.40.0: the display corrections carry the version"
+(the requirements' §12/§13).
 
 **FR-36's display ask** — superseded by FR-37a's record and delivered with
 it; the FR-36 cycle never published a version or a tag. Its worktree block
@@ -242,9 +244,10 @@ as shipped, the approval-draft snapshot
 (`DraftSnapshot`/`snapshot_draft`/`restore_draft`, `src/app.rs:2592–2605`),
 the pins rewritten. The full cycle history (the post-close ledger events
 `881eda9` → v0.39.0 `4f7fad6` → `96a576f` → `3af66d4` → `5336a03` →
-`5257729` → `c2f78b3` → `39afeb2` → `fb46cc0`; the BL-M30/BL-M31/BL-M32
-corrections) stands in the requirements document's §12 and the task list's
-history section — one shared record, not duplicated here (C-08).
+`5257729` → `c2f78b3` → `39afeb2` → `fb46cc0` → `db68d3f` → `306f425` →
+`85f9ce9` → v0.40.0 `505097a`; the BL-M30/BL-M31/BL-M32 corrections)
+stands in the requirements document's §12 and the task list's history
+section — one shared record, not duplicated here (C-08).
 
 **"the subagents' auto-exit — permanent (FR-32), configurable and
 default-on (FR-33); the 'prompt too long' repair (FR-34)"** — closed,
