@@ -308,7 +308,9 @@ records rode its commit) → `5257729` (the FR-36 documents' rewrite) →
 `c2f78b3` (the FR-37/FR-38 cycle's ledger rewrite) → `39afeb2` (the
 delivery commit — the cycle's implementation, records and work log) →
 `fb46cc0` (the tracked ledger's follow-up, naming `39afeb2` — the rule that
-a delivery commit's sha is nameable only from the commit that follows it).
+a delivery commit's sha is nameable only from the commit that follows it) →
+`db68d3f` (the FR-39/FR-40 delivery commit — the cycle's corrections, its
+records and its work logs).
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: **"the subagents' auto-exit — permanent (FR-32),
