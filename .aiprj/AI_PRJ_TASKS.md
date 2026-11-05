@@ -36,8 +36,10 @@ execution record stands below it. The refactoring is one commit of its
 own (`eec12f9` "Refactor: one HTTP error chain, one test context, no dead
 code", 26 files, +139/−314) so the display repair and the ledger's record
 stand apart from it. The tree the cycle started from was `856c2bf` (the
-`main` tip, the version carry's record); the version stands at **0.40.0**,
-no `v0.40.0` tag exists, the tag `v0.39.0` stands on `4f7fad6`. The gates
+`main` tip, the version carry's record); the version stood at **0.40.0**,
+no `v0.40.0` tag exists, the tag `v0.39.0` stands on `4f7fad6`, and the
+version was afterwards carried to **0.41.0** on the user's direction
+(§13's State at exit, T-94). The gates
 are green at the delivered tip: **647 unit + 6 integration, 0 failed**
 (the baseline's 645 + 6 plus the two new pins of FR-42, no test lost), and
 clippy reports **0 warnings** — the seven baseline warnings fixed at their
@@ -81,6 +83,8 @@ The two asks' baselines, as the tree stood before the work:
 | T-90 | FR-42's pins: failure-first against the shapes they replace, then green — `the_indicator_never_paints_over_the_live_prompt_block` (each of the five writers stands down under `prompt_owned`, and `finish` still records) and `arming_the_zone_takes_the_rows_from_the_prompt_block` (the arm releases the ownership); the previous cycles' geometry pins re-run green and unmoved in meaning | FR-42, NFR-13 | design §1 (D-63), §4 (W-64) | T-89 | ✅ |
 | T-91 | The documents corrected to the source (the instruction's second sentence as a work item): `C-09`'s "clippy output stays identical to the pre-change baseline" retired for **clippy stays silent** and recorded as a specification change (the requirements' §6); the `src/app.rs` citations the fix's +258 rows shifted re-read content-by-content at the delivered tip and written with the numbers the tree answers; the three documents brought to the source's shape (FR-41/FR-42, BL-M43–BL-M45, D-62–D-64, TPR-24a/b, T-87–T-92, W-63–W-65, AC-35) | — (NFR-11, NFR-12, C-08, C-13) | design §1 (D-64), §3 (the documentation angle), §4 (W-65) | T-87–T-90 | ✅ |
 | T-92 | The cycle's record and delivery: the work log written (`2026-11-05_006.md`, embedding the instruction verbatim), the three documents mutually consistent, the instruction re-verified byte-exact at exit, and the delivery committed per the user's direction | — (C-08, C-13, AC-35) | design §4 (W-65) | T-87–T-91 | ✅ |
+| T-93 | The version carry on the user's direction after the delivery: `Cargo.toml` 0.40.0 → 0.41.0 with `Cargo.lock` reloaded by the build, `CHANGELOG.md` given the `[0.41.0]` section the two asks' work describes (and the shipped `0.40.0` content, which had stayed under `[Unreleased]` through `505097a`, moved under a `## [0.40.0]` heading of its own — no `0.39.0` heading was added, `4f7fad6` having carried the two version files alone and so no content to record), the release commit carrying those files and the gates green at it; no source, ledger-of-record or pin change | — (§13) | design §5 (the cycle's close) | T-87–T-92 | ✅ |
+| T-94 | The carry's record: the three documents naming `25fe13c` (the version, the trail, the State at exit) and the work log `2026-11-05_007.md` embedding the instruction verbatim, committed after the release commit so the release's sha is nameable; `main` pushed to `origin/main` | — (C-08, C-13) | design §5 (the cycle's close) | T-93 | ✅ |
 
 Sections below the table are the execution record (Article 3) — written as
 each task's status changes.
@@ -299,13 +303,49 @@ are mutually consistent (C-08); the instruction was re-verified byte-exact
 at exit; and the delivery is committed per the user's direction (AC-35),
 with the refactoring's commit already standing on its own (`eec12f9`) so
 the display repair and the ledger's record stand apart from it. The cycle
-published no release of its own and carried no version: the version stands
-at 0.40.0 (commit `505097a`, recorded by `856c2bf`), and no `v0.40.0` tag
-exists.
+published no release of its own and carried no version: the version stood
+at 0.40.0 (commit `505097a`, recorded by `856c2bf`), no `v0.40.0` tag
+exists, and the carry to 0.41.0 came afterwards on the user's direction
+(T-93/T-94).
 
 Depends on: T-87–T-91.
 
 Design trace: design §4 (W-65), requirements §13 (State at exit).
+
+## T-93 — the version carry (✅, after the delivery)
+
+Carried on the user's direction after the cycle closed: `Cargo.toml`
+0.40.0 → 0.41.0, `Cargo.lock` reloaded by the build, and `CHANGELOG.md`
+brought to the shape the release needs. The changelog had drifted: the
+`0.40.0` section's content was still parked under `## [Unreleased]` at
+`856c2bf`, because `505097a` carried the two version files alone. That
+content is moved under a `## [0.40.0]` heading of its own, and the
+`## [0.41.0]` section above it carries what this cycle's two asks did —
+`Changed` for the refactoring (D-62), `Fixed` for the prompt's own rows
+(D-63). No `0.39.0` heading was added: `4f7fad6` carried the two version
+files alone and there is no content of its to record. The release commit
+`25fe13c` ("Release 0.41.0: the refactoring and the prompt's own rows
+carry the version") carries those three files alone, the gates green at
+it — 647 unit + 6 integration, 0 failed; clippy silent. No source, no
+ledger-of-record and no pin changed with it.
+
+Depends on: T-87–T-92.
+
+Design trace: design §5 (the cycle's close), requirements §13 (State at
+exit).
+
+## T-94 — the carry's record and the push (✅)
+
+This section and the work log `2026-11-05_007.md` name `25fe13c` from the
+commit that follows it, per the rule the trail keeps, and `main` is then
+pushed to `origin/main`. The carry touched `Cargo.toml`, `Cargo.lock` and
+`CHANGELOG.md` alone; no source, no pin and no shipped contract moved with
+it (NFR-14).
+
+Depends on: T-93.
+
+Design trace: design §5 (the cycle's close), requirements §13 (State at
+exit).
 
 ## Cross-cutting gates (✅)
 
@@ -416,8 +456,9 @@ follow-up, naming `db68d3f`) → `85f9ce9` (that follow-up's own work log) →
 v0.40.0 `505097a` (the version carry the user directed after the delivery)
 → `856c2bf` (the version carry's own record in the tracked ledger) →
 `eec12f9` (this cycle's refactoring — one HTTP error chain, one test
-context, no dead code; 26 files, +139/−314) → the display fix and the
-ledger's record (this cycle's delivery).
+context, no dead code; 26 files, +139/−314) → `064ce50` (the display fix
+and the ledger's record — this cycle's delivery) → v0.41.0 `25fe13c` (the
+version carry the user directed after the delivery).
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: **"the subagents' auto-exit — permanent (FR-32),

@@ -339,7 +339,8 @@ shipped, the approval-draft snapshot
 the pins rewritten. The full cycle history (the post-close ledger events
 `881eda9` → v0.39.0 `4f7fad6` → `96a576f` → `3af66d4` → `5336a03` →
 `5257729` → `c2f78b3` → `39afeb2` → `fb46cc0` → `db68d3f` → `306f425` →
-`85f9ce9` → v0.40.0 `505097a`; the BL-M30/BL-M31/BL-M32 corrections)
+`85f9ce9` → v0.40.0 `505097a` → `856c2bf` → `eec12f9` → `064ce50` →
+v0.41.0 `25fe13c`; the BL-M30/BL-M31/BL-M32 corrections)
 stands in the requirements document's §12 and the task list's history
 section — one shared record, not duplicated here (C-08).
 
