@@ -18,34 +18,90 @@ file whenever a task changes state.
 
 ## Overview
 
-The reloaded instruction's ask is one removal: **delete the prompt-input
+The reloaded instruction's ask was one removal: **delete the prompt-input
 queueing feature** — the feature FR-35 delivered (v0.38.0, `c02862d`):
 prompts typed while a turn runs are accepted, edited and enqueued onto the
 agent's input channel, and run in order once the running turn completes
 (the CHANGELOG's `[0.38.0]` record). The removal surface the requirements'
-§4/§5 name: the Pending submit arm's echo + `UserPrompt` enqueue + the
+§4/§5 named: the Pending submit arm's echo + `UserPrompt` enqueue + the
 `!`/`/` refusals, the `[queued: N]` notice, `queued_count`/`queue_release_allowed`,
-the approval-time draft pair, the queue's four unit pins and the
-agent-side boundary pin. The queue channel itself (`AgentInput` FIFO), the
-shutdown drain answering queued deliveries truthfully, the peer-prompt
-queue and the four-region screen stand untouched; the pre-queue contract
-is restored. The delivery rides the standing sentence: the CHANGELOG's
-`[0.44.0]` entry, the minor carry 0.43.0 → **0.44.0**, the commit, the
-push, and the release standing the latest version (design D-73/D-74,
-§4 W-69).
+the approval-time draft pair, the queue's four unit pins, the
+approval-snapshot pin and the agent-side boundary pin. The queue channel
+itself (`AgentInput` FIFO), the shutdown drain answering queued deliveries
+truthfully, the peer-prompt queue and the four-region screen stand
+untouched; the pre-queue contract is restored. The delivery rode the
+standing sentence: the CHANGELOG's `[0.44.0]` entry, the minor carry
+0.43.0 → **0.44.0**, the commit, the push, and the release standing the
+latest version (design D-73/D-74, §4 W-69).
 
-**The ask is recorded, not yet delivered.** No removal write has reached
-the tree at this update (the tree stands at the v0.43.0 ground,
-BL-M52/BL-M53): T-102 carries the removal, T-103 the completion, T-104 the
-ledger's own consistency at the delivery cycle's exit.
+**The ask is delivered.** The removal stands in the tree at the delivery
+commit `b5deb9c` ("Remove the prompt-input queueing feature", pushed
+`d5cbbbe..b5deb9c`), the tag `v0.44.0` stands verified on it, and the
+GitHub release `v0.44.0 — the prompt-input queueing feature removed` stands
+published as **Latest**. Gates at the close: **663 unit + 6 integration,
+0 failed** (669 − the six deleted pins), clippy carrying only the two
+dead-store warnings verified pre-existing at the previous tip (a `git
+stash` re-run at `d5cbbbe` produced the identical warnings).
 
 ## The cycle's tasks
 
 | ID | Task | Requirements | Design | Depends on | Status |
 |---|---|---|---|---|---|
-| T-102 | The removal (FR-45a; design §1 D-72, §2 TPR-27, §3): delete the queue's mechanism at its named sites — the raw loop's Pending submit arm (`src/app.rs:3505–3609`, the enqueue `:3595`, the `!`/`/` refusals `:3511`), the piped loop's mirror arms, the helpers `queued_count` (`:1320`)/`queue_release_allowed` (`:1335`)/`paint_queue_status` (`:1345`)/`QUEUED_NOTICE_PREFIX` (`:1364`), the idle release arm's queue conjuncts (`:3070–3098`), the approval-time draft pair (`DraftSnapshot`/`snapshot_draft`/`restore_draft` `:2610–2624`, the arms `:3131–3134`/`:3715`), the four unit pins (`:6634`, `:6707`, `:8815`, `:8836`) and `src/agent.rs`'s boundary pin (`:1419`, the FR-35b comment `:1457`) — during a running turn the loop ignores plain typed input (only `Esc`/`Ctrl-C` act) and `Pending` releases on the turn's terminal event; the suite re-derives its counts (669 − 4 unit) and stands green, clippy silent | FR-45a, NFR-13, NFR-14, NFR-15, C-09 | design §1 (D-72), §2 (TPR-27), §3 | T-104's ledger ground | ⬜ |
-| T-103 | The completion (FR-45b, FR-45c; design §1 D-73, D-74, §4 W-69): the CHANGELOG's `[Unreleased]` becomes the `[0.44.0]` entry recording the removal in user language (the shipped READMEs/usage carry no queue sentence to correct — BL-M53's verified absence); the version carry 0.43.0 → **0.44.0** (`Cargo.toml`, `Cargo.lock`, the CHANGELOG heading); the delivery commit(s) of the removal and the records, pushed to `origin/main`; the release published and made the **latest** version (the `isLatest` probe re-asked at 0.44.0 per D-74/D-71) | FR-45b, FR-45c, NFR-11, C-14 | design §1 (D-73, D-74), §4 (W-69) | T-102 | ⬜ |
-| T-104 | The ledger's own consistency and the byte-exact exit check (— (C-08, NFR-12, C-13, AC-38); design §4): the three documents stand mutually consistent (written this update to the reloaded instruction; re-checked at the delivery close), the work log written per Art. 6/7 after `2026-11-06_001.md` (no overwrite), the instruction re-verified byte-exact at exit (349 bytes, sha256 `06620319…`), no document carrying any mark of authorship or tooling, the write surface inside Article 3's limit | — (C-08, NFR-12, C-13, AC-38) | design §4 | T-102, T-103 | 🟨 |
+| T-102 | The removal (FR-45a; design §1 D-72, §2 TPR-27, §3): delete the queue's mechanism at its named sites — the raw loop's Pending submit arm (the enqueue, the `!`/`/` refusals), the piped loop's mirror arms' mid-turn acceptance, the helpers `queued_count`/`queue_release_allowed`/`paint_queue_status`/`QUEUED_NOTICE_PREFIX`, the idle release arms' queue conjuncts on both loops, the park/pending_since machinery on both loops, the approval-time draft pair (`DraftSnapshot`/`snapshot_draft`/`restore_draft` and their call arms), the four unit pins, the approval-snapshot pin and `src/agent.rs`'s boundary pin — during a running turn the loop ignores plain typed input (only `Esc`/`Ctrl-C` act) and `Pending` releases on the turn's terminal event; the suite re-derives its counts (669 − 6) and stands green | FR-45a, NFR-13, NFR-14, NFR-15, C-09 | design §1 (D-72), §2 (TPR-27), §3 | T-104's ledger ground | ✅ |
+| T-103 | The completion (FR-45b, FR-45c; design §1 D-73, D-74, §4 W-69): the CHANGELOG's `[Unreleased]` became the `[0.44.0]` entry recording the removal in user language (the shipped READMEs/usage carried no queue sentence to correct — BL-M53's verified absence); the version carry 0.43.0 → **0.44.0** (`Cargo.toml`, `Cargo.lock`, the CHANGELOG heading); the delivery commit of the removal and the records, pushed to `origin/main`; the release published and made the **latest** version (the `isLatest` probe re-asked at 0.44.0) | FR-45b, FR-45c, NFR-11, NFR-15, C-14 | design §1 (D-73, D-74), §4 (W-69) | T-102 | ✅ |
+| T-104 | The ledger's own consistency and the byte-exact exit check (C-08, NFR-12, C-13, AC-38; design §4): the three documents stand mutually consistent (written this cycle; re-checked at the delivery close — W-69 marked ✅ on T-102's/T-103's records), the work log written per Art. 6/7 after `2026-11-06_002.md` (no overwrite), the instruction re-verified byte-exact at exit (349 bytes, sha256 `06620319…`), no document carrying any mark of authorship or tooling, the write surface inside Article 3's limit — **closed this update** (the ledgers' final pass; the trail's follow-up rule leaves `b5deb9c`'s own naming to the next cycle's commit, per the trail rule) | — (C-08, NFR-12, C-13, AC-38) | design §4 | T-102, T-103 | ✅ |
+
+## The execution record
+
+- **T-102 (✅).** The removal wrote `src/app.rs` + `src/agent.rs` and
+  nothing else in the product tree:
+  - the helpers `queued_count`, `queue_release_allowed`,
+    `paint_queue_status` and the `QUEUED_NOTICE_PREFIX` constant deleted
+    with their FR-35 comment frames;
+  - the `DraftSnapshot`/`snapshot_draft`/`restore_draft` pair deleted, and
+    the three arms that used it restored to the pre-queue shape (the
+    approval arm resets the editor and takes nothing; the Esc-deny arm and
+    the raw y/N arm reset the editor plainly, as the pre-FR-35 tree at
+    `c02862d`^ carries them);
+  - the raw loop's Pending submit arm restored to the pre-queue contract —
+    during a turn only `Esc`/`Ctrl-C` are honoured (the cancel's forced
+    return with the zone handoff D-54 kept), every other key ignored
+    (`continue`); the `[info] nothing to queue`/「queue accepts prompts
+    only…」 notices, the mid-turn echo and the `UserPrompt` enqueue are
+    gone;
+  - the raw and piped loops' idle release arms restored to the plain
+    terminal-event release (`prompt_state = Ready` on the notification, no
+    queue conjunct, no `pending_since` stamp), the raw arm keeping the
+    zone handoff and repaint the pre-FR-35 tree had;
+  - both park arms deleted with their `PARK_GRACE_MS`/`park_timer`
+    declarations (the self-healing fallback served only the queue's wait);
+  - the piped loop's stdin gate restored to `Ready || AwaitingApproval`
+    (mid-turn lines are not read);
+  - the queue's four unit pins, the approval-snapshot roundtrip pin and
+    `agent.rs`'s queued-prompt-survives-cancel boundary pin deleted;
+  - residual check: zero occurrences of every deleted identifier and
+    sentence in `src/`; zero `FR-35` mentions in `src/`.
+  Gates at the tree: the suite **663 unit + 6 integration, 0 failed**
+  (669 − 6, the deleted pins' own harnesses), clippy's only warnings the
+  two dead-store notes in test code proven pre-existing (a `git stash`
+  rebuild at the unmodified tip gave the identical warnings).
+- **T-103 (✅).** The CHANGELOG's `[Unreleased]` became the
+  `[0.44.0]`/`### Removed` entry recording the queue's deletion in user
+  language; `Cargo.toml` and `Cargo.lock` carried 0.44.0; the delivery
+  commit `b5deb9c` "Remove the prompt-input queueing feature" was pushed
+  (`d5cbbbe..b5deb9c  main -> main`); the tag `v0.44.0` was created and
+  pushed and verified pointing at `b5deb9c` (`git rev-parse
+  v0.44.0^{commit}`); the GitHub release `v0.44.0 — the prompt-input
+  queueing feature removed` was published and verified **Latest**
+  (`gh release list`'s Latest label; the release API read,
+  `https://github.com/aquaxis/agent-cli/releases/tag/v0.44.0`).
+- **T-104 (✅).** The three documents stand mutually consistent (C-08) on
+  the delivered record; the work log `2026-11-06_003.md` embeds the
+  instruction verbatim (Art. 7); the instruction stands byte-exact at exit
+  (349 bytes, sha256 `06620319…`); no document carries any mark of
+  authorship or tooling (NFR-12); the write surface: `src/app.rs`,
+  `src/agent.rs`, `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`, the three
+  `.aiprj` documents, the work log — inside C-13's list.
 
 ## The closed tasks of the delivered cycles (their records stand)
 
@@ -57,27 +113,28 @@ ledger's own consistency at the delivery cycle's exit.
 - **T-100** (the FR-44d example amendment) — ✅, closed 2026-11-05:
   delivered at `4fee899` (named by the follow-up `d5cbbbe`), the version
   carried to **0.43.0**.
-- **T-101** (FR-44e, the latest release) — ✅, **closed on this update's
-  own verification**: the GitHub release `v0.43.0` stands published with
-  `isLatest: true` programmatically read from the releases API (created
-  2026-11-05T10:57:38Z; `isLatest: false` for `v0.42.0`/`v0.41.0`), the
-  tag `v0.43.0` verified pointing at the delivery commit `4fee899`
-  (`git rev-parse v0.43.0^{commit}`), URL
-  `https://github.com/aquaxis/agent-cli/releases/tag/v0.43.0`. The
-  previous ledger carried no programmatic verification; this update's
-  record establishes it. FR-44e's requirement is discharged.
+- **T-101** (FR-44e, the latest release) — ✅, closed on the verification
+  this cycle's ground carried: the GitHub release `v0.43.0` stood published
+  with `isLatest: true` programmatically read from the releases API
+  (created 2026-11-05T10:57:38Z), the tag `v0.43.0` verified pointing at
+  the delivery commit `4fee899`.
 
-## Cross-cutting gates (C-09, the boundary)
+## Cross-cutting gates (C-09, the boundary) — closed ✅
 
-- Unit + integration at the removal tree: green, clippy silent (the gates
-  re-run at T-102's close; the counts re-derive — 669 − 4 unit pins —
-  per NFR-13), clippy **0 warnings**.
+- Unit + integration at the removal tree: **663 unit + 6 integration,
+  0 failed** — the counts re-derived (669 − 6 deleted pins) and the suite
+  green (C-09's re-execution clause).
+- Clippy: the two dead-store warnings in test code stand pre-existing
+  (verified against the unmodified tip by a `git stash` rebuild); no new
+  warning from the removal.
 - The boundary §6's shipped contracts unchanged: the queue **channel**
   (`AgentInput` FIFO), the shutdown drain's truthful answers
-  (`doc/architecture.md` §7 — a sentence the removal must not touch),
-  the peer-prompt queue, the approval takeover, the four-region screen,
-  and every closed cycle's delivered shape stand; T-102's deletions touch
-  only the queue feature itself (NFR-14).
+  (`doc/architecture.md` §7 — untouched), the peer-prompt queue, the
+  approval takeover, the four-region screen, the cancel keys' force-return
+  path (kept; the zone handoff D-54 rides it), `--exit-when-idle` (FR-32)
+  and every closed cycle's delivered shape stand — the removal touched
+  only the queue feature itself (NFR-14, verified by the residual scan's
+  zero hits and the write-surface list).
 - The `.aiprj` documents mutually consistent (C-08); the work log written
   per Art. 6/7; the instruction byte-exact at exit.
 
@@ -111,12 +168,12 @@ FR-39/FR-40 closed at `db68d3f`/`306f425`; the version carried to 0.40.0
 **"prompt input during a running turn — accepted and queued; the queue
 runs in order once the turn completes" (FR-35)** — closed, 2026-11-04
 (`c02862d`, v0.38.0, the tag and the release; gates 633+6). **Its
-delivered feature is the ask this cycle deletes** (FR-45a; the boundary
-§6's supersession clause): the feature ships at v0.43.0 (BL-M52) and the
-removal reinstates the pre-queue contract the CHANGELOG's `[0.38.0]`
-record and the queue's pins describe. The FR-35 cycle's own record stands
-closed as history; the removal is the new cycle's ask (FR-45), not a
-rewrite of the closed record.
+delivered feature is the ask this cycle deleted** (FR-45a; the boundary
+§6's supersession clause): the removal reinstated the pre-queue contract
+the CHANGELOG's `[0.38.0]` record and the queue's pins described, and the
+feature's history record stands (the CHANGELOG's `[0.38.0]` section). The
+FR-35 cycle's own record stands closed as history; the removal is the
+delivery cycle's ask (FR-45), not a rewrite of the closed record.
 
 Version trail: FR-32 `7fe1370` (version 0.35.0, never tagged) → FR-33
 `af48be5` (0.36.0, never tagged) → `ddeaf67` (FR-34's code; the tag
@@ -126,9 +183,10 @@ Version trail: FR-32 `7fe1370` (version 0.35.0, never tagged) → FR-33
 `85f9ce9` → v0.40.0 `505097a` → `856c2bf` → `eec12f9` → `064ce50` →
 v0.41.0 `25fe13c` → `3badc04` → `122f320` (the codex-code backend) →
 `af82155` (naming `122f320`) → `4fee899` (the FR-44d amendment; the tag
-`v0.43.0` on it) → `d5cbbbe` (naming `4fee899`). The FR-45 removal's
-delivery lands ahead; its sha is nameable only from the commit that
-follows it (the trail's rule).
+`v0.43.0` on it) → `d5cbbbe` (naming `4fee899`) → **`b5deb9c` (the
+queue's removal; the tag `v0.44.0` on it)** → the trail's follow-up (the
+commit that names `b5deb9c`) stands ahead, per the trail rule — a
+delivery commit's sha is nameable only from the commit that follows it.
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: the subagents' auto-exit (FR-32–FR-34, v0.37.0 on
@@ -140,12 +198,3 @@ scroll marker's face (FR-26, v0.33.0 on `6cc6661`); the running display
 v0.31.0 on `052e230`); add strata (FR-13–FR-17, v0.30.0–0.30.2); the
 peer-prompt cycles (v0.29.0, v0.28.0, v0.27.0); the mouse input cycle
 (v0.25.0, the 機能追加 addenda v0.26.0).
-
-## The boundary of the removal (— (NFR-14, C-08))
-
-The FR-43/FR-44 cycles' delivered contracts stand in the boundary §6; the
-removal touches only the queue feature itself — not the queue channel,
-not the shutdown drain, not the peer-prompt acceptance, not the approval
-takeover, not the four-region screen, not any provider surface. The
-FR-35 cycle's own closed record is not rewritten — the removal (FR-45)
-stands beside the closed records, exactly as FR-44 stood beside FR-43's.
