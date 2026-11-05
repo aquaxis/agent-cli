@@ -102,13 +102,17 @@ surface, **D-74** the version-carry/commit/push/release shape — all
   (`Cargo.toml`, `Cargo.lock`, the CHANGELOG's `[0.44.0]` heading), the
   delivery commit `b5deb9c` ("Remove the prompt-input queueing feature")
   carries the removal, the CHANGELOG entry, the release files and the
-  ledgers' record, the push went to `origin/main` (`d5cbbde..b5deb9c`),
+  ledgers' record, the push went to `origin/main` (`d5cbbbe..b5deb9c`),
   the tag `v0.44.0` verified on `b5deb9c` (`git rev-parse
   v0.44.0^{commit}`), and the GitHub release `v0.44.0 — the
   prompt-input queueing feature removed` was published and made the
   **latest** version — the exact machinery FR-44e's delivery exercised.
-  The trail rule governs the sha naming (the follow-up commit names
-  `b5deb9c` from behind it).
+  The trail rule governs the sha naming — fulfilled by the trail's
+  follow-up `6f0390f`, which names `b5deb9c` in the three ledgers and the
+  work log `2026-11-06_003.md` and stands pushed to `origin/main`
+  (verified at the 2026-11-06 ledger-consistency pass: the release
+  `v0.44.0` re-read **Latest** from the releases API, the tip re-parsed,
+  no product write).
 
 The instruction's clauses map one-for-one onto the decisions: the
 最優先事項 削除 → D-72's sites 1–4; ドキュメント更新 → D-73; the
@@ -169,7 +173,7 @@ as FR-44d shipped them), so no example write existed.
 (**663 unit + 6 integration, 0 failed** — 669 minus the six deleted
 pins), clippy carries only the two dead-store warnings verified to stand
 at the pre-removal tip as well (a `git stash` re-run reproduced them at
-`d5cbbde`; not this cycle's new debt), the tag `v0.44.0` verified on
+`d5cbbbe`; not this cycle's new debt), the tag `v0.44.0` verified on
 `b5deb9c`, the release verified **Latest** — these clauses are the
 acceptance criterion AC-38's, which §11 of the requirements traces here.*
 
@@ -180,7 +184,7 @@ claude-code backend drives `claude`, as a ninth `provider.kind`" (FR-44 a–e)**
 — closed, 2026-11-05: delivered at `122f320` (the backend
 `src/ai/codex_code.rs` delegation-only, the nine-kind wiring, the docs,
 the carry to 0.42.0) and `4fee899` (the FR-44d example amendment, the
-carry to 0.43.0), named by the follow-ups `af82155` and `d5cbbde`; the
+carry to 0.43.0), named by the follow-ups `af82155` and `d5cbbbe`; the
 FR-44e release **v0.43.0 verified latest** (requirements §2/§13, D-71).
 Gates **669 unit + 6 integration, 0 failed**. This cycle's tree state
 (v0.43.0) was their delivered ground; the codex-code backend stands

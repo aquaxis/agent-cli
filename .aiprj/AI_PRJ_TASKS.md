@@ -41,7 +41,16 @@ GitHub release `v0.44.0 — the prompt-input queueing feature removed` stands
 published as **Latest**. Gates at the close: **663 unit + 6 integration,
 0 failed** (669 − the six deleted pins), clippy carrying only the two
 dead-store warnings verified pre-existing at the previous tip (a `git
-stash` re-run at `d5cbbbe` produced the identical warnings).
+stash` re-run at `d5cbbbe` produced the identical warnings). The trail
+rule stands fulfilled — the follow-up `6f0390f` (「Record the queue
+removal's delivery in the ledger: the trail's follow-up」) names
+`b5deb9c` in the three ledgers and the work log `2026-11-06_003.md`, and
+the follow-up verified pushed to `origin/main`. The 2026-11-06 ledger-consistency
+pass (no product-tree write) re-verified the release `v0.44.0` standing
+**Latest** (the releases API re-read, `createdAt` 2026-11-05T23:18:45Z),
+the tag `v0.44.0` on `b5deb9c`, the version files at 0.44.0, and zero
+queue-mechanism identifiers in `src/`; the gates stand at the recorded
+close without a re-run.
 
 ## The cycle's tasks
 
@@ -49,7 +58,7 @@ stash` re-run at `d5cbbbe` produced the identical warnings).
 |---|---|---|---|---|---|
 | T-102 | The removal (FR-45a; design §1 D-72, §2 TPR-27, §3): delete the queue's mechanism at its named sites — the raw loop's Pending submit arm (the enqueue, the `!`/`/` refusals), the piped loop's mirror arms' mid-turn acceptance, the helpers `queued_count`/`queue_release_allowed`/`paint_queue_status`/`QUEUED_NOTICE_PREFIX`, the idle release arms' queue conjuncts on both loops, the park/pending_since machinery on both loops, the approval-time draft pair (`DraftSnapshot`/`snapshot_draft`/`restore_draft` and their call arms), the four unit pins, the approval-snapshot pin and `src/agent.rs`'s boundary pin — during a running turn the loop ignores plain typed input (only `Esc`/`Ctrl-C` act) and `Pending` releases on the turn's terminal event; the suite re-derives its counts (669 − 6) and stands green | FR-45a, NFR-13, NFR-14, NFR-15, C-09 | design §1 (D-72), §2 (TPR-27), §3 | T-104's ledger ground | ✅ |
 | T-103 | The completion (FR-45b, FR-45c; design §1 D-73, D-74, §4 W-69): the CHANGELOG's `[Unreleased]` became the `[0.44.0]` entry recording the removal in user language (the shipped READMEs/usage carried no queue sentence to correct — BL-M53's verified absence); the version carry 0.43.0 → **0.44.0** (`Cargo.toml`, `Cargo.lock`, the CHANGELOG heading); the delivery commit of the removal and the records, pushed to `origin/main`; the release published and made the **latest** version (the `isLatest` probe re-asked at 0.44.0) | FR-45b, FR-45c, NFR-11, NFR-15, C-14 | design §1 (D-73, D-74), §4 (W-69) | T-102 | ✅ |
-| T-104 | The ledger's own consistency and the byte-exact exit check (C-08, NFR-12, C-13, AC-38; design §4): the three documents stand mutually consistent (written this cycle; re-checked at the delivery close — W-69 marked ✅ on T-102's/T-103's records), the work log written per Art. 6/7 after `2026-11-06_002.md` (no overwrite), the instruction re-verified byte-exact at exit (349 bytes, sha256 `06620319…`), no document carrying any mark of authorship or tooling, the write surface inside Article 3's limit — **closed this update** (the ledgers' final pass; the trail's follow-up rule leaves `b5deb9c`'s own naming to the next cycle's commit, per the trail rule) | — (C-08, NFR-12, C-13, AC-38) | design §4 | T-102, T-103 | ✅ |
+| T-104 | The ledger's own consistency and the byte-exact exit check (C-08, NFR-12, C-13, AC-38; design §4): the three documents stand mutually consistent (written this cycle; re-checked at the delivery close — W-69 marked ✅ on T-102's/T-103's records), the work log written per Art. 6/7 after `2026-11-06_002.md` (no overwrite), the instruction re-verified byte-exact at exit (349 bytes, sha256 `06620319…`), no document carrying any mark of authorship or tooling, the write surface inside Article 3's limit — **closed** (the ledgers' final pass at its own session; the trail rule it left standing was then fulfilled — the follow-up `6f0390f` names `b5deb9c` in these ledgers and the work log `2026-11-06_003.md`, verified pushed to `origin/main` at the 2026-11-06 ledger-consistency pass) | — (C-08, NFR-12, C-13, AC-38) | design §4 | T-102, T-103 | ✅ |
 
 ## The execution record
 
@@ -137,6 +146,13 @@ stash` re-run at `d5cbbbe` produced the identical warnings).
   zero hits and the write-surface list).
 - The `.aiprj` documents mutually consistent (C-08); the work log written
   per Art. 6/7; the instruction byte-exact at exit.
+- The 2026-11-06 ledger-consistency pass (no product write): the release
+  `v0.44.0` re-read **Latest** from the releases API, the tag re-parsed on
+  `b5deb9c`, the tip `6f0390f` identical to `origin/main` at the pass, the instruction
+  byte-exact (349 bytes, sha256 `06620319…`), and the residual scan of
+  `src/` finding no deleted identifier — the `stop queued` shutdown-drain
+  line the sole remaining queue phrase (the separate mechanism §3.1's
+  scope keeps).
 
 ## The previous cycles' record
 
@@ -184,9 +200,11 @@ Version trail: FR-32 `7fe1370` (version 0.35.0, never tagged) → FR-33
 v0.41.0 `25fe13c` → `3badc04` → `122f320` (the codex-code backend) →
 `af82155` (naming `122f320`) → `4fee899` (the FR-44d amendment; the tag
 `v0.43.0` on it) → `d5cbbbe` (naming `4fee899`) → **`b5deb9c` (the
-queue's removal; the tag `v0.44.0` on it)** → the trail's follow-up (the
-commit that names `b5deb9c`) stands ahead, per the trail rule — a
-delivery commit's sha is nameable only from the commit that follows it.
+queue's removal; the tag `v0.44.0` on it)** → **`6f0390f`** (the trail's
+follow-up, naming `b5deb9c` in the three ledgers and the work log
+`2026-11-06_003.md`) → the ledger-consistency pass's own record stands
+ahead, per the trail rule — a delivery commit's sha is nameable only from
+the commit that follows it.
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: the subagents' auto-exit (FR-32–FR-34, v0.37.0 on
