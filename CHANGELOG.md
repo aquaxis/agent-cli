@@ -4,6 +4,51 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.41.0]
+
+### Changed
+
+- **The source is one shape where it used to be many, and carries no dead
+  weight.** The five providers assembled the same HTTP error chain by hand —
+  the request id read from the headers or the body, the status and reason,
+  the body, the hint, the provider context — so one call,
+  `http_error(provider, status, headers, text, context)`, now builds it and
+  the five sites pass what each already had (`claude`, `codex` with its own
+  kind label, `llamacpp`, `ollama`, `opencode`). The same consolidation
+  collapses the eight verbatim test contexts into one `test_ctx()`, and
+  resolves the eleven `#[allow(dead_code)]` blankets item by item: six stood
+  over something nothing calls and the item goes with the blanket
+  (`bytes_to_lines` and the imports only it used, `AppError::Tool`/`Ui`/
+  `Agent` and their constructors, `RegistryHandle.dir`, `ConversationLog.path`,
+  `Agent.name` with its two construction sites), four stood over something
+  that is called so only the blanket goes (`Agent.config`,
+  `RegistryHandle.socket_path`, `LogEvent`, `ToolRegistry::names`), and the
+  test-only `GroupId::generate` keeps the item behind `#[cfg(test)]`. clippy
+  now reports **0 warnings**; the seven it used to report are fixed at their
+  sites (`is_none_or`, `&Path` for `&PathBuf`, the merged `if let`) rather
+  than tolerated. No behaviour changed and no test was removed.
+
+### Fixed
+
+- **The elapsed row no longer lands on the prompt's bottom line.** The
+  running display painted relative to the caret, which during a turn stands
+  inside the prompt block, so a turn the input loop had not submitted itself
+  — a peer prompt arriving over IPC, a queued prompt the agent dequeued, the
+  window right after a drain — could repaint the spinner and the elapsed time
+  onto the bottom-most row about ten times a second. The prompt block now
+  owns its rows: `StatusIndicator` carries a `prompt_owned` flag that stands
+  down every cursor-relative write (the tick, the paint, the repaint, the
+  clear, and the finish's screen write — the transcript record still runs, so
+  the outcome line is never lost), and a 150 ms reconcile step hands the rows
+  above the prompt to the turn zone the moment a turn is seen in flight that
+  the loop did not submit, handing them back when it ends. The beat's paint
+  loops are also floored at the prompt's top edge, so a clock block or a peer
+  band taller than the space above the prompt drops only its lowest reasoning
+  rows and keeps the elapsed row. The bottom-most line is the prompt's alone,
+  and the elapsed row stays displayed above it.
+
+## [0.40.0]
+
 ### Added
 
 - **The terminal composes four display regions while a turn runs.** From
