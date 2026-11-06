@@ -1,0 +1,70 @@
+name: release
+
+# Publish a GitHub release for the newest tag that has none yet. The repo's
+# delivery convention names the tag on the delivery commit and carries the
+# CHANGELOG section for it; the release standing the latest version is the
+# shipped delivery clause's verification face.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the newest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          TAG="$(git describe --tags --abbrev=0)"
+          VERSION="${TAG#v}"
+          echo "newest tag: $TAG"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already published; nothing to do"
+            exit 0
+          fi
+
+          # The tag's own CHANGELOG section: body under the `## [X]` heading.
+          SECTION="$(git show "$TAG:CHANGELOG.md" |
+            awk -v want="## [$VERSION]" '
+              index($0, want) == 1 { on = 1; next }
+              on && /^## \[/ { exit }
+              on { print }
+            ')"
+
+          if [ -z "$SECTION" ]; then
+            echo "no CHANGELOG section for $VERSION; refusing to publish a bare release"
+            exit 1
+          fi
+
+          SUMMARY="$(printf '%s\n' "$SECTION" |
+            sed -n 's/^- \*\*\(.*\)\*\*$/\1/p' | head -n1 |
+            sed 's/`//g')"
+
+          NOTES_FILE="$(mktemp)"
+          trap 'rm -f "$NOTES_FILE"' EXIT
+          printf '%s\n' "$SECTION" > "$NOTES_FILE"
+
+          if [ -n "$SUMMARY" ]; then
+            TITLE="$TAG — $SUMMARY"
+          else
+            TITLE="$TAG"
+          fi
+
+          echo "publishing: $TITLE"
+          gh release create "$TAG" \
+            --verify-tag \
+            --latest \
+            --title "$TITLE" \
+            --notes-file "$NOTES_FILE"
