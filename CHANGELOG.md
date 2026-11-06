@@ -4,7 +4,21 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
-## [0.47.0]
+## [0.48.0]
+
+### Fixed
+
+- **After the `[answer]` display finishes, the prompt is displayed again — every
+  time.** A turn's terminal event now always hands the bottom rows back through
+  the shipped flow (the pending wait or, for a turn the REPL did not submit, the
+  same hand-off the typed path returns through), so the prompt never has to wait
+  for a mouse click or a later keystroke. Two shipped display deferrals are
+  repaired with it: the running-turn marker no longer drops a still-streaming
+  turn (its edge only ends at the terminal event now), so the remaining deltas
+  of an answer stay composed above the running display instead of painting over
+  the freshly returned prompt, and the turn's row erase writes each named row's
+  first column again (the shipped emit had the row and column in the other slot,
+  so every pass swept the banner row's columns and never the rows it named).
 
 ### Fixed
 

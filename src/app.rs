@@ -439,6 +439,13 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     // triggered by `/quit`, EOF, SIGINT, or SIGTERM, `shutdown_tx.send(true)` propagates to all tasks.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // The turn-in-flight watch (FR-49): the display task's `TurnStart` lands here
+    // the same instant the loop sees it, so the running turn's zone arms without
+    // waiting the reconcile tick — the window between a turn's end and the next
+    // one's arm would otherwise stream the answer's leading deltas straight
+    // onto the freshly returned prompt's own rows.
+    let (turn_in_flight_tx, turn_in_flight_rx) = watch::channel(false);
+
     // AI response completion notification channel (FR-03-2 / design doc 4.2A). Fired when
     // display_task observes `Done`, releasing the input loop from `Pending` state.
     let (agent_idle_tx, agent_idle_rx) = mpsc::channel::<()>(8);
@@ -529,6 +536,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let stdin_task = {
         let shutdown_tx = shutdown_tx.clone();
         let shutdown_rx = shutdown_rx.clone();
+        let turn_rx_for_stdin = turn_in_flight_rx.clone();
         tokio::spawn(async move {
             run_input_loop(
                 tokio::io::stdin(),
@@ -539,6 +547,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
                 agent_idle_rx,
                 approval_rx,
                 true,
+                Some(turn_rx_for_stdin),
             )
             .await;
         })
@@ -550,6 +559,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let show_thinking = config.ui.show_thinking_mode();
     let display_suppress = suppress.clone();
     let display_turn_flag = turn_in_flight.clone();
+    let display_turn_tx = turn_in_flight_tx.clone();
     let display_indicator = indicator.clone();
     let display_task = tokio::spawn(run_display_task(
         event_rx,
@@ -557,6 +567,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         display_indicator,
         display_suppress,
         display_turn_flag,
+        display_turn_tx,
         show_thinking,
         theme,
         progress_enabled,
@@ -1572,7 +1583,12 @@ fn zone_csi_move(col: u16, row: u16) -> String {
 }
 
 fn zone_csi_clear_row(row: u16) -> String {
-    format!("{}\x1b[2K", zone_csi_move(row, 0))
+    // The crossterm row-first convention: `zone_csi_move(col, row)` emits
+    // the row first. Passing `row` as the column emitted a crawl along
+    // row 1's columns — the erase never touched the rows it named and
+    // kept clearing the banner row instead (the shipped erase's own
+    // coordinates; FR-49).
+    format!("{}\x1b[2K", zone_csi_move(0, row))
 }
 
 fn lock_zone() -> std::sync::MutexGuard<'static, Option<TurnZone>> {
@@ -2563,6 +2579,7 @@ async fn run_display_task(
     display_indicator: Arc<std::sync::Mutex<StatusIndicator>>,
     display_suppress: Arc<AtomicUsize>,
     display_turn_flag: Arc<AtomicBool>,
+    turn_in_flight_tx: watch::Sender<bool>,
     show_thinking: ShowThinkingMode,
     theme: Theme,
     progress_enabled: bool,
@@ -2612,7 +2629,23 @@ async fn run_display_task(
         // a normal turn occupies the agent exactly between its TurnStart
         // and its terminal event; on a suppressed (cancelled) tail the
         // consuming terminal clears the flag the same way.
-        display_turn_flag.store(matches!(ev, AgentEvent::TurnStart), Ordering::SeqCst);
+        let turn_start = matches!(ev, AgentEvent::TurnStart);
+        // The flag carries the TurnStart-to-terminal correspondence (a turn is
+        // in flight between those edges, not merely on the edge): only the
+        // two edges write it. The shipped store flipped it false on the first
+        // streamed delta, so a running turn read as ended from that instant —
+        // the cancel bookkeeping and the reconcile tick both saw a turn that
+        // was still streaming (FR-49's face: the remaining deltas painted at
+        // the prompt's own rows mid-turn).
+        if matches!(ev, AgentEvent::TurnStart) {
+            display_turn_flag.store(true, Ordering::SeqCst);
+        } else if is_idle {
+            display_turn_flag.store(false, Ordering::SeqCst);
+        }
+        // The loop's synchronous arm (FR-49): the watch's send is a no-op when
+        // the stored value already matches, so a turn that opens behind an
+        // unread notification does not double-arm the zone.
+        let _ = turn_in_flight_tx.send(turn_start);
         // While a cancelled turn is still draining, its remaining events are
         // dropped and its terminal event yields no idle notification (it
         // must not release a *later* turn from Pending).
@@ -2864,6 +2897,7 @@ pub(crate) async fn run_input_loop<R>(
     agent_idle_rx: mpsc::Receiver<()>,
     approval_rx: mpsc::Receiver<ApprovalRequest>,
     interactive: bool,
+    turn_in_flight_rx: Option<watch::Receiver<bool>>,
 ) where
     R: AsyncRead + Unpin,
 {
@@ -2878,6 +2912,7 @@ pub(crate) async fn run_input_loop<R>(
             shutdown_rx,
             agent_idle_rx,
             approval_rx,
+            turn_in_flight_rx,
         )
         .await;
     } else {
@@ -2890,6 +2925,7 @@ pub(crate) async fn run_input_loop<R>(
             agent_idle_rx,
             approval_rx,
             interactive,
+            turn_in_flight_rx,
         )
         .await;
     }
@@ -3011,7 +3047,11 @@ async fn run_input_loop_raw(
     shutdown_rx: watch::Receiver<bool>,
     agent_idle_rx: mpsc::Receiver<()>,
     approval_rx: mpsc::Receiver<ApprovalRequest>,
+    turn_in_flight_rx: Option<watch::Receiver<bool>>,
 ) {
+    // The watch arm is the loop's synchronous turn-start listener (FR-49); the
+    // borrow must be mutable so `changed()` can stand on the shared receiver.
+    let mut turn_in_flight_rx = turn_in_flight_rx;
     // Enable raw mode; guard restores on drop (NFR-04)
     let _raw_guard = match RawModeGuard::enable() {
         Ok(g) => g,
@@ -3029,6 +3069,7 @@ async fn run_input_loop_raw(
                 agent_idle_rx,
                 approval_rx,
                 true,
+                turn_in_flight_rx,
             )
             .await;
             return;
@@ -3132,18 +3173,89 @@ async fn run_input_loop_raw(
                     break;
                 }
             }
-            // Only wait for AI response completion when in Pending state
-            res = agent_idle_rx.recv(), if prompt_state.is_pending() => {
+            // The turn's synchronous arm (FR-49): a `TurnStart` lands the same
+            // instant the display task says so — no 150 ms window streams the
+            // turn's leading deltas onto rows the zone has not taken yet. The
+            // running flow's own states keep their spans (the approval's
+            // takeover arms the zone the same way at its own hand-off).
+            changed = async {
+                match turn_in_flight_rx.as_mut() {
+                    Some(rx) => rx.changed().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                // No select-level `if`: the arm's own condition is snapshotted
+                // when the select enters, so a change the loop blocked on would
+                // never wake a disabled branch — the same 150 ms window the
+                // reconcile tick serves would stream the turn's leading deltas
+                // onto the prompt's freshly returned rows. The body refines:
+                // the sends follow the terminal's own edge (`TurnStart` results
+                // in true, terminal in false), so a no-op send does not run the
+                // arm either (FR-49).
+                let _ = changed;
+                if !turn_in_flight_rx.as_ref().map(|rx| *rx.borrow()).unwrap_or(false) {
+                    // The terminal's edge: the idle arm owns the hand-off, so a
+                    // zone that stands still disarms on its own path.
+                } else if state.turn_in_flight.load(Ordering::SeqCst)
+                    && !prompt_state.is_pending()
+                    && !zone_armed()
+                {
+                    zone_arm(&state);
+                    if prompt_state.is_awaiting_approval() {
+                        zone_paint_span(
+                            &state.theme,
+                            Role::Confirm,
+                            APPROVAL_PROMPT,
+                            &input_state,
+                            None,
+                        );
+                    }
+                }
+            }
+            // The turn terminal's prompt handoff (FR-49): the notification is
+            // consumed in every state, so the prompt the answer's display
+            // completes onto is the shipped flow's own return, never the
+            // reconcile timer's. Pending: the typed path's handoff, as
+            // shipped. Ready with no turn in flight: a turn this loop did not
+            // submit (peer/serve) ended — the same handoff, so the prompt
+            // returns between back-to-back turns instead of racing the next
+            // TurnStart against the 150 ms tick. AwaitingApproval or a turn
+            // already in flight: the running flow's own rows (the approval
+            // span and the next turn keep the zone); the mark is dropped
+            // quietly, the same quietness the click pass serves (FR-48b).
+            res = agent_idle_rx.recv() => {
                 match res {
                     Some(()) => {
-                        prompt_state = PromptState::Ready;
-                        // The handoff (D-54): the zone gives the screen
-                        // back — its rows erased, the record's tail replayed
-                        // above the fresh prompt — before the shipped render.
-                        zone_disarm();
-                        // Redraw prompt after AI response on a fresh line
-                        renderer.reset();
-                        render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                        if prompt_state.is_pending() {
+                            prompt_state = PromptState::Ready;
+                            // The handoff (D-54): the zone gives the screen
+                            // back — its rows erased, the record's tail
+                            // replayed above the fresh prompt — before the
+                            // shipped render.
+                            zone_disarm();
+                            // Redraw prompt after AI response on a fresh line
+                            renderer.reset();
+                            render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                        } else if prompt_state.is_awaiting_approval()
+                            || state.turn_in_flight.load(Ordering::SeqCst)
+                        {
+                            // The running flow's own: the approval the user
+                            // answers and the turn that started keep the
+                            // screen; the notification is not the handoff.
+                        } else {
+                            // The loop sat ready while the turn ran (a
+                            // peer/serve prompt): the turn ended, so the
+                            // prompt returns the same way the typed path
+                            // returns it — unless the reconcile tick had
+                            // handed the rows back earlier (its own disarm
+                            // fired first), whose paint this one would only
+                            // duplicate a row above the fresh prompt.
+                            if zone_armed() {
+                                zone_disarm();
+                                renderer.reset();
+                                render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                            }
+                        }
                     }
                     None => break,
                 }
@@ -3947,6 +4059,7 @@ async fn run_input_loop_line<R>(
     mut agent_idle_rx: mpsc::Receiver<()>,
     approval_rx: mpsc::Receiver<ApprovalRequest>,
     interactive: bool,
+    _turn_in_flight_rx: Option<watch::Receiver<bool>>,
 ) where
     R: AsyncRead + Unpin,
 {
@@ -5310,7 +5423,7 @@ async fn render_prompt(
     state: &Arc<ReplState>,
     input_state: &InputState,
 ) {
-    render_prompt_with_run(
+render_prompt_with_run(
         overlay,
         renderer,
         stdout,
@@ -5404,7 +5517,7 @@ async fn render_prompt_with_run(
         // the elapsed row above the span (FR-37a/FR-40); `finish` still records
         // the outcome row, so nothing is lost from the transcript.
         lock_indicator(&state.indicator).set_prompt_owned(true);
-        renderer.render(
+renderer.render(
             stdout,
             &state.theme,
             role,
@@ -5443,7 +5556,7 @@ async fn draw_scrolled(
     } else {
         (Role::PromptSymbol, PROMPT)
     };
-    render_prompt_with_run(
+        render_prompt_with_run(
         overlay,
         renderer,
         stdout,
@@ -6006,6 +6119,7 @@ mod tests {
             Arc::new(std::sync::Mutex::new(StatusIndicator::disabled())),
             Arc::new(AtomicUsize::new(0)),
             Arc::new(AtomicBool::new(false)),
+            watch::channel(false).0,
             ShowThinkingMode::Hidden,
             Theme::plain(),
             false,
@@ -6275,6 +6389,7 @@ mod tests {
                 idle_rx,
                 dummy_approval_rx(),
                 false,
+                None,
             )
             .await;
         });
@@ -6358,6 +6473,7 @@ mod tests {
                 idle_rx,
                 dummy_approval_rx(),
                 false,
+                None,
             )
             .await;
         });
@@ -6405,6 +6521,7 @@ mod tests {
                 idle_rx,
                 dummy_approval_rx(),
                 false,
+                None,
             )
             .await;
         });
@@ -6439,6 +6556,7 @@ mod tests {
                 idle_rx,
                 dummy_approval_rx(),
                 false,
+                None,
             )
             .await;
         });
@@ -6472,6 +6590,7 @@ mod tests {
                 idle_rx,
                 dummy_approval_rx(),
                 false,
+                None,
             )
             .await;
         });
@@ -6509,6 +6628,7 @@ mod tests {
                 idle_rx,
                 dummy_approval_rx(),
                 false,
+                None,
             )
             .await;
         });
@@ -6544,6 +6664,7 @@ mod tests {
                 idle_rx,
                 approval_rx,
                 false,
+                None,
             )
             .await;
         });
@@ -6628,6 +6749,7 @@ mod tests {
                 idle_rx,
                 approval_rx,
                 false,
+                None,
             )
             .await;
         });
@@ -7801,6 +7923,37 @@ mod tests {
             !lines.iter().any(|l| l.contains(SPINNER_FRAMES[0])),
             "no transient spinner row was recorded"
         );
+    }
+
+    #[test]
+    fn the_zone_erase_clears_each_row_it_names() {
+        // FR-49: the erase's emit must address each named row's first column
+        // under the crossterm row-first convention — a `\x1b[{row+1};1H`
+        // cursor position, then the line erase. The shipped call passed the
+        // row into the column slot, so every beat and every disarm erased
+        // row 1's columns instead of the row it named: the banner row was
+        // the only surface the zone ever cleared.
+        assert_eq!(zone_csi_clear_row(0), "\x1b[1;1H\x1b[2K");
+        assert_eq!(zone_csi_clear_row(1), "\x1b[2;1H\x1b[2K");
+        assert_eq!(zone_csi_clear_row(7), "\x1b[8;1H\x1b[2K");
+        assert_eq!(zone_csi_move(0, 5), "\x1b[6;1H");
+        assert_eq!(zone_csi_move(3, 5), "\x1b[6;4H");
+    }
+
+    #[test]
+    fn the_zone_disarm_plan_never_replays_below_the_painted_top() {
+        // FR-49's handoff arithmetic: the replay budget is the span of rows
+        // between the painted top and the tail floor; a zone that painted
+        // nothing replays nothing (the degenerate arm), and a zone whose
+        // beats painted the whole screen replays every row but the prompt's.
+        let degenerate = zone_disarm_plan(26, 25);
+        assert_eq!(degenerate.tail_floor, 24);
+        assert_eq!(degenerate.budget, 0);
+        let full = zone_disarm_plan(26, 0);
+        assert_eq!(full.budget, 25);
+        assert_eq!(zone_disarm_plan(26, 14).budget, 11);
+        // A height too small to hold the prompt and a row above it replays nothing.
+        assert_eq!(zone_disarm_plan(1, 0).budget, 0);
     }
 
     #[test]
