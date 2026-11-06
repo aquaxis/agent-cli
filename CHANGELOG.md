@@ -2,6 +2,8 @@
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
 ## [0.47.0]
 
 ### Fixed
@@ -43,8 +45,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
   (`Esc`/`Ctrl+C` still stop a running turn), and while you are scrolled back
   the pinned block keeps its composition (the clock row above the prompt
   line, `Message below` above that).
-
-## [Unreleased]
 
 ## [0.44.0]
 
