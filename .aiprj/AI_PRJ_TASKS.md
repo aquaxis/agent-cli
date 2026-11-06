@@ -54,7 +54,7 @@ the commit, the push, and the release standing latest
 |---|---|---|---|---|---|
 | T-105 | The bottom-line fix (FR-46a; design §1 D-75, §2 TPR-28, §3): flip the mid-turn standing shape — the clock block's last row on the screen's bottom row while the agent runs (`zone_beat` `src/app.rs:1635`, the plan `:1599`, the beat's floor re-derived), the prompt span's paint retired from the armed screens (`zone_paint_span` `:1797` no longer called mid-turn; no prompt display mid-turn — per AS-74), the release arms (`:2973–2986`) carrying the prompt display back at every input-possible handoff; the disarm erases the zone's whole region and frees the bottom row for the shipped prompt render at the handoff; the pins re-derive at the flipped shape (the beat plan `:6983`, the disarm fresh-row `:7051`, the budgets `:7090`, `:7106`, the scrolled-side pins per AS-73) | FR-46a, NFR-13, NFR-14, NFR-15, C-15 | design §1 (D-75), §2 (TPR-28), §3 | T-107's ledger ground | ⬜ |
 | T-106 | The completion (FR-46b, FR-46c; design §1 D-76, D-77, §4 W-70): the shipped docs follow — the CHANGELOG's `[Unreleased]` becomes the `[0.45.0]` entry recording the flipped bottom line in user language (the clock at the bottom mid-turn, no prompt display while the agent runs, the prompt back when input is possible; the `[0.42.0]` entry stands as history), the README's `:13` peer-clock sentence, `doc/usage.md`'s `:77–79` clock sentence and `:418` wheel sentence, and the `/help` subagent sentence (`src/app.rs:5307–5308`) corrected to the flipped reading; the version carry 0.44.0 → **0.45.0** (`Cargo.toml`, `Cargo.lock`, the CHANGELOG heading); the delivery commit of the fix and the documents, pushed to `origin/main`; the release published and made the **latest** version (the FR-45c machinery repeated at 0.45.0 — the `isLatest` probe re-asked) | FR-46b, FR-46c, NFR-11, NFR-15, C-14 | design §1 (D-76, D-77), §4 (W-70) | T-105 | ⬜ |
-| T-107 | The cycle's ledger ground — **closed at this update** (the ledgers' write pass): the instruction re-verified byte-exact at the pass (699 bytes, sha256 `5cb53102…`), the three documents written mutually consistent (C-08) on the pending cycle (FR-46 a/b/c, BL-M54–BL-M55, TPR-28, D-75–D-77, T-105/T-106/T-107, W-70 ⬜, AC-39, AS-73–AS-76, C-08/C-09/C-12/C-14/C-15), the work log `2026-11-06_005.md` written after `_004` (no overwrite), no document carrying any mark of authorship or tooling, the write surface inside Article 3's limit (the three documents + the work log; no product file touched at the pass) | — (C-08, NFR-12, C-15) | design §4 | — | ✅ |
+| T-107 | The cycle's ledger ground — **closed at this update** (the ledgers' write pass): the instruction re-verified byte-exact at the pass (699 bytes, sha256 `5cb53102…`), the three documents written mutually consistent (C-08) on the pending cycle (FR-46 a/b/c, BL-M54–BL-M55, TPR-28, D-75–D-77, T-105/T-106/T-107, W-70 ⬜, AC-39, AS-73–AS-75, C-08/C-09/C-12/C-14/C-15), the work log `2026-11-06_005.md` written after `_004` (no overwrite), no document carrying any mark of authorship or tooling, the write surface inside Article 3's limit (the three documents + the work log; no product file touched at the pass) | — (C-08, NFR-12, C-15) | design §4 | — | ✅ |
 
 ## The execution record
 
@@ -66,14 +66,20 @@ the commit, the push, and the release standing latest
   first text, then **re-aligned byte-exact to the second text** (the
   read-back caught the drift). The three documents stand on the final ask:
   the requirements (FR-46 a/b/c, BL-M54–BL-M55, the scope §4, the
-  assumptions AS-73–AS-76, the acceptance AC-39), the design (D-75/D-76/
+  assumptions AS-73–AS-75, the acceptance AC-39), the design (D-75/D-76/
   D-77, §2 TPR-28, §3 the five-angle verdicts, §4 W-70 ⬜), the tasks (this
   document) — mutually consistent on the pending state; the gates stand at
   the FR-45 close's **663 unit + 6 integration, 0 failed** (no product write
   at the pass; the suite re-runs at the delivery close per NFR-13); the work
   log `2026-11-06_005.md` written per the Operation Guidelines (the next
-  free index after `_004`). The delivery cycle (T-105, T-106) re-runs the
-  gates and re-verifies the instruction byte-exact at its exit (AC-39).
+  free index after `_004`), and the pass's record committed and pushed per
+  the trail convention (`2557f7f`, naming `0d45242`). A re-load pass
+  (2026-11-06, this document's T-107 record re-bound) re-verified the
+  instruction byte-exact (699 bytes, `5cb53102…`), the tree clean at
+  `2557f7f` with `main` ≡ `origin/main`, and the work log
+  `2026-11-06_006.md` written at the next free index after `_005`. The
+  delivery cycle (T-105, T-106) re-runs the gates and re-verifies the
+  instruction byte-exact at its exit (AC-39).
 
 ## The closed tasks of the delivered cycles (their records stand)
 
@@ -164,8 +170,9 @@ v0.41.0 `25fe13c` → `3badc04` → `122f320` (the codex-code backend) →
 `v0.43.0` on it) → `d5cbbbe` (naming `4fee899`) → `b5deb9c` (the queue's
 removal; the tag `v0.44.0` on it) → `6f0390f` (the trail's follow-up,
 naming `b5deb9c`) → `0d45242` (the ledger re-alignment, naming `6f0390f`)
-→ **the FR-46 delivery commit stands ahead, per the trail rule** — a
-commit's sha is nameable only from the commit that follows it.
+→ `2557f7f` (the FR-46 ledger record, naming `0d45242`) → **the FR-46
+delivery commit stands ahead, per the trail rule** — a commit's sha is
+nameable only from the commit that follows it.
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5: the subagents' auto-exit (FR-32–FR-34, v0.37.0 on

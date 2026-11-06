@@ -173,9 +173,10 @@ exists unless the delivery's read contradicts it.
   (`isLatest` for `v0.45.0`), the tag-target verification
   (`git rev-parse v0.45.0^{commit}`). The probes executed at this pass:
   the release `v0.44.0` Latest re-read (the releases API,
-  `createdAt` 2026-11-05T23:18:45Z), the tree clean at `0d45242`, the
-  instruction byte-exact (699 bytes, sha256 `5cb53102…`, re-verified at
-  the pass's exit).
+  `createdAt` 2026-11-05T23:18:45Z), the tree clean at `2557f7f` (the
+  ledger record following `0d45242`, its own sha nameable from the commit
+  that follows it), the instruction byte-exact (699 bytes, sha256
+  `5cb53102…`, re-verified at the pass's exit).
 - **The docs angle (C-15, D-76).** The ledger's three documents and the
   work log; the products the standing sentence names (the source surfaces,
   the README/usage/help/architecture sentences naming the shipped shape,
@@ -188,12 +189,13 @@ exists unless the delivery's read contradicts it.
 | W-70 | FR-46 a/b/c — the mid-turn standing shape inverted at D-75's named sites (the clock block the screen's bottom-most row alone while the agent runs — no prompt span mid-turn; the prompt restored at every input-possible handoff), the scrolled screen kept whole (AS-73), the shipped contracts other than the swapped tenant intact, the docs rewritten at the sentences naming the old shape (D-76), the version carry to **0.45.0**, the delivery committed and pushed, the release standing latest | FR-46a, FR-46b, FR-46c, NFR-13, NFR-14, NFR-15, AS-73, AS-74, AS-75, TPR-28 | T-105, T-106, T-107 | ⬜ |
 
 *W-70's execution record stands at the delivery close (T-105/T-106's
-record); this pass's own record — the ledger write — verified the ground
+records — the recording pass and this re-load pass — verified the ground
 live: the release `v0.44.0` Latest (re-read 2026-11-06,
-`createdAt` 2026-11-05T23:18:45Z), the tree clean at `0d45242` with
-`main` ≡ `origin/main`, the version files at 0.44.0, the instruction
-byte-exact (699 bytes, sha256 `5cb53102…`). The gate counts re-derive at
-the delivery tree (C-09; the recorded ground **663 unit + 6 integration,
+`createdAt` 2026-11-05T23:18:45Z), the tree clean at the recording pass's
+tip `2557f7f` and again at this pass's re-read (`main` ≡ `origin/main`
+both times), the version files at 0.44.0, the instruction byte-exact
+(699 bytes, sha256 `5cb53102…`). The gate counts re-derive at the
+delivery tree (C-09; the recorded ground **663 unit + 6 integration,
 0 failed** at the FR-45 close, the product tree unchanged since).*
 
 ## 5. The previous cycles' records (already retired; one shared record with the requirements' §12)
