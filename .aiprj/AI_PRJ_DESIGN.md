@@ -168,8 +168,13 @@ release section above the heading, against the ground records' 「the
 empty `[Unreleased]` heading stands above the newest entry」), and the
 heading was hoisted to directly precede `[0.47.0]` (`315ee7f`; no release
 content changed, no version carry, no new release — no feature added;
-the trail `8c26ecc` → `f9ec9ae` → `e1b9118` → `7d8e621` → `315ee7f`,
-HEAD; C-08): the tag `v0.47.0` on
+the trail `8c26ecc` → `f9ec9ae` → `e1b9118` → `7d8e621` → `315ee7f`; the
+follow-ups `13d4356`/`442bc19` committed the 23:10 session's ledgers and
+log and the 22:54 pass's untracked log behind it, and the 23:16 re-load
+pass re-verified the instruction byte-exact against HEAD `442bc19`
+(`main` ≡ `origin/main`, the release standing latest, the CHANGELOG's
+heading order intact, the product tree unchanged since the hoist; C-08):
+the tag `v0.47.0` on
 `f9ec9ae`, the `/releases/latest` endpoint resolving `v0.47.0 — the mouse-click
 display fixed` as the repo's latest release (id 436429139), the gates green
 (**665 unit + 6 integration, 0 failed**) and clippy standing **five** distinct
