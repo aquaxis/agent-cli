@@ -1,181 +1,194 @@
 # AI_PRJ_DESIGN.md — Design Specification
 
 Project: `agent-cli`
-Cycle: "the one-shot mode added — one prompt in, the answer out, the session
-ends" (FR-47 a/b/c)
+Cycle: "the one-shot mode added — `agent-cli one-shot <prompt>`: one prompt
+in, the printed answer out, then exit — no REPL, no IPC server, no registry
+entry" (FR-47 a/b/c)
 (`.aiprj/instructions.md`, reloaded 2026-11-06 10:02:20 +0900 — sha256
-`5f369e12…`, 800 bytes, recorded in requirements §2; the tree carries
-v0.45.0, its release `v0.45.0` verified Latest at the delivery close of the
-FR-46 cycle and re-read at this cycle's ground)
+`5f369e12…`, 800 bytes, recorded in requirements §2; the tree carried
+v0.45.0, its release `v0.45.0` verified Latest at the cycle's ground)
 Paired with `AI_PRJ_REQUIREMENTS.md`, `AI_PRJ_TASKS.md`.
 
 Requirement IDs (FR-/NFR-/AS-/AC-) refer to `AI_PRJ_REQUIREMENTS.md`.
 
 ---
 
-## 1. What is decided, and what it costs
+## 1. What was decided, and what it cost
 
-The instruction's newest 最優先事項 section is an addition: 「ワンショットで
-完結するモードを追加する」 — add a mode that completes in one shot. The
-shipped surface today offers three session shapes: the interactive REPL
-(`run`), the headless IPC server (`serve`, `spawn`), and the peer-targeting
-queries (`send`/`ask` — both need an already-running peer). No shape runs one
-prompt locally and exits. The design decision is **D-78 — the one-shot mode
-is a new `oneshot` subcommand that assembles an agent exactly as `run_headless`
-does, feeds it one prompt, prints the streamed answer to stdout, and exits**
-— no IPC server, no registry entry (a transient session that outlives
-nothing), no REPL, no display task: the answer is the output. The standing
-delivery sentence governs the completion: **D-79** the docs surface,
-**D-80** the version/commit/push/release shape.
+The instruction's new 最優先事項 section 「ワンショットモードの追加」 names one
+addition: 「ワンショットで完結するモードを追加する」 — a mode that completes in
+one shot. The FR-46 section above it stands **delivered** (v0.45.0, `ebe0aca`;
+the requirements' §13), so this cycle adds only the mode. The design decision
+is **D-78 — the one-shot mode is a new subcommand, `agent-cli one-shot
+<prompt>`, riding the headless assembly with no IPC server, no REPL and no
+registry entry, printing the answer and exiting**. The CLI already holds the
+two ends of the scale — `run` (the interactive REPL) and `serve`/headless
+(the resident peer) — and the one-shot fills the gap between them: a session
+shorter than `serve`, with no IPC surface at all, yet with the full provider/
+tools/MCP/persona assembly.
 
-- **D-78 — the one-shot pipeline, headless-shaped and terminal-bound.**
-  In `src/cli.rs`: a new `Command::Oneshot { text, … }` variant — the
-  prompt as the positional argument — carrying the same
-  provider/model/persona/name overrides `RunArgs` already gives (the mode
-  reuses `RunArgs` by flattening, so every override the REPL takes works
-  here). In `src/main.rs`: the dispatch arm loads the config exactly like
-  `Run`/`Serve`. In `src/app.rs`: a new `pub async fn run_oneshot(...)` —
-  the `run_headless` assembly minus the IPC server and the registry write:
-  persona resolution (`persona::resolve` with the same project-persona
-  read), `config.apply_persona_overrides`, `ai::build`, the tool registry +
-  MCP attach, the conversation log, the `Agent` struct with `approval_tx:
-  None` and `exit_when_idle: true` semantics by construction. The turn:
-  `AgentInput::UserPrompt(text)` sent once, the input channel then closed
-  (dropping `input_tx`), and the event loop consumes `Text` deltas printing
-  them raw to stdout until `Done`/`Error` — the answer on stdout exactly as
-  the model streamed it, with tracing going to stderr only (the shipped
-  `init_tracing` writer) so the output stays pipe-clean. Exit: `Ok(())` on
-  `Done`, the error path on `Error`. The session ends — no channel left
-  open, no server to drain.
+- **D-78 — the subcommand and its pipeline.** `Command::OneShot` carries one
+  positional `<PROMPT>` plus a `--quiet` flag (print only the answer text —
+  the streamable, parseable surface scripts compose with; the banner and the
+  info lines stay on stderr as tracing, so stdout carries the answer alone
+  under `--quiet`... the banner is stdout by default and suppressed under
+  `--quiet`). The pipeline mirrors `run_headless` (`src/app.rs:630`)'s
+  assembly exactly where it can and drops what it cannot name a peer for:
+  persona resolution (`persona::resolve` with the same chain — `--persona`,
+  `[runtime] persona_file`, the agents dir, the project's own file) →
+  `apply_persona_overrides` → `ai::build` → `ConversationLog::open` →
+  `ToolRegistry::build` + `mcp::connect_all` (fail-soft, as shipped) →
+  `Agent::build_initial_history` → auto-approve headless (`AtomicBool(true)`,
+  the shipped headless reading — `[permissions] deny` remains the only
+  brake) → the headless cancel token → `Agent { .. approval_tx: None }`.
+  The registry entry is **not** written and the IPC server is **not** bound:
+  a one-shot session is nobody's addressable peer by design (AS-76), so
+  nothing registers or unregisters — no `IpcServer::bind`, no
+  `RegistryHandle::register`, no socket file. The agent runs **one**
+  `AgentInput::UserPrompt` into the shipped `agent.run(input_rx, event_tx)`
+  loop over an unbounded-events channel and the loop's own exit rides the
+  shipped quiet-exit (`exit_when_idle`) contract the FR-32 machinery
+  carries: one input, the input channel closes, the agent breaks out after
+  the turn, the task ends.
 
-  1. **The transcript log still opens.** The conversation log is agent-cli's
-     durable record for every session shape; the one-shot opens its own
-     (`ConversationLog::open`), so the turn is inspectable after the fact.
-     The registry entry is *not* written: the session is process-scoped and
-     lives exactly as long as the answer.
-  2. **No approval takeover.** `approval_tx: None` with the headless auto-
-     approve reading (a deny rule is the only stop); the shipped
-     `[permissions]` semantics ride unchanged.
-  3. **The cancel token is not exposed.** No interactive user can raise it;
-     the process ends with the answer (or an error). SIGINT behaves as any
-     CLI's: the default termination.
-  4. **The streamed answer owns stdout.** No banner, no spinner, no theme
-     colouring of the answer (`Theme::plain()` semantics by default) — the
-     mode's output is a composable Unix stream, the same bytes `ask` prints
-     for its peer's answer.
+- **D-79 — the answer's face and the session's end.** The display path is a
+  dedicated `display_task` reading the event channel and printing the turn's
+  text events as they arrive (the shipped `display_event` print path, not
+  the REPL's indicator) — the answer streams to stdout; the outcome `✔`
+  line the indicator writes in the REPL does not exist here (no indicator —
+  `Theme::plain()` under `--quiet`, the default theme otherwise). The
+  session ends when the agent task ends: `agent_handle` awaited directly —
+  no shutdown watch, no drain timer, no teardown beyond dropping the input
+  sender and awaiting the handle — and the process exits through `main`'s
+  shipped exit. The cost: no queue, no peers, no stop address — the
+  completion contract is exactly one turn.
 
-- **D-79 — the docs surface follows the new subcommand.** The CHANGELOG's
-  `[Unreleased]` becomes the `[0.46.0]` entry (### Added) recording the
-  mode in user language: `agent-cli oneshot "<prompt>"` — one prompt, the
-  answer on stdout, the session ends; the `--provider`/`--model`/
-  `--persona`/`--name` overrides work as in `run`. The README gains the
-  one-shot bullet beside the scriptable one (its scriptability bullet
-  already names `agent-cli run` piping — the bullet is corrected to name
-  `oneshot` as the one-prompt form); `doc/usage.md` gains the mode
-  paragraph in the CLI section; `doc/architecture.md`'s process-shape
-  paragraph names the third session shape; the `/help` text is not touched
-  (the mode is a CLI subcommand, not a REPL command). The example config
-  carries no new key (the mode reads the same `[provider]`/`[runtime]`
-  surface), so no example write exists.
-
-- **D-80 — the completion repeats the standing delivery machinery
-  (AS-78).** The minor version carries **0.45.0 → 0.46.0** (`Cargo.toml`,
-  `Cargo.lock`, the CHANGELOG's `[0.46.0]` heading), the delivery
-  commit(s) of the mode and the documents are pushed to `origin/main` (the
-  trail rule governs the sha naming), and the GitHub release is published
-  and made the **latest** version (the FR-45c/FR-46c verified shape: the
-  `isLatest`/latest-flag probe re-asked at 0.46.0, the tag verified on the
-  delivery commit via `git rev-parse`).
+- **D-80 — the documentation follows the addition.** The CHANGELOG's
+  `[Unreleased]` became the `[0.46.0]` entry (### Added) recording the
+  subcommand in user language; the README's CLI table gains the row; the
+  usage doc's command list gains the row (`doc/usage.md:20`); the
+  architecture's module-tree entry for `app.rs` names `run_oneshot`; the
+  `/help` surface needs nothing (it lists REPL internals, not subcommands).
+  The version carries **0.45.0 → 0.46.0** (`Cargo.toml`, `Cargo.lock`, the
+  CHANGELOG heading), the delivery commit(s) push to `origin/main`, and the
+  release **stands latest** (D-77/FR-45c's verified machinery, repeated).
 
 The instruction's clauses map one-for-one onto the decisions:
-ワンショットモード → D-78's pipeline; ドキュメント更新 → D-79; the method
-C-12 → §3's angles; マイナーバージョンアップ + commit, push + リリース最新 →
-D-80. 「example更新」 names the example configuration: the mode adds no
-config key (evidence: the D-78 assembly reads only existing keys), so no
-example write exists.
+「ワンショットモードの追加」+「ワンショットで完結するモードを追加する」 →
+D-78/D-79 (the subcommand, the one-prompt/one-answer/exit contract);
+ドキュメント更新 → D-80; the method C-12 → §3's angles;
+マイナーバージョンアップ + commit, push + リリース最新 → D-80's completion.
+「example更新」 names the example configuration: the one-shot mode adds no
+config key (BL-M57's verified absence), so no example write exists.
 
 ## 2. The touchpoints this cycle touches (TPR-29)
 
 | # | Touchpoint | Evidence (the files read in this cycle) |
 |---|---|---|
-| TPR-29 | The session shapes and the assembly the mode mirrors: `src/cli.rs` (`Command` enum `:28–150`, the subcommand-list pin `:181–207`, the run-args pin `:212–249`); `src/main.rs` (the dispatch `:57–115`); `src/app.rs` — `run_headless` (`:630–790`, the assembly the mode mirrors: the persona resolution `:637–660`, `ai::build` `:665`, the IPC bind `:667–675` (the part the mode drops), the registry entry `:678–700` (dropped), the tool registry + MCP `:706–710`, the `Agent` struct `:730–770`), `AgentEvent` (`src/agent.rs:139+` — `Text`/`Done`/`Error` the event loop consumes), `display_event`'s headless reading (`:2421+`), `commands::ask`'s stdout printing (peer answer shape, `src/commands.rs`); the docs surface — `README.md`'s scriptable bullet, `doc/usage.md`'s CLI sections, `doc/architecture.md`'s session-shape paragraphs; `CHANGELOG.md` `[Unreleased]`; `Cargo.toml`, `Cargo.lock`; the subcommand list the pin asserts | The files' own lines, read in this cycle; BL-M56/BL-M57's records |
+| TPR-29 | The CLI surface and the headless assembly it borrows: `src/cli.rs` — the `Command` enum (`:30` the `Run`/`Serve` pair the one-shot slots beside), `RunArgs` (`:136` the flattened startup options the one-shot inherits by reuse), the subcommand-list pin (`cli_help_compiles_and_lists_known_subcommands`); `src/main.rs` — the dispatch (`:62` the `match cli.command`), the shipped exit (`:26`); `src/app.rs` — `run_headless` (`:630`, the assembly the one-shot mirrors), the `Agent` struct's fields as headless sets them, `AgentEvent` (`src/agent.rs:139`, the `Text`/`Done`/`Error` events the one-shot prints), the quiet-exit contract (`exit_when_idle`, FR-32), `display_event`'s print path; `src/error.rs` (`AppError::Other`); `README.md:358–369` (the CLI table), `doc/usage.md:19–20` (the command list), `doc/architecture.md:36` (the module tree), `CHANGELOG.md` `[Unreleased]` | The files' own lines, read in this cycle; BL-M56/BL-M57's records |
 
 ## 3. Analysis verdicts (C-12) — the multi-angle analysis of the addition
 
-- **The mechanism angle.** The Agent's pipeline is already state-safe for a
-  fire-once session: `process_turn` is driven purely by `AgentInput` values
-  over the channel, and closing the channel ends the loop cleanly (the
-  FR-32 quiet-exit semantics). The mode is therefore the `run_headless`
-  assembly with its server parts subtracted — no new state machine, no new
-  event type, no new config key.
-- **The contracts angle (NFR-14).** The shipped session shapes stand: the
-  REPL (`run`) untouchsed, `serve`/`spawn`'s registry surface untouched,
-  `ask`/`send`'s peer contract untouched. The one-shot is an additive
-  subcommand; the subcommand-list pin grows by one entry and no existing pin
-  changes.
-- **The scope angle (§3.1).** **Not** touched: the persona resolution
-  (shared code, read-only reuse), the provider builds, the permission
-  semantics, the conversation log format, the IPC transport, the REPL's
-  entire display stack, and every shipped key meaning. The mode does not
-  register in the peer registry and does not answer IPC.
-- **The live-verdict angle (NFR-15).** This cycle's probes, executed at the
-  delivery: the suite + clippy at the changed tree, the one-shot's own pin
-  set (the CLI parse, the dispatch, the event-loop fold checks), and the
-  release-latest/tag verifications at the close. The ground probe executed
-  at this pass: the release `v0.45.0` Latest re-read (the releases API,
-  `createdAt` 2026-11-06T00:55:05Z), the tree clean at `5978dc9`.
-- **The docs angle (C-15, D-79).** The ledger's three documents and the
-  work log; the products the standing sentence names (the source surfaces,
-  the README/usage/architecture paragraphs, the CHANGELOG, the version
-  files); nothing else.
+- **The mechanism angle.** The one-shot is the headless assembly minus its
+  IPC face: every piece it needs exists (`Agent`, the event channel, the
+  quiet-exit), and the only new code is the plumbing that feeds one prompt
+  and prints the events. No provider change, no tool change, no new event
+  type.
+- **The contracts angle (NFR-14).** The shipped contracts stand: `run`'s
+  REPL, `serve`'s registry/server, `spawn`/'stop'/'ask'/'send' — none
+  touched. The one-shot adds a ninth subcommand; the pin (`cli_help_compiles_
+  and_lists_known_subcommands`) re-derives with it. The headless auto-approve
+  reading rides unchanged: `[permissions] deny` remains the only brake, as
+  in `serve`.
+- **The scope angle (§3.1).** **Not** touched: the REPL, the serve loop, the
+  registry/IPC surface, the spawn machinery, the FR-46 display fix's
+  composition (v0.45.0 delivered), the provider backends, the config keys —
+  the one-shot adds no key (BL-M57), so no example write exists.
+- **The live-verdict angle (NFR-15).** Executed at this cycle: the full
+  suite (**663 unit + 6 integration, 0 failed**), clippy (the two
+  pre-existing dead-store notes stand, no new warning from this cycle's
+  surface), the CLI parse pin re-derived (the `one-shot` name in the
+  subcommand list), the live probe (`agent-cli one-shot "Reply with exactly
+  OK-ONEShot and nothing else"` → `OK-ONEShot`, exit), and the release-latest
+  read at the close.
+- **The docs angle (C-14, D-80).** The ledger's three documents and the work
+  log; the products the standing sentence names (the subcommand surface, the
+  CHANGELOG entry, the README/usage rows, the architecture tree note, the
+  version files); nothing else.
 
 ## 4. Verification of the cycle (the gate table W-71)
 
 | Step | Check | Covers | Task | Status |
 |---|---|---|---|---|
-| W-71 | FR-47 a/b/c — the `oneshot` subcommand added at D-78's named sites (the CLI variant, the dispatch, the `run_oneshot` pipeline: one prompt in, the streamed answer to stdout, the session ends — no IPC server, no registry entry), the shipped session shapes and every other contract intact, the docs rewritten/extended per D-79, the version carry to **0.46.0**, the delivery committed and pushed, the release standing latest | FR-47a, FR-47b, FR-47c, NFR-13, NFR-14, NFR-15, AS-76, AS-77, AS-78, TPR-29 | T-108, T-109, T-110 | ⬜ |
+| W-71 | FR-47 a/b/c — the one-shot subcommand delivered at D-78's shape (one prompt in, the printed answer out, exit; no IPC/REPL/registry), the parse pin re-derived, the docs written (the CHANGELOG `[0.46.0]` entry, the README/usage rows, the architecture note), the version carry to **0.46.0**, the delivery committed and pushed (`77e8a29`), the release standing latest | FR-47a, FR-47b, FR-47c, NFR-13, NFR-14, NFR-15, AS-76, AS-77, AS-78, TPR-29 | T-108, T-109, T-110 | ✅ |
 
-*W-71's execution record stands at the delivery close (T-108/T-109's
-record). The ground this cycle verifies: the release `v0.45.0` Latest
-(re-read 2026-11-06, `createdAt` 2026-11-06T00:55:05Z), the tree clean with
-`main` ≡ `origin/main`, the version files at 0.45.0, the gates at the FR-46
-close **663 unit + 6 integration, 0 failed** (the product tree unchanged
-since `ebe0aca`).*
+*W-71's execution record: the suite stands green at the close (**663 unit +
+6 integration, 0 failed**; the counts unchanged — the pin set re-derived),
+clippy carries only the two dead-store warnings verified pre-existing at the
+FR-45 close (a re-run reproduced them; not this cycle's new debt), the live
+probe printed the one-shot's answer and exited (`OK-ONEShot`), the
+CHANGELOG's integrity was restored after a mis-directed write (the file re-
+cut to the surgical 12-line diff; verified 86,557 bytes against the shipped
+tail), the tag `v0.46.0` verified on `77e8a29`
+(`git rev-parse v0.46.0^{commit}`), the release verified **Latest** — these
+clauses are the acceptance criterion AC-40's, which §11 of the requirements
+traces here.*
 
-## 5. The previous cycles' records (already retired; one shared record with the requirements' §12)
+## 5. The previous cycles (recorded after their documents were retired)
 
-**"the terminal display fix — the bottom-most line's composition" (FR-46
-a–c)** — closed, 2026-11-06: the mid-turn standing shape inverted at
-`ebe0aca` ("Fix the terminal's bottom line: the prompt when input is
-possible, the running clock while the agent runs" — the clock block's last
-row the screen's bottom row mid-turn, no prompt display while the agent
-runs, the approval span as the one armed input-possible face), the version
-carried 0.44.0 → **0.45.0**, the tag `v0.45.0` on the delivery commit, the
-release published and verified **Latest** (`createdAt`
-2026-11-06T00:55:05Z); gates **663 unit + 6 integration, 0 failed**, the two
-dead-store clippy warnings pre-existing. The recording pass (`2557f7f`), the
-re-load pass (`92c43fd`) and the delivery-follow-up (`5978dc9`) rode the
-trail convention. Work logs `2026-11-06_005.md`–`_007.md`.
+**"the terminal display fix — the screen's bottom-most line reads the prompt
+while input is possible, and the spinner-and-elapsed clock while the agent
+runs" (FR-46 a–c)** — closed, 2026-11-06: delivered at `ebe0aca` ("Fix the
+terminal's bottom line…"), the version carried **0.44.0 → 0.45.0**, the tag
+`v0.45.0` verified on it, the release published and verified **Latest**
+(created 2026-11-06T00:55:20Z); gates **663 unit + 6 integration, 0
+failed**, clippy standing its two pre-existing dead-store notes. The
+recording pass `2557f7f` and the re-load pass `92c43fd` stand behind the
+delivery in the trail; the ledger follow-up `5978dc9` names `ebe0aca`. Work
+logs `2026-11-06_005.md`–`_007.md`.
 
 **"the prompt-input queueing feature's removal" (FR-45 a–c)** — closed,
-2026-11-06: delivered at `b5deb9c`, the version carried 0.43.0 → **0.44.0**,
-the tag `v0.44.0`, the release verified **Latest**; gates **663 unit + 6
-integration, 0 failed**. Trail: the follow-up `6f0390f`, the ledger
-re-alignment `0d45242`. Work logs `2026-11-06_002.md`–`_004.md`.
+2026-11-06: delivered at `b5deb9c` ("Remove the prompt-input queueing
+feature"), the version carried 0.43.0 → **0.44.0**, the tag `v0.44.0`
+verified on it, the release `v0.44.0 — the prompt-input queueing feature
+removed` published and verified **Latest** (created
+2026-11-05T23:18:45Z); gates **663 unit + 6 integration, 0 failed**, the
+two dead-store clippy warnings recorded pre-existing. The trail's follow-up
+`6f0390f` named the delivery, and the ledger re-alignment pass rode the same
+convention (`0d45242`). Work logs `2026-11-06_002.md`–`_004.md`.
 
-**"the codex-code backend … and the example's sample models refreshed"
-(FR-44 a–e)** — closed, 2026-11-05: delivered at `122f320` and `4fee899`,
-the versions 0.42.0/0.43.0, the release `v0.43.0` verified latest; gates
-**669 unit + 6 integration, 0 failed**. **"the codex access investigation"
-(FR-43)** — closed, 2026-11-05 (no release). **"the refactoring … and the
-prompt's bottom row made prompt-only" (FR-41, FR-42)** — closed, 2026-11-05
-(`eec12f9`/`064ce50`, the carry to 0.41.0). **"the display corrections"
-(FR-39, FR-40)** and **"the four display regions" (FR-37 a/b/c, FR-38)** —
-closed, 2026-11-05 (the FR-46 cycle superseded the four-region shape's
-bottom pair mid-turn; the relative stacking survives). Earlier records
-stand in the requirements document's §12: the prompt-input queueing (FR-35,
-v0.38.0 — delivered, then removed by FR-45); the subagents' auto-exit
-(FR-32–FR-34, v0.37.0); the multi-angle analysis cycles (FR-31, FR-29/30);
-the click rule and cancelled display (FR-27/FR-28, v0.34.0); the scroll
-marker (FR-26, v0.33.0); the running display (FR-22–FR-24, v0.32.0); the
-mouse defects (v0.31.0); add strata (v0.30.0–0.30.2); v0.29.0–v0.25.0.
+**"the codex-code backend…" (FR-44 a–e)** — closed, 2026-11-05: delivered
+at `122f320` and `4fee899` (the FR-44d amendment), the versions 0.42.0
+then **0.43.0**, named by `af82155`/`d5cbbbe`; the FR-44e release `v0.43.0`
+verified latest. Gates **669 unit + 6 integration, 0 failed**. Work logs
+`2026-11-05_010.md`–`_012.md`.
+
+**"the codex access investigation" (FR-43)** — closed, 2026-11-05 (no
+release — investigation and report): the verdict feasible for
+delegation-style access (D-65), the shape recorded unbuilt (D-66); FR-44's
+cycle built it (FR-44a, D-67). Work log `2026-11-05_008.md`.
+
+**"the refactoring…; the prompt's bottom row made prompt-only" (FR-41,
+FR-42)** — closed, 2026-11-05: delivered at `eec12f9` and `064ce50`, the
+version carried to **0.41.0** by `25fe13c`, named by the follow-up
+`3badc04`. Gates **647 unit + 6 integration, 0 failed**, clippy 0
+warnings. Work logs `2026-11-05_006.md`/`_007.md`.
+
+**"the display corrections…; the elapsed display kept and the selection
+unshifted" (FR-39, FR-40)** — closed, 2026-11-05: delivered at `db68d3f`,
+named by `306f425`; the version carried to 0.40.0 by `505097a`, recorded by
+`856c2bf`.
+
+**"the four display regions" (FR-37 a/b/c, FR-38)** — closed, 2026-11-05:
+delivered at `39afeb2`, named by the follow-up `fb46cc0`; gates 645+6.
+
+Earlier cycles stand in the requirements document's §12: the prompt-input
+queueing (FR-35, v0.38.0 — delivered, then **removed** by FR-45; the
+CHANGELOG's `[0.38.0]` section stands as history); the subagents'
+auto-exit (FR-32–FR-34, v0.37.0 on `5a2d7f0`); the multi-angle subagent
+analysis cycles (FR-31, FR-29/FR-30); the click rule's exclusion and the
+cancelled-by-user display (FR-27/FR-28, v0.34.0 on `c022909`); the scroll
+marker's face (FR-26, v0.33.0 on `6cc6661`); the running display
+(FR-22–FR-24, v0.32.0 on `e8ad594`); the mouse defects (v0.31.0 on
+`052e230`); add strata (FR-13–FR-17, v0.30.0–0.30.2); v0.29.0–v0.25.0 and
+the 機能追加 addenda (v0.26.0 on `251a5bb`).
