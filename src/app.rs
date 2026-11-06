@@ -1276,6 +1276,8 @@ fn suggestion_rows(suggestion: Option<&str>, width: usize) -> u16 {
 /// not target (FR-27): toggling the thinking view is for the reasoning rows
 /// alone, so a one-row block (the spinner alone) is never a hit and the span
 /// is strict at the top. Pure so it can be unit-tested without a terminal.
+/// (The zone-side rule below is the one FR-46a re-binds: the status row is
+/// the block's LAST row there, and the exclusion pivots to it.)
 fn click_hits_indicator(painted_rows: u16, cursor_row: u16, row: u16) -> bool {
     if painted_rows <= 1 {
         return false;
@@ -1302,14 +1304,19 @@ fn zone_click_hits_clock(row: u16) -> bool {
 
 /// The click rule shared with the shipped indicator's rule (`click_hits_
 /// indicator`): the reasoning view toggles inside the block's reasoning rows
-/// only. `clock_top` is the block's spinner-and-elapsed row on 0-based screen
-/// coordinates, `clock_rows` its painted height — `<= 1` is the spinner row
-/// alone (or nothing painted), which no click targets (FR-27); the span below
-/// is outside the block by construction.
+/// only. `clock_top` is the block's first row on 0-based screen coordinates,
+/// `clock_rows` its painted height — `<= 1` is the spinner row alone (or
+/// nothing painted), which no click targets (FR-27). FR-46a's face order puts
+/// the spinner-and-elapsed row LAST in the block, so the exclusion pivots to
+/// the last row; the rows above it (the reasoning rows and the marker) toggle.
 fn click_hits_clock_block(clock_top: u16, clock_rows: u16, row: u16) -> bool {
-    let top = clock_top.saturating_add(1);
-    let bottom = clock_top.saturating_add(clock_rows);
-    clock_rows > 1 && row >= top && row < bottom
+    // The status row is the block's LAST row now (FR-46a's face order): the
+    // hit range excludes it and covers the rows above it — the reasoning
+    // rows and the elision marker the toggle serves.
+    let bottom = clock_top
+        .saturating_add(clock_rows)
+        .saturating_sub(1);
+    clock_rows > 1 && row >= clock_top && row < bottom
 }
 
 /// The REPL's input prompt, and the prompt that asks for a tool approval.
@@ -1485,10 +1492,13 @@ fn zone_arm(state: &Arc<ReplState>) {
     *guard = Some(TurnZone {
         height,
         width: PromptRenderer::terminal_width() as u16,
-        // The initial anchor: a bare one-row parked prompt on the screen's
-        // last row. The caller's span render re-anchors with the editor's
-        // real extent (zone_paint_span) before the first beat.
-        span_top: height - 1,
+        // The standing shape is the running display alone (FR-46a): the
+        // beat's region is every row, the clock block's last row lands on
+        // the screen's bottom row, and no prompt span paints while armed —
+        // the prompt display returns only when input is possible again,
+        // at the handoff. `span_top` keeps its role as the region's floor
+        // (= height): the sweep covers the whole bottom-anchored region.
+        span_top: height,
         caret_col: 0,
         caret_row: height - 1,
         painted_top: height - 1,
@@ -1756,6 +1766,20 @@ fn zone_reanchor(span: u16, caret_col: u16, caret_row: u16) {
     z.painted_top = z.painted_top.min(z.span_top);
     z.caret_col = caret_col;
     z.caret_row = caret_row;
+}
+
+/// Retire the armed span (FR-46a): the composition returns to the spanless
+/// standing shape — the beat's sweep reclaims the span's rows and the clock
+/// block takes the screen's bottom row back. Called when the approval prompt
+/// is answered while the turn continues running; a no-op when no zone is
+/// armed.
+fn zone_span_retire() {
+    let mut guard = lock_zone();
+    if let Some(z) = guard.as_mut() {
+        z.span_top = z.height;
+        z.caret_col = 0;
+        z.caret_row = z.height - 1;
+    }
 }
 
 /// The zone's screen is hidden (the scroll overlay's alternate screen owns
@@ -3482,6 +3506,12 @@ async fn run_input_loop_raw(
                                         if let PromptState::AwaitingApproval(resp_tx) = prev {
                                             let _ = resp_tx.send(approved);
                                         }
+                                        // The answer returns the REPL to the
+                                        // running state: the approval span
+                                        // retires (FR-46a) and the next beat
+                                        // takes the screen's bottom row back
+                                        // for the clock.
+                                        zone_span_retire();
                                         // Drain stale idle notifications
                                         while agent_idle_rx.try_recv().is_ok() {}
                                         // Echo the approval response, then move to next line
@@ -3687,14 +3717,21 @@ async fn run_input_loop_raw(
             _ = zone_timer.tick(), if !overlay.is_active() => {
                 if state.turn_in_flight.load(Ordering::SeqCst) {
                     if !zone_armed() {
+                        // The arm is spanless now (FR-46a): the running turn's
+                        // bottom line is the clock alone. The one span that
+                        // still paints is the tool-approval prompt — an
+                        // input-possible state whose span re-anchors the
+                        // zone's floor and keeps its shipped takeover.
                         zone_arm(&state);
-                        zone_paint_span(
-                            &state.theme,
-                            if prompt_state.is_awaiting_approval() { Role::Confirm } else { Role::PromptSymbol },
-                            if prompt_state.is_awaiting_approval() { APPROVAL_PROMPT } else { PROMPT },
-                            &input_state,
-                            None,
-                        );
+                        if prompt_state.is_awaiting_approval() {
+                            zone_paint_span(
+                                &state.theme,
+                                Role::Confirm,
+                                APPROVAL_PROMPT,
+                                &input_state,
+                                None,
+                            );
+                        }
                     }
                 } else if zone_armed() && prompt_state.is_ready() {
                     // The other half of the same handoff: that turn reached its
@@ -4606,13 +4643,20 @@ impl StatusIndicator {
         let Some(status) = self.status_row() else {
             return Vec::new();
         };
-        let mut rows = Vec::with_capacity(1 + THINKING_ROWS);
+        // FR-46a's face order: the thinking rows stand above the status row,
+        // so the spinner-and-elapsed row is the block's LAST row — the row
+        // that lands on the screen's bottom-most line while the agent runs
+        // (the instruction's クルクルと経過時間 clause). The reasoning rows keep
+        // the progress colour with their indent; the status row and the
+        // elision marker keep it too.
+        let mut rows = self.thinking_rows();
         rows.push(status);
-        rows.extend(self.thinking_rows());
+        // The reasoning rows keep their shipped colour (the indented rows are
+        // the Thinking role, order-independent); the status row and the
+        // elision marker keep the progress colour.
         rows.iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let role = if i > 0 && row.starts_with("  ") {
+            .map(|row| {
+                let role = if row.starts_with("  ") {
                     Role::Thinking
                 } else {
                     Role::Progress
@@ -5182,12 +5226,19 @@ async fn render_prompt_with_run(
             },
         );
     } else {
-        // The armed zone's input span (FR-37a's D-52/D-53): the prompt block
-        // paints at its absolute rows inside the zone and the caret is
-        // reported back — the shipped render below stands down while armed,
-        // since its relative clears would cut into the rows the beat owns.
+        // The armed zone's composition is state-driven (FR-46a): while a turn
+        // runs the clock block owns the screen's bottom rows and no prompt
+        // display paints — the standing face is the running clock alone, and
+        // the beat is the rows' only writer. The one armed face that still
+        // paints is the tool-approval prompt (an input-possible state): its
+        // span re-anchors the zone's floor and the beat composes the run
+        // display above it, exactly as the shipped approval takeover did.
+        // The shipped render below stands down while armed for the same
+        // cursor-relative reason it always did.
         if zone_armed() {
-            zone_paint_span(&state.theme, role, prompt, input_state, sug.as_deref());
+            if matches!(role, Role::Confirm) {
+                zone_paint_span(&state.theme, role, prompt, input_state, sug.as_deref());
+            }
             return;
         }
         // The live prompt block takes the screen's bottom rows from here, and
@@ -5304,8 +5355,9 @@ async fn handle_repl_command(
             raw_println(raw_mode, "                              reads [info] cancelled by user and the prompt is");
             raw_println(raw_mode, "                              re-displayed.");
             raw_println(raw_mode, "  Subagents                   Each running subagent shows its name and operating");
-            raw_println(raw_mode, "                              time stacked above the bottom block; the row goes when");
-            raw_println(raw_mode, "                              the subagent ends, and the clock stays the bottom row.");
+            raw_println(raw_mode, "                              time stacked above the clock block; the row goes when");
+            raw_println(raw_mode, "                              the subagent ends, and the clock takes the bottom line back");
+            raw_println(raw_mode, "                              while the agent runs, the prompt when you can type again.");
             raw_println(raw_mode, "");
             raw_println(raw_mode, "Tool approval can be skipped via:");
             raw_println(raw_mode, "  - REPL command  : /auto on  (toggleable at runtime)");
@@ -7024,17 +7076,27 @@ mod tests {
 
     #[test]
     fn the_zone_click_rule_hits_only_the_blocks_reasoning_rows() {
-        // FR-27's rule at the zone's clock block (D-52's composition): the
-        // reasoning rows (the block below its spinner row) toggle the view,
-        // the spinner row itself and everything outside the block never do,
-        // and a block not painted (`clock_rows <= 1`) takes no click. Fold
-        // check: including the spinner row (the shipped fold) fails the
-        // exclusion assert.
+        // FR-27's rule at the zone's clock block, re-bound for FR-46a's
+        // flipped face: the reasoning rows stand ABOVE the status row (the
+        // block's last row is the spinner row now, the screen's bottom-most
+        // line mid-turn), so the toggle rows are the block's rows below its
+        // last row — the reasoning rows and their elision marker. The status
+        // row itself and everything outside the block never toggle, and a
+        // block not painted (`clock_rows <= 1`) takes no click. Fold check:
+        // the shipped spinner-first face's rule (the rows above the
+        // spinner excluded) fails the boundary asserts here.
+        // The flipped face's boundary: rows 20-21 are the reasoning rows
+        // (above the status row), row 22 is the status row itself — the
+        // screen's bottom-most line mid-turn, never a toggle.
+        assert!(click_hits_clock_block(20, 3, 20));
         assert!(click_hits_clock_block(20, 3, 21));
-        assert!(click_hits_clock_block(20, 3, 22));
         assert!(
-            !click_hits_clock_block(20, 3, 20),
-            "the spinner row itself is not a toggle"
+            !click_hits_clock_block(20, 3, 22),
+            "the status row (the block's last row) is not a toggle"
+        );
+        assert!(
+            !click_hits_clock_block(20, 3, 23),
+            "below the block is out of range"
         );
         assert!(
             !click_hits_clock_block(10, 1, 11),
@@ -7042,8 +7104,8 @@ mod tests {
         );
         assert!(!click_hits_clock_block(10, 0, 11));
         assert!(
-            !click_hits_clock_block(20, 3, 23),
-            "the span below the block is the user's line"
+            !click_hits_clock_block(20, 3, 19),
+            "the tail above the block is the log"
         );
     }
 

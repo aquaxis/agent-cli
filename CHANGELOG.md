@@ -2,6 +2,21 @@
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
 
+## [0.45.0]
+
+### Changed
+
+- **While the agent runs, the spinner-and-elapsed clock is the terminal's
+  bottom-most line.** The screen's bottom line now shows the running clock
+  (`⠋ 12.4s`) for as long as the turn runs, with the reasoning block above it
+  and the subagent rows above that; the prompt line re-appears on the bottom
+  the moment you can type again — when the turn ends, when you stop it
+  (`Esc`), and at the tool-approval prompt. A half-typed line is kept: it is
+  re-displayed with the prompt at the handoff. Key meanings are unchanged
+  (`Esc`/`Ctrl+C` still stop a running turn), and while you are scrolled back
+  the pinned block keeps its composition (the clock row above the prompt
+  line, `Message below` above that).
+
 ## [Unreleased]
 
 ## [0.44.0]
