@@ -17,6 +17,7 @@ agent-cli [--config <path>] <subcommand>
 | Form | Purpose |
 |------|---------|
 | `agent-cli run [...]` | Start the REPL (default) |
+| `agent-cli one-shot <prompt>` | Run one prompt to completion, print the answer, exit — no REPL, no IPC server, no registry entry (`--quiet` prints only the answer text) |
 | `agent-cli spawn [...]` | Create a **detached** agent that does not depend on this process: it runs headless in its own session, self-registers as a peer, and outlives the launcher. Accepts the same options as `run`. See [Detached agents](#detached-agents) |
 | `agent-cli stop <peer>` | Stop a running peer (id or name) by requesting a graceful shutdown; falls back to `SIGTERM` if the socket is unreachable |
 | `agent-cli serve [...]` | Run headless (register + serve peers over IPC, no REPL). This is the target `spawn` launches; running it directly gives a foreground headless agent |

@@ -30,6 +30,19 @@ pub enum Command {
     /// Start REPL and begin conversation as one agent
     Run,
 
+    /// Run one prompt to completion and print the answer, then exit: no REPL,
+    /// no IPC server, no registry entry. Takes the same `--provider` /
+    /// `--model` / `--persona` / `--auto-approve-tools` startup options as
+    /// `run`.
+    OneShot {
+        /// The prompt to run
+        prompt: String,
+        /// Print only the answer text (no banner); stream the answer as it
+        /// arrives
+        #[arg(long)]
+        quiet: bool,
+    },
+
     /// Run headless: register and serve peers over IPC without an interactive
     /// REPL. This is the target a detached `spawn` launches; it can also be run
     /// directly to get a foreground headless agent.

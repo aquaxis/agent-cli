@@ -68,6 +68,10 @@ async fn run() -> Result<()> {
             let cfg = config::load(&source)?;
             app::run_headless(cfg, source, cli.run_args).await
         }
+        Command::OneShot { prompt, .. } => {
+            let cfg = config::load(&source)?;
+            app::run_oneshot(cfg, source, cli.run_args, prompt).await
+        }
         Command::Spawn => {
             let cfg = config::load(&source)?;
             commands::spawn(&cfg, &source, cli.run_args).await

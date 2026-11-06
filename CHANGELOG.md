@@ -2,6 +2,18 @@
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
 
+## [0.46.0]
+
+### Added
+
+- **`agent-cli one-shot <prompt>` — run one prompt and exit.** A new subcommand
+  takes one prompt, runs it to completion through the configured backend (with
+  tools, MCP servers, and the persona's model/temperature applied), prints the
+  answer as it arrives, and exits — no REPL, no IPC server, no registry entry.
+  Takes the same `--provider` / `--model` / `--persona` / `--name` / `--group` /
+  `--auto-approve-tools` startup options as `run`; `--quiet` prints only the
+  answer text, nothing else.
+
 ## [0.45.0]
 
 ### Changed
