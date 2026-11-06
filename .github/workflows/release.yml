@@ -30,11 +30,6 @@ jobs:
           VERSION="${TAG#v}"
           echo "newest tag: $TAG"
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG already published; nothing to do"
-            exit 0
-          fi
-
           # The tag's own CHANGELOG section: body under the `## [X]` heading.
           SECTION="$(git show "$TAG:CHANGELOG.md" |
             awk -v want="## [$VERSION]" '
@@ -48,19 +43,27 @@ jobs:
             exit 1
           fi
 
-          SUMMARY="$(printf '%s\n' "$SECTION" |
-            sed -n 's/^- \*\*\(.*\)\*\*$/\1/p' | head -n1 |
-            sed 's/`//g')"
-
-          NOTES_FILE="$(mktemp)"
-          trap 'rm -f "$NOTES_FILE"' EXIT
-          printf '%s\n' "$SECTION" > "$NOTES_FILE"
+          SUMMARY="$(printf '%s\n' "$SECTION" | tr '\n' ' ' | tr -s ' ' |
+            sed 's/^ ### Fixed //' | sed 's/^- \*\*//;s/\*\* .*//;s/`//g' | head -n1 |
+            sed 's/ *$//')"
 
           if [ -n "$SUMMARY" ]; then
             TITLE="$TAG — $SUMMARY"
           else
             TITLE="$TAG"
           fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Published already: keep the title aligned with the summary, so a
+            # later refinement of the extraction lands on the next run.
+            gh release edit "$TAG" --title "$TITLE" >/dev/null 2>&1 || true
+            echo "release $TAG published; title checked"
+            exit 0
+          fi
+
+          NOTES_FILE="$(mktemp)"
+          trap 'rm -f "$NOTES_FILE"' EXIT
+          printf '%s\n' "$SECTION" > "$NOTES_FILE"
 
           echo "publishing: $TITLE"
           gh release create "$TAG" \
