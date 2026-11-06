@@ -6,9 +6,11 @@ row where it stands and displays no prompt" (FR-48 a/b/c/d — delivered)
 (`.aiprj/instructions.md`, reloaded at this pass — sha256
 `aedf46b46f0c3e36638b687b3cbc62e140f19c2c778372e3b5c4b854d762e015`, 520 bytes,
 mtime 2026-11-06 17:06:41 +0900, the two-clause ask; recorded in
-requirements §2; verified byte-exact at the 2026-11-06 17:03 +0900 re-load
-pass and again at the 2026-11-06 17:18 +0900 re-load pass's exit; the tree
-carries v0.46.0, its release `v0.46.0` verified Latest)
+requirements §2; verified byte-exact at the
+2026-11-06 17:03 +0900 re-load pass, again at the 2026-11-06 17:18 +0900 re-load
+pass's exit, and again at the 2026-11-06 20:45 +0900 re-load pass; the tree
+stood v0.46.0 at those passes — the cycle's delivery carried it to **0.47.0**
+(`f9ec9ae`, the release Latest; the ledger follow-up `e1b9118` HEAD))
 Paired with `AI_PRJ_REQUIREMENTS.md`, `AI_PRJ_TASKS.md`.
 
 Requirement IDs (FR-/NFR-/AS-/AC-) refer to `AI_PRJ_REQUIREMENTS.md`.
@@ -139,7 +141,21 @@ clippy standing its three notices; the live probes re-run against the
 byte-identical; a real drag selects, copies with its `[clip]` report and
 returns to the live face; a click under the scrolled marker leaves the
 screen and the marker untouched; a mid-turn click leaves the clock standing
-with the cursor parked). The first re-load pass (2026-11-06 17:18 +0900 — after the 17:03 pass had
+with the cursor parked). The delivered state's record: the ledger follow-up `e1b9118` committed the ledgers and
+the work logs behind the delivery; the 2026-11-06 20:45 +0900 re-load pass
+re-verified the instruction byte-exact (520 bytes, sha256 `aedf46b4…`) and
+the tree at HEAD `e1b9118` ≡ `origin/main` (0.47.0, the CHANGELOG's
+`[0.47.0]`/`### Fixed` entry under the empty `[Unreleased]` heading,
+the working tree clean), resolving the ledgers' stale uncommitted-record
+clause into the committed trail (C-08). The verification session that followed
+(closing 2026-11-06) re-derived the same clauses live: the tag `v0.47.0` on
+`f9ec9ae`, the `/releases/latest` endpoint resolving `v0.47.0 — the mouse-click
+display fixed` as the repo's latest release (id 436429139), the gates green
+(**665 unit + 6 integration, 0 failed**) and clippy standing **five** distinct
+notices — the two further pre-existing ones (`src/app.rs:2382`
+`unnecessary_sort_by`, `src/agent.rs:2101` `collapsible_match`) verified
+verbatim at the `8c26ecc` ground, the earlier passes' three-notice record
+corrected (C-09). The first re-load pass (2026-11-06 17:18 +0900 — after the 17:03 pass had
 re-verified it too): instruction byte-exact (520 bytes, sha256
 `aedf46b4…`), the product tree standing `8c26ecc` clean with the v0.46.0
 release files, the suite re-derived **663 unit + 6 integration, 0
