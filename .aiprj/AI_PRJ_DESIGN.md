@@ -8,9 +8,11 @@ row where it stands and displays no prompt" (FR-48 a/b/c/d — delivered)
 mtime 2026-11-06 17:06:41 +0900, the two-clause ask; recorded in
 requirements §2; verified byte-exact at the
 2026-11-06 17:03 +0900 re-load pass, again at the 2026-11-06 17:18 +0900 re-load
-pass's exit, and again at the 2026-11-06 20:45 +0900 re-load pass; the tree
-stood v0.46.0 at those passes — the cycle's delivery carried it to **0.47.0**
-(`f9ec9ae`, the release Latest; the ledger follow-up `e1b9118` HEAD))
+pass's exit, and again at the 2026-11-06 20:45 +0900 re-load pass, and again at the
+2026-11-06 22:54 +0900 re-load pass; the tree stood v0.46.0 at the first
+passes — the cycle's delivery carried it to **0.47.0** (`f9ec9ae`, the
+release Latest; the trail's follow-ups `e1b9118` and `7d8e621` behind it,
+`7d8e621` HEAD))
 Paired with `AI_PRJ_REQUIREMENTS.md`, `AI_PRJ_TASKS.md`.
 
 Requirement IDs (FR-/NFR-/AS-/AC-) refer to `AI_PRJ_REQUIREMENTS.md`.
@@ -148,7 +150,26 @@ the tree at HEAD `e1b9118` ≡ `origin/main` (0.47.0, the CHANGELOG's
 `[0.47.0]`/`### Fixed` entry under the empty `[Unreleased]` heading,
 the working tree clean), resolving the ledgers' stale uncommitted-record
 clause into the committed trail (C-08). The verification session that followed
-(closing 2026-11-06) re-derived the same clauses live: the tag `v0.47.0` on
+(closing 2026-11-06) re-derived the same clauses live; its ledger writes and
+the work logs `_014`/`_015` stand committed in the trail follow-up `7d8e621`,
+and the 2026-11-06 22:54 +0900 re-load pass re-verified the instruction
+byte-exact against that HEAD (`main` ≡ `origin/main`, the tag `v0.47.0`
+on `f9ec9ae`, the product tree unchanged since the delivery, the gates
+standing green 665+6) and resolved the ledgers' trail clauses into the
+committed trail (`8c26ecc` → `f9ec9ae` → `e1b9118` → `7d8e621`; C-08). The
+23:10 +0900 execution session that followed re-derived the same clauses
+live (the tag `v0.47.0` on `f9ec9ae`, `/releases/latest` standing
+`v0.47.0 — the mouse-click display fixed` as the repo's latest, the gates
+green **665 unit + 6 integration, 0 failed**, clippy's five notices at the
+standing sites) and took the docs angle's first new verdict since the
+delivery: the CHANGELOG's empty `[Unreleased]` heading stood stranded
+mid-history (each of `ebe0aca`/`77e8a29`/`f9ec9ae` had inserted its
+release section above the heading, against the ground records' 「the
+empty `[Unreleased]` heading stands above the newest entry」), and the
+heading was hoisted to directly precede `[0.47.0]` (`315ee7f`; no release
+content changed, no version carry, no new release — no feature added;
+the trail `8c26ecc` → `f9ec9ae` → `e1b9118` → `7d8e621` → `315ee7f`,
+HEAD; C-08): the tag `v0.47.0` on
 `f9ec9ae`, the `/releases/latest` endpoint resolving `v0.47.0 — the mouse-click
 display fixed` as the repo's latest release (id 436429139), the gates green
 (**665 unit + 6 integration, 0 failed**) and clippy standing **five** distinct

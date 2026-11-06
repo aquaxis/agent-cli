@@ -33,8 +33,12 @@ tail every mouse pass ends at (`:3777–3845` — the live prompt re-render
 re-load passes: **663 unit + 6 integration, 0 failed**, clippy its three
 standing notices (the requirements' C-09 record at those passes), v0.46.0,
 HEAD `8c26ecc` ≡ `origin/main`. The delivered trail now stands `8c26ecc` →
-`f9ec9ae` (the delivery, **v0.47.0**) → `e1b9118` (the ledger follow-up
-committing the ledgers and the logs; **HEAD**, `main` ≡ `origin/main`).
+`f9ec9ae` (the delivery, **v0.47.0**) → `e1b9118` (the FR-48 cycle's ledger
+follow-up) → `7d8e621` (the verification-session trail follow-up) →
+`315ee7f` (the CHANGELOG's `[Unreleased]` heading hoist — the docs angle's
+verdict of the 23:10 execution session; **HEAD**, `main` ≡ `origin/main`),
+the session's ledger writes standing uncommitted for the trail's next
+follow-up.
 
 **The ask is delivered** (2026-11-06): the mechanisms were evidenced
 file:line and probed live (the T-112 record), the fixes delivered at their
@@ -57,6 +61,8 @@ below` showing) leaves the screen byte-identical with the marker standing.
 | T-115 | The ledger's consistency and the byte-exact exit check (C-08, NFR-12, C-15, C-16): the three documents aligned together at every update pass — the earlier concurrent-draft discrepancies resolved (the T document's stale scheme: the 441-byte instruction record, the single-clause lettering, the dangling B-4/W-1/TPR-31/D-85 references); the 2026-11-06 17:18 +0900 re-load pass re-verified the instruction byte-exact (520 bytes, sha256 `aedf46b4…`), the product tree unchanged and the gates green (**663 unit + 6 integration, 0 failed**; clippy's three notices re-read) with the consistency re-probed (the D/T references resolving into the requirements' rows); the work log `2026-11-06_011.md` written by the ledger pass, `_012.md` by its re-load pass, and `2026-11-06_013.md` by the execution session (Art. 6/7; the 520-byte instruction embedded verbatim each time); no document carrying any mark of authorship or tooling (Art. 8, NFR-12); the write surface the three `.aiprj` documents and the work logs, nothing else (C-15, Art. 3) | — (C-08, NFR-12, C-15, C-16) | design §1 – §4 | ✅ |
 | T-116 | The re-load passes' consistency and exit checks (C-08, NFR-12, C-15, C-16): the instruction re-verified byte-exact at each pass's exit (520 bytes, sha256 `aedf46b4…` — at the 17:03/17:18 passes and again at the 2026-11-06 20:45 +0900 pass that resolved the ledgers' stale uncommitted-record clause into the committed trail: HEAD `e1b9118` (the ledger follow-up naming `f9ec9ae`), `main` ≡ `origin/main`, the version files 0.47.0, the CHANGELOG's `[0.47.0]`/`### Fixed` entry under the empty `[Unreleased]` heading, the working tree clean); the three documents aligned together (the traceability's T-116 dangling reference supplied; the design's §1/§4 and this list's overview/trail naming the same commits); no product file written and no commit made (Art. 3), the work log `2026-11-06_014.md` written | — (C-08, NFR-12, C-15, C-16) | design §1, §4 | ✅ |
 | T-117 | The delivered state's verification session (the delivery FR-48 a/b/c/d standing verified; design §4's record extended): the instruction re-read byte-exact (520 bytes, sha256 `aedf46b4…`); the tag `v0.47.0` verified pointing at the delivery commit `f9ec9ae`; the Releases API's `/releases/latest` resolving `v0.47.0 — the mouse-click display fixed` as the repo's latest release (id 436429139, published 2026-11-06T11:37:01Z, `isDraft:false`/`isPrerelease:false`); HEAD `e1b9118` ≡ `origin/main`, the version files 0.47.0, the CHANGELOG's `[0.47.0]`/`### Fixed` entry under the empty `[Unreleased]` heading; the gates re-derived at the unchanged tree — **665 unit + 6 integration, 0 failed**, clippy standing five distinct notices (the corrected C-09 record); no product file written, no release made (nothing added beyond the delivered cycle) | FR-48a, FR-48b, FR-48c, FR-48d verified; NFR-13, NFR-15, C-09 re-derived | design §4 (W-72) | ✅ |
+| T-118 | The 2026-11-06 22:54 +0900 re-load pass (C-08, NFR-12, C-15, C-16): the instruction re-verified byte-exact (520 bytes, sha256 `aedf46b4…`, mtime 2026-11-06 17:06:41 +0900 — unchanged since the delivered cycle's and the verification session's exits) and re-scoped against the delivered cycle (no new ask); the tree re-derived at the delivered state — HEAD `7d8e621` (the verification-session trail follow-up committing the verification session's ledgers and the work logs `_014`/`_015` behind the delivery `f9ec9ae`), `main` ≡ `origin/main` (verified via `git ls-remote`), the tag `v0.47.0` verified on `f9ec9ae` (remote-verified), the version files 0.47.0, the CHANGELOG's `[0.47.0]`/`### Fixed` entry under the empty `[Unreleased]` heading, the working tree clean; the product tree unchanged since `f9ec9ae` (the commits behind it only `.aiprj` files), so the verification session's gate record stands valid (**665 unit + 6 integration, 0 failed**; clippy five distinct notices); the ledgers' stale trail clauses (HEAD named `e1b9118`) resolved into the committed trail `… → f9ec9ae → e1b9118 → 7d8e621` (HEAD) across all three documents, and the cross-cutting gates aligned to the delivered ground (C-08); no product file written and no commit made (this pass's ledger writes stand uncommitted for the trail's next follow-up, Art. 3), the work log `2026-11-06_016.md` written | — (C-08, NFR-12, C-15, C-16) | design §1, §4 | ✅ |
+| T-119 | The 2026-11-06 23:10 +0900 execution session (the delivered state's re-verification, with one docs-angle verdict taken; C-08 resolved): the instruction re-read byte-exact (520 bytes, sha256 `aedf46b4…`); the delivered state verified live — the tag `v0.47.0` on `f9ec9ae` (remote-verified), `/releases/latest` resolving `v0.47.0 — the mouse-click display fixed` as the repo's latest release (published 2026-11-06T11:37:01Z), HEAD `7d8e621` ≡ `origin/main`; the gates re-derived — **665 unit + 6 integration, 0 failed**, clippy standing five distinct notices at the recorded sites; the multi-angle clause taken — the docs/consistency angle and the scope/release angle dispatched to the two registered peers, both reply windows timed out (120s each), the verdict taken on the file/git evidence: the CHANGELOG's empty `[Unreleased]` heading stood stranded mid-history (below `[0.47.0]` — `ebe0aca`/`77e8a29`/`f9ec9ae` each inserted its release section above the heading, against the ledgers' standing record 「the empty `[Unreleased]` heading stands above the newest entry」 and the file's Keep-a-Changelog claim; evidenced `b5deb9c` `:5` → `ebe0aca` `:20` → `77e8a29` `:32` → the tree `:47`); resolved per the Coding Guidelines' Art. 2 by aligning the tree to the recorded intent — the empty heading hoisted to directly precede `[0.47.0]` (2-line heading move; no release content, no version bump, no new release — no feature added; the published `v0.47.0` untouched); committed `315ee7f` and the gates re-derived green at that tree; the work log `2026-11-06_017.md` written | FR-48c (the CHANGELOG's standing shape); C-08, C-09, NFR-15 re-derived; C-14 untriggered (no feature) | design §4 (W-72) | ✅ |
 
 ## The closed tasks of the delivered cycles (their records stand)
 
@@ -66,8 +72,9 @@ below` showing) leaves the screen byte-identical with the marker standing.
   then exit"), the version carried **0.45.0 → 0.46.0**, the tag `v0.46.0`,
   the release verified Latest (created 2026-11-06T01:16:40Z, published
   01:16:50Z); gates **663 unit + 6 integration, 0 failed**; the trail's
-  follow-up `1b3c7e1`, the session's exit log `8c26ecc`, and the FR-48 delivery's ledger
-  follow-up `e1b9118` (HEAD). The
+  follow-up `1b3c7e1`, the session's exit log `8c26ecc`, and the trail's follow-ups behind it —
+  the FR-48 delivery's ledger follow-up `e1b9118` and the verification-session
+  trail follow-up `7d8e621` (**HEAD**). The
   requirements' §12/§13 and the design's §5 carry the full record.
 - **T-105/T-106/T-107** (the FR-46 terminal display fix, the completion,
   the ledger passes) — ✅, closed 2026-11-06: delivered at `ebe0aca`
@@ -93,8 +100,10 @@ below` showing) leaves the screen byte-identical with the marker standing.
 
 ## Cross-cutting gates (C-09, the boundary) — standing
 
-- The suite at this pass's ground (the product tree unchanged since the
-  FR-47 delivery): **663 unit + 6 integration, 0 failed**.
+- The suite at the delivered ground: **665 unit + 6 integration, 0 failed**
+  (re-derived at the delivery cycle's close and again at the 2026-11-06
+  23:10 execution session's tree — the CHANGELOG heading hoist included; the
+  ledger commits behind the delivery touch only `.aiprj` files).
 - Clippy at the verification session's re-derivation: **5** standing
   notices — the two pre-existing dead-store notes (`src/app.rs:8324` /
   `:8582`), the `empty line after doc comment` note on `run_oneshot`'s doc
@@ -106,8 +115,9 @@ below` showing) leaves the screen byte-identical with the marker standing.
   transient registry entry, the closed record's D-81); the FR-46 boundary
   stands: the prompt/clock flip (the prompt while input is possible, the
   clock mid-turn).
-- The FR-48 cycle's ground (the requirements' §3/BL-M58/BL-M59) verified
-  this pass; its gates re-derive at the changed tree once T-113 stands.
+- The FR-48 cycle's ground (the requirements' §3/BL-M58/BL-M59) verified;
+  its gates re-derived at the changed tree with the delivery standing
+  (T-113) and re-confirmed at the unchanged tree.
 - The `.aiprj` documents mutually consistent (C-08 — this pass resolved
   the task-list draft's stale scheme named in T-115); the work log written
   per Art. 6/7 (never overwritten); the instruction byte-exact at exit
@@ -178,8 +188,11 @@ Version trail: … → `e8ad594` (v0.32.0) → … → `122f320` → `af82155` (
 `0d45242` → `2557f7f` → `92c43fd` → `5978dc9` → `ebe0aca` (v0.45.0) →
 `77e8a29` (the one-shot; **v0.46.0**) → `1b3c7e1` (the ledger follow-up
 naming `77e8a29`) → `8c26ecc` (the exit log) → `f9ec9ae` (the FR-48
-delivery; **v0.47.0**) → `e1b9118` (the ledger follow-up naming `f9ec9ae`;
-**HEAD**) — the trail's
+delivery; **v0.47.0**) → `e1b9118` (the ledger follow-up naming `f9ec9ae`)
+→ `7d8e621` (the verification-session trail follow-up committing the
+verification session's ledgers and the logs `_014`/`_015`) → `315ee7f` (the
+CHANGELOG's `[Unreleased]` heading hoist — the docs angle's verdict of the
+23:10 execution session; **HEAD**) — the trail's
 follow-ups name the deliveries behind them (per the trail rule, a delivery
 commit's sha is nameable only from the commit that follows it).
 
