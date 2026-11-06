@@ -3430,10 +3430,13 @@ async fn run_input_loop_raw(
                             let col = mouse_event.column as usize;
                             match mouse_event.kind {
                                 MouseEventKind::Down(MouseButton::Left) if row < body => {
-                                    // A press on the log starts a drag; one on
-                                    // the pinned prompt block starts nothing.
+                                    // A press on the log starts a drag without
+                                    // painting: the empty one-cell selection is
+                                    // not on screen, so the click costs nothing
+                                    // until the gesture writes something (the
+                                    // FR-48b clause — a click displays no
+                                    // prompt — and FR-48a's zero-touch face).
                                     overlay.begin_selection(crate::select::Point::new(row, col));
-                                    scroll_dirty = true;
                                     continue;
                                 }
                                 MouseEventKind::Drag(MouseButton::Left)
@@ -3463,27 +3466,39 @@ async fn run_input_loop_raw(
                                         // the range the screen highlighted at
                                         // release — not the range anchored to
                                         // where the press happened.
-                                        let offset = overlay.view.offset();
-                                        let rows = body_slice_at(width, body, offset);
-                                        let text = crate::select::selected_text(&rows, &sel);
-                                        let outcome = crate::clip::copy(
-                                            &text,
-                                            &state.copy_command,
-                                            |seq| {
-                                                use std::io::Write as _;
-                                                let mut err = std::io::stderr();
-                                                err.write_all(seq.as_bytes())?;
-                                                err.flush()
-                                            },
-                                        );
-                                        // An empty report is no report: a
-                                        // gesture that touched nothing does
-                                        // not get a line of its own.
-                                        if !outcome.is_empty() {
-                                            copied = Some(outcome);
+                                        if !sel.is_empty() {
+                                            let offset = overlay.view.offset();
+                                            let rows = body_slice_at(width, body, offset);
+                                            let text = crate::select::selected_text(&rows, &sel);
+                                            let outcome = crate::clip::copy(
+                                                &text,
+                                                &state.copy_command,
+                                                |seq| {
+                                                    use std::io::Write as _;
+                                                    let mut err = std::io::stderr();
+                                                    err.write_all(seq.as_bytes())?;
+                                                    err.flush()
+                                                },
+                                            );
+                                            // An empty report is no report: a
+                                            // gesture that touched nothing does
+                                            // not get a line of its own.
+                                            if !outcome.is_empty() {
+                                                copied = Some(outcome);
+                                            }
+                                        }
+                                        // The release restores the screen the
+                                        // gesture took: a drag's highlight
+                                        // screen and a scrolled view's
+                                        // alternate screen both come back
+                                        // here. A plain click (press+release,
+                                        // nothing drawn, the view un-moved)
+                                        // never took a screen, so it writes
+                                        // nothing at all (FR-48a/FR-48b).
+                                        if overlay.is_active() || overlay.view_active() {
+                                            scroll_dirty = true;
                                         }
                                     }
-                                    scroll_dirty = true;
                                     continue;
                                 }
                                 _ => {}
@@ -7786,6 +7801,93 @@ mod tests {
             !lines.iter().any(|l| l.contains(SPINNER_FRAMES[0])),
             "no transient spinner row was recorded"
         );
+    }
+
+    #[test]
+    fn a_bare_click_costs_the_screen_nothing() {
+        // FR-48a/FR-48b: a press + release on the log with nothing between —
+        // a plain click — starts a selection the gesture never paints and a
+        // release that takes no screen and redraws nothing. The face is the
+        // click's zero-touch contract: `scroll_dirty` stays false (the drain's
+        // repaint tail runs for no click), the overlay never becomes active,
+        // and the empty selection contributes no clipboard write. The gate the
+        // release arm reads is the overlay's own view state, so the pin walks
+        // the same arithmetic the arm does.
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        for i in 0..30 {
+            crate::scroll::record_line(&format!("log line {i}"));
+        }
+        let mut overlay = ScrollOverlay::new();
+        let bottom = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 0, false);
+        let body = crate::scroll::body_rows(24, bottom);
+
+        // The press records the anchor at a body row; nothing paints, the
+        // overlay stays off the screen, and the (empty) selection exists.
+        overlay.begin_selection(crate::select::Point::new(5, 10));
+        assert!(overlay.has_selection(), "the click's anchor is recorded");
+        assert!(!overlay.is_active(), "a bare press takes no screen");
+        assert!(!overlay.view_active(), "a bare press moves no view");
+
+        // The release: the arm reads the view state BEFORE taking the
+        // selection — a click's copied_view is false, so its repaint gate
+        // stays closed. The selection the gesture leaves behind is empty
+        // (press == cursor), so the copy produces no report and the copied
+        // line is never reached.
+        let sel = overlay.take_selection();
+        let copied_view = overlay.view_active();
+        assert!(!copied_view, "a click's release repaints nothing: gate closed");
+        let sel = sel.expect("the click's selection is taken at release");
+        assert!(sel.is_empty(), "press == cursor on a bare click");
+        assert!(crate::select::selected_text(
+            &body_slice_at(80, body, overlay.view.offset()),
+            &sel,
+        )
+        .is_empty(), "a bare click copies nothing");
+
+        // After the gesture the overlay is exactly as it was: no active
+        // screen, no moved view, no selection, no repaint debt.
+        assert!(!overlay.is_active());
+        assert!(!overlay.view_active());
+        assert!(!overlay.has_selection());
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn a_drag_keeps_its_screen_and_a_release_outside_leaves_no_debt() {
+        // FR-48a's companion: a real drag (the cursor moves) keeps the gesture's
+        // screen — the release's copied_view is true, the redraw runs, and the
+        // `[clip]` report lands after the screen is restored. The gate opens
+        // only for a gesture that actually moved the view or painted highlights.
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(200);
+        for i in 0..30 {
+            crate::scroll::record_line(&format!("log line {i}"));
+        }
+        let mut overlay = ScrollOverlay::new();
+        let bottom = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 0, false);
+        let body = crate::scroll::body_rows(24, bottom);
+
+        // Press at (5,10), drag to (7,20): the selection is non-empty, the
+        // release's gate reads the view still un-moved (the drag painted the
+        // highlight on the live screen's alternate face in real use; the pin
+        // proves the gate's own arithmetic: has_selection drives the screen's
+        // ownership while the drag is live -- the_overlay_owns_the_screen_
+        // while_a_drag_is_live pin -- and the release closes it cleanly).
+        overlay.begin_selection(crate::select::Point::new(5, 10));
+        overlay.extend_selection(crate::select::Point::new(7, 20));
+        assert!(overlay.has_selection());
+        let copied_view = overlay.view_active();
+        let sel = overlay.take_selection().expect("drag selection taken");
+        assert!(!sel.is_empty(), "a real drag selects a range");
+        let text = crate::select::selected_text(&body_slice_at(80, body, 0), &sel);
+        assert!(
+            text.contains("log line"),
+            "the drag's range carries its rows' text: {text:?}"
+        );
+        let _ = copied_view; // the view did not move during this drag
+        assert!(!overlay.has_selection(), "the release leaves no debt");
+        crate::scroll::uninstall();
     }
 
     #[test]

@@ -2,6 +2,21 @@
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format and [Semantic Versioning](https://semver.org/).
 
+## [0.47.0]
+
+### Fixed
+
+- **A mouse click no longer shifts the display by one row, and no longer
+  re-draws the prompt.** Clicking the session log (a plain press-and-release
+  on a log row) used to end the mouse pass by repainting the pinned prompt
+  block from scratch — the same tail path a wheel notch or a drag takes.
+  A click that changes nothing now changes nothing on screen: the press
+  records the drag's anchor without painting, the release repaints only
+  when the gesture actually put the scrolled screen up (a real drag, or a
+  wheel notch), and an empty gesture no longer spawns the clipboard copy
+  command. Wheel scrolling, drag-select-and-copy (`[clip]` report included)
+  and the thinking view's click-toggle are unchanged.
+
 ## [0.46.0]
 
 ### Added
