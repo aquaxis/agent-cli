@@ -34,10 +34,14 @@ jobs:
           echo "newest tag: $TAG"
 
           # The tag's own CHANGELOG section: body under the `## [X]` heading.
+          # awk must read to the end: an early `exit` closes the read while
+          # `git show` is still writing (88 KB of history here), so the
+          # writer dies of SIGPIPE (exit 141) under pipefail. Stop printing
+          # instead of exiting.
           SECTION="$(git show "$TAG:CHANGELOG.md" |
             awk -v want="## [$VERSION]" '
               index($0, want) == 1 { on = 1; next }
-              on && /^## \[/ { exit }
+              on && /^## \[/ { on = 0 }
               on { print }
             ')"
 

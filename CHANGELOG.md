@@ -20,6 +20,8 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
   first column again (the shipped emit had the row and column in the other slot,
   so every pass swept the banner row's columns and never the rows it named).
 
+## [0.47.0]
+
 ### Fixed
 
 - **A mouse click no longer shifts the display by one row, and no longer
