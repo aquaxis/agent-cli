@@ -2,17 +2,18 @@
 
 Project: `agent-cli`
 Cycle: "the mouse-click display defects repaired — the click leaves every
-row where it stands and displays no prompt" (FR-48 a/b/c/d — delivered)
+row where it stood and displays no prompt" (FR-48 a/b/c/d — delivered;
+the FR-49 cycle (the answer-display prompt handoff) delivered beside it at
+requirements §5.1)
 (`.aiprj/instructions.md`, reloaded at this pass — sha256
 `aedf46b46f0c3e36638b687b3cbc62e140f19c2c778372e3b5c4b854d762e015`, 520 bytes,
-mtime 2026-11-06 17:06:41 +0900, the two-clause ask; recorded in
-requirements §2; verified byte-exact at the
-2026-11-06 17:03 +0900 re-load pass, again at the 2026-11-06 17:18 +0900 re-load
-pass's exit, and again at the 2026-11-06 20:45 +0900 re-load pass, and again at the
-2026-11-06 22:54 +0900 re-load pass; the tree stood v0.46.0 at the first
-passes — the cycle's delivery carried it to **0.47.0** (`f9ec9ae`, the
-release Latest; the trail's follow-ups `e1b9118` and `7d8e621` behind it,
-`7d8e621` HEAD))
+mtime 2026-11-06 17:06:41 +0900, the two-clause ask — **unchanged** at this
+pass's read (no new ask): the re-scoping question is whether the tree's
+movements — the FR-49 delivery, the release workflow — stand recorded and
+consistent; recorded in requirements §2; verified byte-exact at the
+2026-11-06 17:03 and 17:18 +0900 re-load passes, and again at the 2026-11-06
+20:45 and 22:54 +0900 re-load passes, and at the 2026-11-07 exit log's
+embedded record)
 Paired with `AI_PRJ_REQUIREMENTS.md`, `AI_PRJ_TASKS.md`.
 
 Requirement IDs (FR-/NFR-/AS-/AC-) refer to `AI_PRJ_REQUIREMENTS.md`.
@@ -132,7 +133,7 @@ fixes ask no config key; the requirements' §3.1).
 
 | Step | Check | Covers | Task | Status |
 |---|---|---|---|---|
-| W-72 | FR-48 a/b/c/d — the symptoms reproduced live first (NFR-15), the mechanisms named file:line, the reworks delivered at their sites with the boundary intact (the requirements' §6), the fixed faces pinned (NFR-13), the live probe unshifted and prompt-paint-free, the docs written (the CHANGELOG `[0.47.0]` entry, the README/usage rows the fixes name, the example check), the version carry to **0.47.0**, the delivery committed and pushed, the release standing latest | FR-48a, FR-48b, FR-48c, FR-48d, NFR-11, NFR-13, NFR-14, NFR-15, AS-82, AS-86, AS-83, TPR-30 | T-113, T-114 | ✅ |
+| W-72 | FR-48 a/b/c/d — the symptoms reproduced live first (N-15), the mechanisms named file:line, the reworks delivered at their sites with the boundary intact (the requirements' §6), the fixed faces pinned (NFR-13), the live probe unshifted and prompt-paint-free, the docs written (the CHANGELOG `[0.47.0]` entry, the README/usage rows the fixes name, the example check), the version carry to **0.47.0**, the delivery committed and pushed, the release standing latest — **re-derived green at this pass's read against the published faces**: the published `v0.47.0 — the mouse-click display fixed` body still standing at the release's notes (tag `v0.47.0` on `f9ec9ae`; the requirements' §13 first two rows' record), the FR-48 faces standing (the click leaves every row where it stood and paints no prompt; the requirements' AC-41's live battery record). | FR-48a, FR-48b, FR-48c, FR-48d, NFR-11, NFR-13, NFR-14, NFR-15, AS-82, AS-86, AS-83, TPR-30 | T-113, T-114, T-125 (this pass) | ✅ |
 
 *W-72's execution record: the gate **plan** stands passed at the cycle's
 close — the suite re-derived **665 unit + 6 integration, 0 failed** at the
@@ -151,12 +152,13 @@ the tree at HEAD `e1b9118` ≡ `origin/main` (0.47.0, the CHANGELOG's
 the working tree clean), resolving the ledgers' stale uncommitted-record
 clause into the committed trail (C-08). The verification session that followed
 (closing 2026-11-06) re-derived the same clauses live; its ledger writes and
-the work logs `_014`/`_015` stand committed in the trail follow-up `7d8e621`,
-and the 2026-11-06 22:54 +0900 re-load pass re-verified the instruction
-byte-exact against that HEAD (`main` ≡ `origin/main`, the tag `v0.47.0`
-on `f9ec9ae`, the product tree unchanged since the delivery, the gates
-standing green 665+6) and resolved the ledgers' trail clauses into the
-committed trail (`8c26ecc` → `f9ec9ae` → `e1b9118` → `7d8e621`; C-08). The
+the work logs `_014`/`_15` stand committed in the
+trail follow-up `7d8e621`, and the 2026-11-06 22:54 +0900 re-load pass
+re-verified the instruction byte-exact against that HEAD (`main` ≡
+`origin/main`, the tag `v0.47.0` on `f9ec9ae`, the product tree unchanged
+since the delivery, the gates standing green 665+6) and resolved the
+ledgers' trail clauses into the committed trail (`8c26ecc` → `f9ec9ae` →
+`e1b9118` → `7d8e621`; C-08). The
 23:10 +0900 execution session that followed re-derived the same clauses
 live (the tag `v0.47.0` on `f9ec9ae`, `/releases/latest` standing
 `v0.47.0 — the mouse-click display fixed` as the repo's latest, the gates
@@ -167,8 +169,8 @@ mid-history (each of `ebe0aca`/`77e8a29`/`f9ec9ae` had inserted its
 release section above the heading, against the ground records' 「the
 empty `[Unreleased]` heading stands above the newest entry」), and the
 heading was hoisted to directly precede `[0.47.0]` (`315ee7f`; no release
-content changed, no version carry, no new release — no feature added;
-the trail `8c26ecc` → `f9ec9ae` → `e1b9118` → `7d8e621` → `315ee7f`; the
+content changed, no version carry, no new release — no feature added; the
+trail `8c26ecc` → `f9ec9ae` → `e1b9118` → `7d8e621` → `315ee7f`; the
 follow-ups `13d4356`/`442bc19` committed the 23:10 session's ledgers and
 log and the 22:54 pass's untracked log behind it, and the 23:16 re-load
 pass re-verified the instruction byte-exact against HEAD `442bc19`
@@ -177,7 +179,7 @@ heading order intact, the product tree unchanged since the hoist; C-08):
 the tag `v0.47.0` on
 `f9ec9ae`, the `/releases/latest` endpoint resolving `v0.47.0 — the mouse-click
 display fixed` as the repo's latest release (id 436429139), the gates green
-(**665 unit + 6 integration, 0 failed**) and clippy standing **five** distinct
+**665 unit + 6 integration, 0 failed** and clippy standing **five** distinct
 notices — the two further pre-existing ones (`src/app.rs:2382`
 `unnecessary_sort_by`, `src/agent.rs:2101` `collapsible_match`) verified
 verbatim at the `8c26ecc` ground, the earlier passes' three-notice record
@@ -222,7 +224,7 @@ exited. The trail's follow-ups `1b3c7e1` (naming `77e8a29`) and
 passes `_009`/`_010`.
 
 **"the terminal display fix — the bottom-most line" (FR-46 a–c)** —
-closed, 2026-11-06: delivered at `ebe0aca` ("Fix the terminal's bottom
+closed, 202-11-06: delivered at `ebe0aca` ("Fix the terminal's bottom
 line…"), the version carried **0.44.0 → 0.45.0**, the tag `v0.45.0`
 verified on it, the release published and verified **Latest** (created
 2026-11-06T00:55:20Z); gates **663 unit + 6 integration, 0 failed**,
@@ -233,12 +235,12 @@ trail; the ledger follow-up `5978dc9` names `ebe0aca`. Work logs
 
 **"the prompt-input queueing feature's removal" (FR-45 a–c)** — closed,
 2026-11-06: delivered at `b5deb9c` ("Remove the prompt-input queueing
-feature"), the version carried 0.43.0 → **0.44.0**, the tag `v0.44.0`
+feature"), the version carried 0.43.0 → **0.44.0**. the tag `v0.44.0`
 verified on it, the release `v0.44.0 — the prompt-input queueing feature
 removed` published and verified **Latest** (created
 2026-11-05T23:18:45Z); gates **663 unit + 6 integration, 0 failed**, the
 two dead-store clippy warnings recorded pre-existing. The trail's
-follow-up `6f0390f` named the delivery, and the ledger re-alignment pass
+follow-up `6f090f` named the delivery, and the ledger re-alignment pass
 rode the same convention (`0d45242`). Work logs
 `2026-11-06_002.md`–`_004.md`.
 
@@ -285,12 +287,170 @@ the 機能追加 addenda (v0.26.0 on `251a5bb`).
 
 ## 6. The FR-49 cycle's design (the answer-display prompt handoff — delivered 2026-11-07)
 
-The user's live report (「[answer]の回答の表示後にプロンプトが表示されません、回答の表示が完了したら必ずプロンプトを表示してください」) named one defect whose shipped ground took three angles to pin — the live battery (the tmux `ollama glm-5.3:cloud` panes, the byte-tier streams, the strace write histograms, and the display task's own state read-outs) — and the findings:
+The user's live report (「[answer]の回答の表示後にプロンプトが表示されません、
+回答の表示が完了したら必ずプロンプトを表示してください」) named one defect whose
+shipped ground took three angles to pin — the live battery (the tmux
+`ollama glm-5.3:cloud` panes, the byte-tier streams, the strace write
+histograms, and the display task's own state read-outs) — and the findings:
 
-- **D-85 — the terminal hand-off's always-on face.** The idle notification reached the input loop only while `prompt_state.is_pending()`; a turn the loop itself did not submit (peer/serve) parked its prompt return on the 150 ms reconcile tick, whose window between the terminal event and the next TurnStart could leave the answer's leading deltas painting on the prompt's own rows. The fix consumes the notification in every state: pending — the typed hand-off as shipped; ready with no turn in flight — the same hand-off the typed path returns through; awaiting-approval or a turn already in flight — the running flow keeps the zone and the mark drops quietly (FR-48b's own quietness). The hand-off also deduplicates against the reconcile tick (its own `zone_armed()` check first): the two painters race, so the later one may fire immediately after the earlier one had already disarmed — the guarded paint prevents the duplicate prompt row.
-- **D-86 — the marker's edges.** The running-turn flag was stored per event (`matches!(ev, TurnStart)`), so a turn read as ended from the FIRST streamed delta onward: the cancel bookkeeping and the reconcile tick saw a still-streaming turn, and the remaining deltas painted over the prompt's freshly returned rows. The flag now carries the TurnStart-to-terminal correspondence (only the two edges write it).
-- **D-87 — the erase's coordinate order.** `zone_csi_clear_row(row)` passed the row into the column slot (`zone_csi_move(row, 0)`), so every sweep emitted `ESC[1;{row+1}H` — a crawl along row 1's columns — erasing the banner row and never the row it named. The fix emits `ESC[{row+1};1H` (the crossterm row-first convention), pinned by `the_zone_erase_clears_each_row_it_names`; the disarm's plan sequence pinned by `the_zone_disarm_plan_never_replays_below_the_painted_top`.
-- **The watcher (the synchronous arm).** A `watch::Sender<bool>` rides the display task's TurnStart→terminal edge and the loop arms the zone the instant the edge flips — no selectable-await window streams the turn's leading deltas onto rows the zone has not taken yet. The body refines (pending → no arm; a turn already in flight → no re-arm). The typed path's `zone_arm` at submit stays as shipped.
+- **D-85 — the terminal hand-off's always-on face.** The idle notification
+  reached the input loop only while `prompt_state.is_pending()`; a turn the
+  loop itself did not submit (peer/serve) parked its prompt return on the
+  150 ms reconcile tick, whose window between the terminal event and the
+  next TurnStart could leave the answer's leading deltas painting on the
+  prompt's own rows. The fix consumes the notification in every state:
+  pending — the typed hand-off as shipped; ready with no turn in flight —
+  the same hand-off the typed path returns through; awaiting-approval or a
+  turn already in flight — the running flow keeps the zone and the mark
+  drops quietly (FR-48b's own quietness). The hand-off also deduplicates
+  against the reconcile tick (its own `zone_armed()` check first): the two
+  painters race, so the later one may fire immediately after the earlier
+  one had already disarmed — the guarded paint prevents the duplicate
+  prompt row.
+- **D-86 — the marker's edges.** The running-turn flag was stored per
+  event (`matches!(ev, TurnStart)`), so a turn read as ended from the FIRST
+  streamed delta onward: the cancel bookkeeping and the reconcile tick saw
+  a still-streaming turn, and the remaining deltas painted over the
+  prompt's freshly returned rows. The flag now carries the
+  TurnStart-to-terminal correspondence (only the two edges write it).
+- **D-87 — the erase's coordinate order.** `zone_csi_clear_row(row)` passed
+  the row into the column slot (`zone_csi_move(row, 0)`), so every sweep
+  emitted `ESC[1;{row+1}H` — a crawl along row 1's columns — erasing the
+  banner row and never the row it named. The fix emits `ESC[{row+1};1H`
+  (the crossterm row-first convention), pinned by
+  `the_zone_erase_clears_each_row_it_names`; the disarm's plan sequence
+  pinned by `the_zone_disarm_plan_never_replays_below_the_painted_top`.
+- **The watcher (the synchronous arm).** A `watch::Sender<bool>` rides
+  the display task's TurnStart→terminal edge and the loop arms the zone the
+  instant the edge flips — no selectable-await window streams the turn's
+  leading deltas onto rows the zone has not taken yet. The body refines
+  (pending → no arm; a turn already in flight → no re-arm). The typed
+  path's `zone_arm` at submit stays as shipped.
 
-The delivered faces (verified live at the delivered tree `89f1ea0`, `agent-cli 0.48.0`): the typed turn's `[answer]` body and outcome row replay straight before the fresh prompt; the tool-using turn and two back-to-back peer turns land one prompt per terminal; a bare click writes nothing (FR-48a/FR-48b); the banner row survives every pass; the FR-48 cycle's click/drag/scroll pins stand untouched. Gates: **667 unit + 6 integration, 0 failed**; clippy its five standing notices; the version carried 0.47.0 → **0.48.0**; the delivery commit `89f1ea0` pushed with the tag `v0.48.0`. The release standing latest is the cycle's remaining row (W-73's publication clause awaits a transport token; the traceability maps FR-49 → this section, and the tasks list's T-121–T-124).
+The delivered faces (verified live at the delivered tree `89f1ea0`,
+`agent-cli 0.48.0`): the typed turn's `[answer]` body and outcome row
+replay straight before the fresh prompt; the tool-using turn and two
+back-to-back peer turns land one prompt per terminal; a bare click writes
+nothing (FR-48a/FR-48b); the banner row survives every pass; the FR-48
+cycle's click/drag/scroll pins stand untouched. Gates: **667 unit + 6
+integration, 0 failed**; clippy its five standing notices; the version
+carried 0.47.0 → **0.48.0**; the delivery commit `89f1ea0` pushed with the
+tag `v0.48.0`. The release standing latest is the cycle's remaining row
+(its publication face recorded at §7's D-88 — the tasks list's T-123/T-126;
+the requirements' §11 traces FR-49 here and to §7).
 
+## 7. This pass's design verdicts (the FR-49d release face: D-88, D-89)
+
+This pass was an evidence-first read of the post-delivery movements; the
+verdicts it took, pinned at the tree and live (the requirements' §5.2's
+NFR-16 record, C-17's publication clause; the task list's T-125 row, whose
+records stand in the tasks' table cells):
+
+- **D-88 — the release face's ground.** The FR-49 delivery's release
+  obligation rode the standing release shape (the FR-46c/FR-47c/FR-48d
+  shape: `gh release create v0.48.0 --verify-tag --latest --notes-file`
+  with the tag's own CHANGELOG section as the notes), which the tree's
+  transport could not execute (no `gh` CLI nor a token at the execution
+  session's environment; the unauthenticated REST probe reads
+  `/releases/latest` but cannot publish), so the session's alternative
+  rode the repo's own release automation: `.github/workflows/release.yml`
+  (push to `main`, `contents: write`, the newest tag's release created
+  from that tag's `CHANGELOG.md` section, `--verify-tag --latest`, the
+  title from the section's summary, the idempotent re-run face with
+  `gh release edit` for a published release; `fetch-depth: 0` for the
+  history the extraction reads). The automation's publish step fails,
+  each run's exit code read from the runner's own log (`gh run download
+  <run-id>`): **exit 128** at `1d8ccc3` and again at `0a49302` — both
+  printing `fatal: not a git repository (or any of the parent
+  directories): .git`, the checkout's shallow fetch — and **exit 141**
+  at `40fc7c4` (the full-history checkout fix's run), the runner
+  stopping mid-publish step after `newest tag: v0.48.0` with none of
+  the workflow's own messages printed. `v0.48.0` remains unpublished
+  (`gh release view v0.48.0` → not found; `/releases/latest` →
+  `v0.47.0`); the FR-49d row stands pending the publication. The
+  publication face is the `gh release create` line at
+  `.github/workflows/release.yml`'s step (the repo's own transport,
+  `contents: write`) riding the next push.
+- **D-89 — the notes-file's extraction.** The workflow's extract reads
+  `git show "$TAG:CHANGELOG.md"` and an awk program
+  (`index($0, want) == 1`) over the block from the `## [0.48.0]` heading
+  until the next `## [` heading; the section content the extraction
+  would publish is the two `### Fixed` blocks the tree's own CHANGELOG
+  carries — **a second `### Fixed` heading stands under the
+  `## [0.48.0]` heading** (the FR-49 delivery commit `89f1ea0` turned the
+  previous `## [0.47.0]` heading into the new `## [0.48.0]` heading and
+  added its own `### Fixed` block above the standing one,
+  evidenced `git show 89f1ea0 -- CHANGELOG.md`; the heading order now
+  `:7` `## [0.48.0]` → `:9` `### Fixed` (the FR-49 block) → `:23`
+  `### Fixed` (the FR-48 block) → `:36` `## [0.46.0]`), which stands
+  as the delivery recorded the release face ("the `[0.48.0]`/`### Fixed`
+  entry written; the `[Unreleased]` heading standing above") — the
+  extraction's own section is the merged one the tree carries; the
+  D-88/D-89 record is the FR-49d row's face and the next pass's
+  publish face is the same `gh release create` line with the section the
+  tree carries.
+
+These verdicts are **recordings of the FR-49d row's face** and the next
+pass's obligations: the `v0.48.0` release publication (the tag's release
+created from the section's own content standing `Latest`, via the repo's
+own workflow) is the FR-49d row's remaining clause.
+
+These verdicts are evidence-first recordings of the FR-49d row's face,
+not fixes: the workflow file stands as the last session delivered it (the
+`40fc7c4` checkout fix); the FR-49d row's remaining clause is the
+publication's re-run verdict, taken by the next pass's read (the
+publication face is the `gh release create` line's next push's run).
+
+## 8. The 2026-11-07 delivery session's verdict (D-90 — the SIGPIPE mechanism, the publication delivered)
+
+The user's 「残タスクが無くなるまで作業を実施」 carried the C-17
+publication row to its close. The verdicts, pinned by execution:
+
+- **D-90 — the runner's exit 141 is SIGPIPE.** Reproduced locally under
+  the workflow's own gate set: `SECTION="$(git show "$TAG:CHANGELOG.md" |
+  awk ...exit...)"` under `set -euo pipefail` reports PIPESTATUS `141 0`
+  — awk's early `exit` closes the read while `git show` is still writing
+  the 88 KB CHANGELOG blob, and the writer dies of SIGPIPE, which
+  pipefail surfaces as the command substitution's exit code. The fix
+  stops printing instead of exiting (the awk `on { print }` arm reads to
+  the end).
+- **The CHANGELOG's heading order restored first (D-89's face):** the
+  FR-49 delivery commit's retitle had left the FR-48 notes as a
+  heading-less second `### Fixed` block under `## [0.48.0]`; the section
+  under the `[0.48.0]` heading is one release's notes again, the FR-48
+  block standing under the restored `## [0.47.0]` heading.
+- **The delivery:** the two product fixes ride the commit `9040435`
+  ("Fix the release workflow's SIGPIPE and restore the CHANGELOG's
+  [0.47.0] heading"); the tag `v0.48.0` moved onto it (the release was
+  unpublished, so the move costs no published face) and force-pushed
+  (`89f1ea0` → `592646e` the tag object, `9040435` the peeled target);
+  the branch pushed `40fc7c4..9040435`; the workflow's run
+  `42317643598` (head `9040435`) concluded **success**; the GitHub
+  release `v0.48.0 — After the \`[answer]\` display finishes, the prompt
+  is displayed again — every time.` published (2026-11-07T00:20:48Z)
+  and verified standing the repo's **latest**
+  (`/releases/latest` → tag_name `v0.48.0`; the release body the
+  `[0.48.0]` section's own Fixed block — the workflow's extraction face
+  working as designed).
+- **The gates at the changed tree:** **667 unit + 6 integration, 0
+  failed**; clippy standing its five notices at the recorded sites —
+  re-derived at this session's close (no Rust surface touched by the
+  two product fixes, the suite re-run confirming the standing record).
+- **The exit log `2026-11-07_000.md`** (the delivery-session's record of
+  its own state — the uncommitted log lost with the session's
+  environment reset) was restored verbatim from this session's opening
+  read of it and stands in `.aiprj/AI_LOG/` (the work-log rule; the
+  trail's follow-up carries it).
+
+C-17 closes with the publication standing; the FR-49 cycle's every
+clause is now delivered (the requirements' FR-49d row's remaining
+obligation discharged). These verdicts are the design side of the
+requirements' §13 delivery-status rows and the task list's T-126/T-127
+records.
+
+The instruction's method (the multi-angle subagent analysis, C-12)
+stands carried: this session's verdicts took the mechanism angle (the
+SIGPIPE reproduction), the release-verification angle (the runs
+endpoint and `/releases/latest`), and the ledger-consistency angle
+(the three documents aligned to the published ground) before the
+writes.

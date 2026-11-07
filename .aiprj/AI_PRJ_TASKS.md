@@ -6,8 +6,8 @@ row where it stood and displays no prompt" (FR-48 a/b/c/d — delivered)
 (`.aiprj/instructions.md`, reloaded 2026-11-06 17:03 +0900, verified
 byte-exact at the pass's exit — sha256
 `aedf46b46f0c3e36638b687b3cbc62e140f19c2c778372e3b5c4b854d762e015`, 520
-bytes, mtime 2026-11-06 17:06:41 +0900 — **changed** from the FR-47 cycle's
-reload: the delivered 最優先事項 sections are gone, the two-clause ask added)
+bytes, mtime 2026-11-06 17:06:41 +0900; **unchanged** across the FR-48 and
+FR-49 cycles — the last read at this pass, 2026-11-07)
 Paired with `AI_PRJ_REQUIREMENTS.md`, `AI_PRJ_DESIGN.md`.
 
 Status: ⬜ not started / 🟨 in progress / ✅ done / ⛔ blocked
@@ -42,7 +42,8 @@ committing the 23:10 session's ledgers and the log `_017`) → `442bc19`
 `main` ≡ `origin/main`), the 23:16 pass's ledger writes standing
 uncommitted for the trail's next follow-up.
 
-**The FR-49 cycle is delivered** (2026-11-07): the answer-display prompt handoff — after the `[answer]` display the prompt is displayed again every time, by the shipped flow's own hands (T-122's fixes at the terminal's edges, the marker's edges and the erase's coordinates; the gates **667 unit + 6 integration, 0 failed**; the delivered build **0.48.0**; the delivery commit `89f1ea0` with the tag `v0.48.0`; the release standing latest awaits a transport token, T-123's remaining row). The design record stands in the design's §6 (D-85–D-87).
+**The FR-49 cycle is delivered** (2026-11-07): the answer-display prompt handoff — after the `[answer]` display the prompt is displayed again every time, by the shipped flow's own hands (T-122's fixes at the terminal's edges, the marker's edges and the erase's coordinates; the gates **667 unit + 6 integration, 0 failed**; the delivered build **0.48.0**; the delivery commit `89f1ea0` with the tag `v0.48.0`; the release still unpublished — the workflow's publish runs failing
+(exit **141**; D-88/D-89)).
 
 **The ask is delivered** (2026-11-06): the mechanisms were evidenced
 file:line and probed live (the T-112 record), the fixes delivered at their
@@ -70,8 +71,11 @@ below` showing) leaves the screen byte-identical with the marker standing.
 | T-120 | The 2026-11-06 23:16 +0900 re-load/verification pass (C-08, NFR-12, C-15, C-16): the instruction re-verified byte-exact (520 bytes, sha256 `aedf46b4…`, mtime 2026-11-06 17:06:41 +0900, unchanged) and re-scoped against the delivered cycle (no new ask; the standing delivery clause untriggered); the delivered state re-verified live — HEAD `442bc19` `≡ origin/main` (two trail follow-ups `13d4356`/`442bc19` committed the 22:54 pass's log `_016` and the 23:10 session's ledgers and log `_017` behind the hoist `315ee7f`), the tag `v0.47.0` on `f9ec9ae` (remote), `/releases/latest` standing latest, the version files 0.47.0, the CHANGELOG's heading order intact, the working tree clean; the product tree unchanged since `315ee7f`, the 23:10 session's gate record standing valid; the ledgers' trail clauses (HEAD named `315ee7f`) resolved into the committed trail `… → 315ee7f → 13d4356 → 442bc19` (HEAD) across all three documents (C-08); no product file written and no commit made at the pass's write (the trail's next follow-up to carry this pass's writes, Art. 3), the work log `2026-11-06_018.md` written | — (C-08, NFR-12, C-15, C-16) | design §1, §4 | ✅ |
 | T-121 | The FR-49 cycle's mechanisms evidenced live and the multi-angle analysis recorded (NFR-16, C-12; the answer-display prompt handoff): the shipped-zone states read at the display task and the input loop (the `field` at `:2560`+ and the select's arms at `:3126+`), the byte-tier pane captures and the strace write histograms against the running `ollama glm-5.3:cloud` faces, the shipped-zone flags' own live read-outs; the multi-angle dispatch's outage recorded (both registered peers' reply windows timed out; the verdicts taken on the file/git/live evidence, which is decisive for each); the deficit named file:line (the display task's consumeregistration, the marker's edges, the zone's erase coordinate order). — **Done** | FR-49a, FR-49b, NFR-16, C-12 | design §6 (D-85–D-87) | ✅ |
 | T-122 | The FR-49 fixes at their sites (FR-49a, FR-49b; design §6): the terminal hand-off consumed in every prompt state (the pending path as shipped, the ready path for a turn the loop did not submit, the awaiting-approval and in-flight marks dropped quietly), the hand-off deduplicated against the reconcile tick (`zone_armed()` first); the synchronous `watch` sender for the turn's edges (the zone arms without the selector's own 150 ms window); the marker's edges (TurnStart→terminal, only the two edges write); the zone erase's coordinate order fixed (`zone_csi_move(0, row)`; the pins `the_zone_erase_clears_each_row_it_names` and `the_zone_disarm_plan_never_replays_below_the_painted_top` joining the gates). — **Done**: the fixes delivered in the delivery commit `89f1ea0` | FR-49a, FR-49b, NFR-17, NFR-18 | design §6 (D-85–D-87) | ✅ |
-| T-123 | The gates re-derived at the changed tree (C-09a), the live battery re-run on the delivered build, and the docs/example (FR-49c, FR-49d, NFR-15's release clause): **667 unit + 6 integration, 0 failed**; clippy standing its five notices at the recorded sites; the delivered faces verified (the typed turn, the tool-using turn, two back-to-back peer turns, the bare click's zero-touch face, the banner row surviving); the CHANGELOG's `[0.48.0]`/`### Fixed` entry written (the `[Unreleased]` heading standing above); the README/usage rows checked truthful; the example check ran (no config surface); the version carry **0.47.0 → 0.48.0** (`Cargo.toml`, `Cargo.lock` via `cargo update -p agent-cli --offline`, the heading); the delivery commit `89f1ea0` pushed and the tag `v0.48.0` verified on it. The release standing latest is the cycle's remaining row (no transport token in this session's environment; the next pass publishes). — **Done but for that row** | FR-49c, FR-49d, C-09a, C-14a | design §6 (D-85–D-87) | ✅ |
+| T-123 | The gates re-derived at the changed tree (C-09a), the live battery re-run on the delivered build, and the docs/example (FR-49c, FR-49d, NFR-15's release clause): **667 unit + 6 integration, 0 failed**; clippy standing its five notices at the recorded sites; the delivered faces verified (the typed turn, the tool-using turn, two back-to-back peer turns, the bare click's zero-touch face, the banner row surviving); the CHANGELOG's `[0.48.0]`/`### Fixed` entry written (the `[Unreleased]` heading standing above); the README/usage rows checked truthful; the example check ran (no config surface); the version carry **0.47.0 → 0.48.0** (`Cargo.toml`, `Cargo.lock` via `cargo update -p agent-cli --offline`, the heading); the delivery commit `89f1ea0` pushed and the tag `v0.48.0` verified on it. The release standing latest is the cycle's remaining row (the delivery-session's exit log `_000`; the automation's publish runs failing — D-88/D-89 at design §7). — **Done but for the release-publication row** | FR-49c, FR-49d, C-09a, C-14a | design §6 (D-85–D-87), §7 | ✅ |
 | T-124 | The ledgers' consistency and the work log (C-08, NFR-12): the requirements (§5.1/§5.2, the §13 rows, the trail), the design (§6), and this list extended and mutually consistent; the work log `2026-11-06_019.md` written with the instruction embedded; the write surface the three `.aiprj` documents and the work log (the product commit precedes: `89f1ea0`), no commit at the pass's write (Art. 3, C-16); no document carries any mark of authorship or tooling (Art. 8, NFR-12). — **Done** | — (C-08, NFR-12) | design §6 | ✅ |
+| T-125 | The 2026-11-07 re-load pass (this one, 2026-11-07 01:38 +0900 — C-08, NFR-12, C-15, C-16): the instruction re-verified byte-exact (520 bytes, sha256 `aedf46b4…` — **no new ask**, both cycles' asks standing delivered) and the tree re-derived at the delivery-session's new ground (HEAD `40fc7c4` ≡ `origin/main`; the version files 0.48.0; the CHANGELOG's `[0.48.0]` section standing with the `[0.47.0]` heading **absent** — its body a second `### Fixed` block under `[0.48.0]`; D-89's verdict recorded, the heading fix deferred as a product write for the next pass); the delivery-session's exit trail resolved (the exit log `_000` standing uncommitted, the workflow commits `1d8ccc3`/`0a49302`/`40fc7c4` recorded, the runs' exit codes named from their logs — **128** at `1d8ccc3` and `0a49302` (the same `fatal: not a git repository` face; the full-history checkout only lands in `40fc7c4`), **141** at `40fc7c4` — D-88; the release state re-verified live: `/releases/latest` resolving `v0.47.0`, `v0.48.0` not published); the ledgers' stale and malformed clauses resolved (C-08: the requirements' dangling FR-48d tail fragment after C-14a's row folded into it; the design's dangling §4→§7 references aligned (W-73's publication clause → §7's D-88's face; the traceability clause → the requirements' §11's rows); this file's trail and gate rows updated; the exit codes and suite counts corrected); no product file written and no commit made (the write surface: the three `.aiprj` documents; the work log `2026-11-07_001.md` per Art. 6/7). — **Done** | — (C-08, NFR-12, C-15, C-16) | design §6, §7 | ✅ |
+| T-126 | The FR-49d release-publication row (closed 2026-11-07, this session): the workflow's failing publish line pinned from the runs' logs and fixed at `.github/workflows/release.yml` (D-88's verdict read against the workflow's text: the extract's awk early-`exit` closed its read while `git show` was still writing the 88 KB CHANGELOG blob, so the writer died of SIGPIPE — exit 141 — under `set -o pipefail`; the extraction now stops printing and reads to the end); the CHANGELOG's `[0.47.0]` heading restored beneath `[0.48.0]`'s section before the release was created (D-89's face: the heading insertion + the FR-48 block re-headed under it); both fixes delivered in the product commit `9040435` ("Fix the release workflow's SIGPIPE and restore the CHANGELOG's [0.47.0] heading"), pushed to `origin/main` (`40fc7c4..9040435`); the tag `v0.48.0` moved from the delivery commit `89f1ea0` onto `9040435` (the release still unpublished, so the move was allowed) and force-pushed (`89f1ea0 → 9040435`, verified remote); the workflow's run `42317643598` (at `9040435`) executed green — **success**; the release `v0.48.0 — After the [answer] display finishes, the prompt is displayed again — every time.` published by the runner at 2026-11-07T00:20:48Z standing the repo's **latest** release (verified at `/releases/latest`: `tag_name` = `v0.48.0`; the body's section = the tag's own `[0.48.0]` block, the extraction face D-89 verified end-to-end). — ✅ **Done** | FR-49d, C-17 | design §7 (D-88/D-89), §8 | ✅ |
+| T-127 | The 2026-11-07 delivery session (C-17's publication clause executed; T-126 closed): the workflow's exit-141 mechanism reproduced locally (the PIPESTATUS probe: the awk early-`exit` ⇒ the `git show` writer's SIGPIPE ⇒ 141 under pipefail), the two product fixes delivered at `9040435` (the workflow's extract reads to the end; the CHANGELOG's `[0.47.0]` heading restored with the FR-48 block standing under it), the tag `v0.48.0` moved onto `9040435` and force-pushed, the workflow's run green, the release `v0.48.0` published standing **latest** (`/releases/latest` verified); the gates re-derived at the changed tree — **667 unit + 6 integration, 0 failed**, clippy standing its five notices; the ledgers aligned to the published ground; the work log `2026-11-07_001.md` written (the exit log `_000` restored from this session's opening read and committed in the trail follow-up). — ✅ **Done** | FR-49d, C-17, C-08, NFR-16 | design §8 | ✅ |
 
 ## The closed tasks of the delivered cycles (their records stand)
 
@@ -109,17 +113,20 @@ below` showing) leaves the screen byte-identical with the marker standing.
 
 ## Cross-cutting gates (C-09, the boundary) — standing
 
-- The suite at the delivered ground: **665 unit + 6 integration, 0 failed**
-  (re-derived at the delivery cycle's close and again at the 2026-11-06
-  23:10 execution session's tree — the CHANGELOG heading hoist included; the
-  ledger commits behind the delivery touch only `.aiprj` files).
-- Clippy at the verification session's re-derivation: **5** standing
-  notices — the two pre-existing dead-store notes (`src/app.rs:8324` /
-  `:8582`), the `empty line after doc comment` note on `run_oneshot`'s doc
-  comment (`:967`; the delivered one-shot's block), plus the two
-  pre-existing notices the earlier passes undercounted (`unnecessary_sort_by`
-  at `:2382`, `collapsible_match` at `src/agent.rs:2101` — both verbatim at
-  the `8c26ecc` ground; the requirements' C-09 record corrected).
+- The suite at the delivered ground: **667 unit + 6 integration, 0
+  failed** (the FR-49 delivery's close re-derivation; the delivered
+  ground's record, standing at the FR-49 delivered tree `89f1ea0`; the
+  workflow-side commits behind `89f1ea0` touch the release workflow's file
+  only — `.github/workflows/release.yml`, no Rust face the suite
+  compiles), standing green: the FR-48 cycle's ground's gates (**665
+  unit + 6** at the `f9ec9ae` ground) preceded it; the `.github/`
+  workflow commits never re-derived the gates (no Rust touch).
+- Clippy at the FR-49 delivery's re-derivation: **5** standing
+  notices — the sites re-based onto the delivered tree (`src/app.rs:978`
+  the empty-line-after-doc-comment note, `:2398` unnecessary_sort_by,
+  `:8478` and `:8736` dead stores; `src/agent.rs:2101` collapsible_match;
+  the FR-48 ground's sites at `:967`/`:2382`/`:8324`/`:8582` and the same
+  `:2101` preceded it).
 - The FR-47 boundary stands: the one-shot process binds **no** socket (the
   transient registry entry, the closed record's D-81); the FR-46 boundary
   stands: the prompt/clock flip (the prompt while input is possible, the
@@ -128,9 +135,11 @@ below` showing) leaves the screen byte-identical with the marker standing.
   its gates re-derived at the changed tree with the delivery standing
   (T-113) and re-confirmed at the unchanged tree.
 - The `.aiprj` documents mutually consistent (C-08 — this pass resolved
-  the task-list draft's stale scheme named in T-115); the work log written
-  per Art. 6/7 (never overwritten); the instruction byte-exact at exit
-  (520 bytes, sha256 `aedf46b4…`).
+  the delivery-session exit trail's unrecorded rows: the workflow
+  commits, the exit codes 128/141, the CHANGELOG heading, the suite
+  count, the clippy sites); the work log written per Art. 6/7 (never
+  overwritten); the instruction byte-exact at exit (520 bytes, sha256
+  `aedf46b4…`).
 
 ## The previous cycles' record
 
@@ -150,6 +159,29 @@ pinned block face intact. The delivery re-verified live at the verification
 session's close: the tag on `f9ec9ae`, the release standing the repo's
 latest (`/releases/latest`, id 436429139), the gates **665 + 6, 0 failed**.
 Work logs `2026-11-06_013.md` and `_015.md`.
+
+**"the answer-display prompt handoff" (FR-49 a/b/c/d)** — delivered,
+2026-11-07: delivered at `89f1ea0` ("Fix the answer-display prompt handoff:
+the prompt returns after a turn's answer without a click or a keystroke"),
+the version carried **0.47.0 → 0.48.0**, the tag `v0.48.0` verified on it
+(remote-verified via `git ls-remote --tags`), the release `v0.48.0` **not**
+published (`/releases/latest` resolving `v0.47.0 — the mouse-click display
+fixed` at this pass); the delivered gates **667 unit + 6 integration, 0
+failed** (D-85/D-86/D-87's fixes + two new zone pins at `src/app.rs`);
+the delivered faces verified live (the typed turn, the tool-using turn,
+two back-to-back peer turns, the bare click's zero-touch face intact, the
+banner row surviving); the release automation `.github/workflows/release.yml`
+committed behind the delivery in `1d8ccc3`/`0a49302`/`40fc7c4`, the
+workflow's publish runs failing: run `1d8ccc3`'s with **exit 128**
+(`fatal: not a git repository (or any of the parent directories): .git`
+— both the `1d8ccc3` run (42252114925) and the `0a49302` run (42252311934),
+the full-history checkout only landing with `40fc7c4`) — and run `40fc7c4`'s
+(42252526178) with **exit 141** (the runner stopping mid-publish
+after `newest tag: v0.48.0` — the log's own last line — with none of the
+workflow's refusal messages printed; D-88/D-89's record, the delivery
+commit's own CHANGELOG heading mis-scope the second defect's face).
+Work logs `2026-11-06_019.md` (the cycle's record) and the exit log
+`2026-11-07_000.md` (the trail's standing uncommitted record).
 
 **"the one-shot mode added" (FR-47 a/b/c)** — closed, 2026-11-06:
 delivered at `77e8a29` ("Add the one-shot subcommand…"), the version
@@ -204,10 +236,19 @@ CHANGELOG's `[Unreleased]` heading hoist — the docs angle's verdict of the
 23:10 execution session) → `13d4356` (the ledger follow-up committing the
 23:10 session's ledgers and the log `_017`) → `442bc19` (the follow-up
 adding the 22:54 pass's untracked log `_016`) → `0be0754` (the re-verification
-pass's ledger follow-up) → `89f1ea0` (the FR-49 delivery, **v0.48.0**;
-**HEAD**) — the trail's
-follow-ups name the deliveries behind them (per the trail rule, a delivery
-commit's sha is nameable only from the commit that follows it).
+pass's ledger follow-up) → `89f1ea0` (the FR-49 delivery, **v0.48.0**) →
+`0efdc45` (the FR-49 ledger follow-up, committing the ledgers and the log
+`2026-11-06_019.md`) → `1d8ccc3` (the release workflow's first commit) →
+`0a49302` (the title refinement) → `40fc7c4` (the full-history checkout) →
+`9040435` (the release delivery: the workflow's SIGPIPE extract fixed and
+the CHANGELOG's `[0.47.0]` heading restored; the tag `v0.48.0` moved onto
+it; the release published standing **latest**; **HEAD**, `main` ≡
+`origin/main`) — the delivery-session's exit log `2026-11-07_000.md` and
+this pass's work log `2026-11-07_001.md` standing uncommitted per the
+trail rule, this pass's ledger writes to be carried by the trail's next
+follow-up — the trail's follow-ups name the deliveries behind them (per
+the trail rule, a delivery commit's sha is nameable only from the commit
+that follows it).
 
 Earlier cycles stand in the requirements document's §12 and the design
 document's §5.
