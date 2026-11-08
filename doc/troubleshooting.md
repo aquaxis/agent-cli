@@ -131,7 +131,7 @@ Working as configured — the message names the rule that refused it.
 - **`!<command>` is never gated.** It is your own typing, not a tool call the
   model asked for. `[permissions] deny = ["bash(rm:*)"]` stops the model and
   leaves `!rm` alone; use `[shell] enabled = false` to turn `!` off.
-- **The `claude-code` backend in delegation mode is out of reach.** Its tools
+- **The `claude-cli` backend in delegation mode is out of reach.** Its tools
   run inside Claude Code. Use that backend's own `permission_mode` /
   `allowed_tools` / `disallowed_tools`.
 - **A rule is not a sandbox.** Only the leading words of a command are
@@ -244,13 +244,13 @@ FAIL: provider error (opencode): HTTP 400 Bad Request
 
 ## Claude Code Backend Issues
 
-Applies to `kind = "claude-code"`, which drives the local `claude` CLI as a
-child process. Full reference: [`doc/providers/claude-code.md`](providers/claude-code.md).
+Applies to `kind = "claude-cli"`, which drives the local `claude` CLI as a
+child process. Full reference: [`doc/providers/claude-cli.md`](providers/claude-cli.md).
 Behaviour below was observed with Claude Code `2.1.233`.
 
 ### `Claude Code executable not found` at startup, or `doctor` reports `bin ...: NOT found`
 
-- `[provider.claude-code] bin` (default `claude`) could not be resolved. A value
+- `[provider.claude-cli] bin` (default `claude`) could not be resolved. A value
   containing a path separator is used as-is; anything else is looked up on
   `PATH` and must be executable.
 - Install Claude Code, or set `bin` to an absolute path. `agent-cli doctor`
@@ -259,9 +259,9 @@ Behaviour below was observed with Claude Code `2.1.233`.
 - This backend has no `api_key_env`: authentication belongs to Claude Code
   itself, so a missing API key is never the cause here.
 
-### The turn ends with `claude-code: turn timed out`
+### The turn ends with `claude-cli: turn timed out`
 
-- The turn exceeded `[provider.claude-code] turn_timeout_secs` (default `900`).
+- The turn exceeded `[provider.claude-cli] turn_timeout_secs` (default `900`).
   The child process is killed and the session is dropped; the next turn starts a
   fresh child, so the REPL stays usable.
 - Raise the limit for turns that legitimately run long (large refactors, test

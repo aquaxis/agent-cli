@@ -451,7 +451,7 @@ pub async fn providers(cfg: &Config) -> Result<()> {
             ("ollama", Some(_)) | ("llama.cpp", Some(_)) => "local server".into(),
             // No API key of its own: it runs the Claude Code CLI, which brings
             // its own authentication. What matters is whether the binary exists.
-            ("claude-code", entry) => {
+            ("claude-cli", entry) => {
                 let raw = entry
                     .and_then(|e| e.bin.clone())
                     .unwrap_or_else(|| "claude".into());
@@ -460,10 +460,10 @@ pub async fn providers(cfg: &Config) -> Result<()> {
                     Err(_) => format!("bin {raw}: NOT found"),
                 }
             }
-            // Same shape as claude-code: no api_key_env — the provider runs
+            // Same shape as claude-cli: no api_key_env — the provider runs
             // the codex CLI, which carries its own authentication. What
             // matters is whether the binary exists.
-            ("codex-code", entry) => {
+            ("codex-cli", entry) => {
                 let raw = entry
                     .and_then(|e| e.bin.clone())
                     .unwrap_or_else(|| "codex".into());
@@ -564,7 +564,7 @@ pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
     // Claude Code check: this backend has no api_key_env — it drives the
     // `claude` CLI, which carries its own authentication. Check the binary.
     let kind = cfg.provider.kind.as_str();
-    if kind == "claude-code" {
+    if kind == "claude-cli" {
         let raw = cfg
             .provider_entry(kind)
             .and_then(|e| e.bin.clone())
@@ -607,10 +607,10 @@ pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
         }
     }
 
-    // Codex Code check: same shape as claude-code — no api_key_env of its
+    // Codex Code check: same shape as claude-cli — no api_key_env of its
     // own; the `codex` CLI carries the authentication. Check the binary.
     let kind = cfg.provider.kind.as_str();
-    if kind == "codex-code" {
+    if kind == "codex-cli" {
         let raw = cfg
             .provider_entry(kind)
             .and_then(|e| e.bin.clone())

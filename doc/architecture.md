@@ -385,9 +385,9 @@ bodies and history handling are byte-for-byte unchanged.
 self-update path and the MCP client — rather than further context-efficiency
 features. They keep their numbers because released CHANGELOG entries cite them.
 
-### 8.1 Child-process backend (`claude-code`)
+### 8.1 Child-process backend (`claude-cli`)
 
-Every other backend is an HTTP client. `claude-code` instead spawns the local
+Every other backend is an HTTP client. `claude-cli` instead spawns the local
 Claude Code CLI and talks to it over pipes, which puts two things outside
 agent-cli's control:
 
@@ -406,7 +406,7 @@ agent-cli's control:
 
 Text and thinking deltas arrive as Anthropic-shaped SSE wrapped in
 `stream_event`, so `ai/claude.rs::handle_frame` is reused after one unwrap.
-See [`doc/providers/claude-code.md`](providers/claude-code.md).
+See [`doc/providers/claude-cli.md`](providers/claude-cli.md).
 
 ### 8.2 Self-update (`update`)
 

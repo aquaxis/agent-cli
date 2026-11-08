@@ -4,6 +4,34 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.49.0]
+
+### Changed
+
+- **While a turn is running, mouse operations are prohibited.** The three
+  mouse behaviors the REPL performs — the wheel scrollback, the
+  progress-indicator click (the thinking view's toggle) and the drag
+  select-and-copy — are now barred while an agent turn is in flight: a
+  mouse event mid-turn performs nothing (no view move, no toggle, no
+  selection and no copy report), so the running turn's own output surface
+  stays the turn's alone. At rest the mouse behaves exactly as shipped:
+  the wheel scrolls the session log behind the pinned prompt, a drag
+  selects and copies on release, and the terminal's own selection keeps
+  its Shift override.
+
+- **The `claude-code` and `codex-code` backend kinds are renamed
+  `claude-cli` and `codex-cli`.** The configuration surface (`kind =`
+  values, the `[provider.claude-code]` / `[provider.codex-code]` table
+  keys, the `--provider` accepted values and its help row), the provider
+  diagnostics and error prefixes, and every doc row that named the old
+  kinds now use the new names. Files `config.toml` written with the old
+  kinds must be updated: `kind = "claude-code"` becomes
+  `kind = "claude-cli"` (and its table `[provider.claude-code]` becomes
+  `[provider.claude-cli]`); the same shape applies to
+  `codex-code` → `codex-cli`. The child binaries the backends spawn (the
+  `claude` and `codex` executables) and the backends' wire behavior are
+  unchanged.
+
 ## [0.48.0]
 
 ### Fixed

@@ -7,8 +7,8 @@
 ## Highlights
 
 - Standalone — no tmux required. Just run `agent-cli` (the no-arg form is equivalent to `agent-cli run`).
-- Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch — the REPL and tools never call out to the `claude` CLI. (Driving that CLI is available separately, as the opt-in `claude-code` backend below.)
-- Nine backends: `claude` / `claude-code` / `codex` / `codex-code` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
+- Claude Code-equivalent REPL with built-in tools and thinking, implemented from scratch — the REPL and tools never call out to the `claude` CLI. (Driving that CLI is available separately, as the opt-in `claude-cli` backend below.)
+- Nine backends: `claude` / `claude-cli` / `codex` / `codex-cli` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`.
 - Multi-agent coordination — separate processes exchange prompts via `/send <peer> <text>` (a report that costs the peer no turn, or an ask that waits for its answer, with `--report` / `--ask`).
 - Detached agents — `agent-cli spawn` (or `/spawn`) creates a headless peer in its own session that outlives the launcher; stop it with `agent-cli stop <peer>` (or `/stop`). While a peer you spawned runs, the REPL stacks its run state — name and elapsed time, one row per live child, newest nearest the bottom — directly above the clock block, and the row is gone when the peer finishes.
 - Groups — tag a launched cohort with `--group <id>` (detached children inherit it); filter with `agent-cli list --group <id>` and discover running cohorts with `agent-cli groups`.
@@ -23,8 +23,8 @@
 - Results reported without a turn — a child can hand its finished work back with `send_to delivery="report"`, which is added to the parent's conversation and costs it **no** inference: the parent shows one line per report and integrates them when you ask. Sent as a prompt (the default) the peer answers in its own session; `delivery="ask"` waits for that answer. Fan out the work, let each child report, ask once for the summary.
 - Agents that manage their own agents — an agent can create a detached peer (`spawn`), talk to it (`send_to`), see the peers it created (`list_agents`) and shut one down (`stop_agent`), all as tools. Each agent sees and stops **only its own tree**; anything else is refused. Autonomous creation is bounded by `[spawn]` — live children per agent and depth of the chain — so a delegating agent cannot grow a tree nobody asked for. `agent-cli spawn` / `list` / `stop` / `groups` remain the unrestricted view for a person.
 - Shell commands from the prompt — type `!<command>` (as in Claude Code) and it runs in the shell straight away, with no approval prompt and no round trip through the model. The output streams into the session as it is produced, `Esc` cancels a long one, and the command and its output are handed to the model as context, so the next question can refer to what you just saw. `[shell]` configures the timeout, the context cap, and turns it off.
-- Mouse-wheel scrollback — turning the wheel scrolls the session log while the **prompt line stays where it is**, still showing what you typed and still editable; the wheel works during a turn too, with the spinner-and-elapsed clock on the terminal's bottom line while a turn runs; while you are scrolled back, that row reads `Message below` in reverse video (inverted text and background) instead — the elapsed time is not shown until you scroll back to the bottom, and at an idle prompt the marker is a row of its own beneath the prompt line. A turn that ends while you are scrolled still leaves its `✔ <elapsed>` line. Scroll back to the bottom or press `Esc` to return to the live view; `Esc` re-displays the prompt in every state. The keyboard is unchanged: `↑` / `↓` stay on the input history. `[ui] mouse_scroll` and `[ui] scrollback_lines` control it.
-- Select and copy with the mouse — **drag over the log** and the range is highlighted as you go; releasing copies it to the clipboard as plain text, with the colours stripped and the terminal's wrapping undone, so a wrapped line pastes as one line. It works in the live view and while scrolled back, during a turn and at rest alike — what is copied is exactly the range highlighted at release, even while the turn streams more output underneath. The text travels by OSC 52, so it reaches the clipboard of the machine you are looking at even over SSH; `[ui] copy_command` pipes it to `wl-copy` / `xclip` instead, and `[ui] mouse_select` turns it off.
+- Mouse-wheel scrollback — turning the wheel scrolls the session log while the **prompt line stays where it is**, still showing what you typed and still editable; while an agent turn runs the wheel's scrollback is barred — the running turn is the log's own output surface and mouse operations stand down until it ends, the spinner-and-elapsed clock staying on the terminal's bottom line; while you are scrolled back, that row reads `Message below` in reverse video (inverted text and background) instead — the elapsed time is not shown until you scroll back to the bottom, and at an idle prompt the marker is a row of its own beneath the prompt line. A turn that ends while you are scrolled still leaves its `✔ <elapsed>` line. Scroll back to the bottom or press `Esc` to return to the live view; `Esc` re-displays the prompt in every state. The keyboard is unchanged: `↑` / `↓` stay on the input history. `[ui] mouse_scroll` and `[ui] scrollback_lines` control it.
+- Select and copy with the mouse — **drag over the log** and the range is highlighted as you go; releasing copies it to the clipboard as plain text, with the colours stripped and the terminal's wrapping undone, so a wrapped line pastes as one line. It works in the live view and while scrolled back at rest — while an agent turn runs the drag stands down with the rest of the mouse handling, and what is copied is exactly the range highlighted at release. The text travels by OSC 52, so it reaches the clipboard of the machine you are looking at even over SSH; `[ui] copy_command` pipes it to `wl-copy` / `xclip` instead, and `[ui] mouse_select` turns it off.
 - Colour-coded output — the prompt and tool names in cyan, arguments in grey, tool results and the spinner's elapsed time in dark yellow, the answer marker and the startup banner in magenta, `✔` in green, `✗` and errors in red, the approval prompt in yellow, and the scroll marker (`Message below`, while the log is scrolled back) in reverse video. The answer body itself is left uncoloured. Colour is written only to streams that are terminals, honours `NO_COLOR`, and can be forced or disabled with `[ui] color`.
 - Scriptable — pipe a question straight into `agent-cli run`, or query a running agent with `agent-cli ask <peer> <text>` and get just the answer on stdout. `agent-cli one-shot "<prompt>"` answers one prompt and exits — no REPL, no peer registration — so scripts get exactly one answer per invocation (`--quiet` prints only the answer text).
 - Streaming responses are synchronized with the REPL prompt so a fresh `> ` is always redrawn after the response completes.
@@ -41,9 +41,9 @@
 | kind | API | Default model |
 |------|-----|--------------|
 | claude | Anthropic Claude (Messages, SSE) | `claude-opus-5-5` |
-| claude-code | Local Claude Code CLI as a child process (no API key) | Claude Code's own |
+| claude-cli | Local Claude Code CLI as a child process (no API key) | Claude Code's own |
 | codex | OpenAI Chat Completions (SSE) | `gpt-5.6-terra` |
-| codex-code | Local Codex CLI as a child process (no API key) | Codex's own default |
+| codex-cli | Local Codex CLI as a child process (no API key) | Codex's own default |
 | strata | OpenAI Chat Completions (SSE, keyless local engine) | `strata` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.3-flash:cloud` |
 | opencode | OpenCode — dual mode (see below) | `claude-sonnet-5-5` |
@@ -85,16 +85,16 @@ rides on. A Strata bound to a non-loopback host with a key passes its own
 `api_key_env`. You can still override any field in `[provider.strata]`. See
 [`doc/providers/strata.md`](doc/providers/strata.md).
 
-**`claude-code`** runs the Claude Code CLI installed on the machine and adapts
+**`claude-cli`** runs the Claude Code CLI installed on the machine and adapts
 it to the provider interface, so `agent-cli` wraps it with personas, peer IPC,
 logging, and custom slash commands. It needs no API key — Claude Code brings its
 own authentication:
 
 ```toml
 [provider]
-kind = "claude-code"
+kind = "claude-cli"
 
-[provider.claude-code]
+[provider.claude-cli]
 mode      = "delegation"   # Claude Code runs its own tools (default)
 transport = "stream"       # token-level streaming (default)
 ```
@@ -103,25 +103,25 @@ Two consequences are worth knowing up front: in the default `delegation` mode
 Claude Code executes its own tools, so agent-cli's tool registry and approval
 prompt are not involved; and in `gateway` mode (`--tools ""`) nothing executes
 at all, because `claude -p` accepts no external tool definitions. See
-[`doc/providers/claude-code.md`](doc/providers/claude-code.md).
+[`doc/providers/claude-cli.md`](doc/providers/claude-cli.md).
 
-**`codex-code`** runs the OpenAI Codex CLI installed on the machine and adapts
+**`codex-cli`** runs the OpenAI Codex CLI installed on the machine and adapts
 it to the provider interface the same way — delegation (Codex runs its own
 tools inside its own sandbox, so the tool-use and session behavior matches
-`claude-code`), session persistence carried by Codex's own thread id, and no
+`claude-cli`), session persistence carried by Codex's own thread id, and no
 API key (Codex brings its own authentication, e.g. a ChatGPT login). Where
-claude-code streams token deltas, codex-code streams turn-level items:
+claude-cli streams token deltas, codex-cli streams turn-level items:
 whole texts per `item.completed`, with the granularities `items` (default,
 `--json`) and `oneshot` (`-o`, the whole reply at end of turn) as transports.
 Codex has no gateway mode (no `--tools ""` counterpart — its child runs its
 own agent) and no system-prompt flag (a persona rides the turn payload).
-See [`doc/providers/codex-code.md`](doc/providers/codex-code.md).
+See [`doc/providers/codex-cli.md`](doc/providers/codex-cli.md).
 
 ```toml
 [provider]
-kind = "codex-code"
+kind = "codex-cli"
 
-[provider.codex-code]
+[provider.codex-cli]
 transport = "items"        # turn-level item stream via --json (default)
 session   = "persistent"   # codex exec resume <thread_id> carries the session
 sandbox   = "workspace-write"  # -s; codex's own default is read-only
@@ -129,7 +129,7 @@ sandbox   = "workspace-write"  # -s; codex's own default is read-only
 
 The mandatory verification targets are `claude` and `ollama` (with model `glm-5.3-flash:cloud`).
 
-| Capability | claude | claude-code | codex | codex-code | ollama | opencode | llama.cpp |
+| Capability | claude | claude-cli | codex | codex-cli | ollama | opencode | llama.cpp |
 |------------|--------|-------------|-------|------------|--------|----------|-----------|
 | Streaming  | ✓ | ✓ (`transport = "stream"`) | ✓ | ✓ (`transport = "items"`) | ✓ | ✓ (cloud SSE; local buffered) | ✓ |
 | Tool use   | ✓ | ✓ delegation mode — run **inside** Claude Code | ✓ (function calling) | ✓ delegation — run **inside** Codex | ✓ (model-dependent) | ✓ cloud / ✗ local (v1) | ✓ (server-build dependent) |
@@ -237,13 +237,13 @@ thinking     = true                          # enable thinking blocks
 # prompt_cache = true                         # opt-in Anthropic prompt caching
 ```
 
-**claude-code** — the locally installed Claude Code CLI, driven as a child process. No API key; it uses Claude Code's own authentication. Every key below is optional:
+**claude-cli** — the locally installed Claude Code CLI, driven as a child process. No API key; it uses Claude Code's own authentication. Every key below is optional:
 
 ```toml
 [provider]
-kind = "claude-code"
+kind = "claude-cli"
 
-[provider.claude-code]
+[provider.claude-cli]
 bin       = "claude"       # executable name (resolved via PATH) or full path
 model     = "opus"         # --model; omit for Claude Code's own default
 mode      = "delegation"   # "delegation" (its own tools) | "gateway" (chat only)
@@ -494,7 +494,7 @@ Tool invocations (bash, read, write, send_to, monitor, edit, glob, grep, websear
 
 In approval mode, each tool request shows `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted; anything else (blank input, other words) counts as denial.
 
-This governs the tools `agent-cli` runs itself. With `kind = "claude-code"` in
+This governs the tools `agent-cli` runs itself. With `kind = "claude-cli"` in
 `delegation` mode the tools run inside Claude Code, so none of the three methods
 apply — use that backend's `permission_mode` / `tools` / `allowed_tools` /
 `disallowed_tools` keys instead.
@@ -652,7 +652,7 @@ Full frontmatter reference, validation rules, and operational scenarios are in [
 - [`doc/tools.md`](doc/tools.md) — built-in tool specifications
 - [`doc/architecture.md`](doc/architecture.md) — architecture overview
 - [`doc/troubleshooting.md`](doc/troubleshooting.md) — known failures and fixes
-- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`codex-code.md`](doc/providers/codex-code.md) / [`strata.md`](doc/providers/strata.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
+- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-cli.md`](doc/providers/claude-cli.md) / [`codex.md`](doc/providers/codex.md) / [`codex-cli.md`](doc/providers/codex-cli.md) / [`strata.md`](doc/providers/strata.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — per-backend guides
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — development guide
 - [`CHANGELOG.md`](CHANGELOG.md) — release notes
 

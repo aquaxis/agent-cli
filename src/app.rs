@@ -1436,6 +1436,20 @@ fn click_hits_indicator(painted_rows: u16, cursor_row: u16, row: u16) -> bool {
     row > top && row <= cursor_row
 }
 
+/// Whether agent-cli's own mouse handling is barred at this moment (FR-50a):
+/// When a turn is in flight, the mouse operations the input loop would
+/// otherwise handle mid-turn are prohibited: the loop's three mouse gates
+/// read this helper **negated** (`!the_mouse_operation_is_prohibited(...)`)
+/// and stay mute for the whole turn, so the wheel moves no view, the click
+/// toggles nothing and the drag selects/copies nothing while the agent runs.
+/// At rest (no turn in flight) the helper is false, the negation passes, and
+/// every shipped gate opens as before.
+/// Pure, so the pin can verify the prohibition without a terminal, and the
+/// gate reads stay grep-able: the negation lives at the three use sites.
+fn the_mouse_operation_is_prohibited(turn_in_flight: bool) -> bool {
+    turn_in_flight
+}
+
 /// The armed zone's same rule (FR-27): a click lands on the beat's clock block
 /// — never on the spinner row itself and never on the span — so the reasoning
 /// view toggles from the zone's standing shape exactly as the shipped block
@@ -3430,7 +3444,17 @@ async fn run_input_loop_raw(
                         // which stays where it is. The keyboard is untouched:
                         // the arrows still move within the line and through the
                         // history.
+                        // While a turn is in flight the wheel's scrollback
+                        // is barred (FR-50a): the session log is the turn's
+                        // own output surface mid-turn, and the prohibition
+                        // asks agent-cli to perform no mouse operation while
+                        // the agent runs. The view stays on the live face;
+                        // the scrolled view a user opened at rest keeps its
+                        // markers and its return paths.
                         if state.scroll
+                            && !the_mouse_operation_is_prohibited(
+                                state.turn_in_flight.load(Ordering::SeqCst),
+                            )
                             && matches!(
                                 mouse_event.kind,
                                 crossterm::event::MouseEventKind::ScrollUp
@@ -3445,12 +3469,14 @@ async fn run_input_loop_raw(
                             let peer_lines =
                                 live_peer_lines(&state.registry_dir, &state.id, width).len();
                             // The marker row joins the budget whenever the view
-                            // is off the bottom — a running turn included, since
-                            // the pin composes the prompt span in every state
-                            // (FR-39, FR-40). The drawer recomputes the exact
-                            // count at the draw, so a first notch taken at a
-                            // live view only risks a notch-shallower clamp
-                            // before the next pass.
+                            // is off the bottom (the pin composes the prompt
+                            // span in every state; FR-39, FR-40). The drawer
+                            // recomputes the exact count at the draw, so a
+                            // first notch taken at a live view only risks a
+                            // notch-shallower clamp before the next pass. The
+                            // arm runs only at rest (FR-50a bars it while a
+                            // turn is in flight), so the budget here reads an
+                            // at-rest screen.
                             let view_moved = overlay.view_active();
                             let bottom_rows = bottom_block_rows(
                                 &prompt_state,
@@ -3469,8 +3495,17 @@ async fn run_input_loop_raw(
                         // its block switches the live `thinking` view between
                         // the last few rows and everything the terminal can
                         // hold. While the view is scrolled the block is not on
-                        // screen, so there is nothing to click.
+                        // screen, so there is nothing to click. The toggle's
+                        // shipped gate opened only while a turn ran
+                        // (`is_pending()`), and the running turn is exactly
+                        // what this prohibition bars (FR-50a): the mouse
+                        // stays mute while the agent operates, so the
+                        // expand/collapse is no longer reachable by click
+                        // mid-turn.
                         if prompt_state.is_pending()
+                            && !the_mouse_operation_is_prohibited(
+                                state.turn_in_flight.load(Ordering::SeqCst),
+                            )
                             && !overlay.is_active()
                             && matches!(
                                 mouse_event.kind,
@@ -3514,8 +3549,16 @@ async fn run_input_loop_raw(
                         // its own selection is the override users already know,
                         // and a terminal that reports a shifted drag must not
                         // have it taken away here.
+                        // While a turn is in flight the drag is barred
+                        // (FR-50a): the select-and-copy is the mouse
+                        // operation the prohibition bars mid-turn, so the
+                        // drag arm starts no selection and copies nothing
+                        // while the agent runs.
                         if state.scroll
                             && state.mouse_select
+                            && !the_mouse_operation_is_prohibited(
+                                state.turn_in_flight.load(Ordering::SeqCst),
+                            )
                             && !mouse_event
                                 .modifiers
                                 .contains(KeyModifiers::SHIFT)
@@ -8650,6 +8693,29 @@ mod tests {
         assert!(!click_hits_indicator(1, 7, 7));
         // Nothing painted: no click can hit it.
         assert!(!click_hits_indicator(0, 7, 7));
+    }
+
+    #[test]
+    fn a_running_turn_bars_every_mouse_operation() {
+        // FR-50a: while a turn is in flight the mouse arm performs none of
+        // its operations — the wheel's scrollback move, the click's toggle
+        // and the drag's select-and-copy are all gated behind the same
+        // prohibition helper **negated at the gate** (the wheel :3452, the
+        // click :3503, the drag :3556 read `!the_mouse_operation_is_
+        // prohibited(...)`), so a turn's own output surface stays the turn's
+        // alone (「エージェント動作中のマウス操作は禁止」) and no mouse
+        // operation reaches its arm mid-turn. At rest the helper is false
+        // and the negation passes — every shipped gate opens as before —
+        // which is what the truth table below pins for the repair's faces.
+        assert!(the_mouse_operation_is_prohibited(true));
+        assert!(!the_mouse_operation_is_prohibited(false));
+        // The gate-side conjunction each site joins (the polarity the
+        // repair re-decided; D-93's escape path — a suite green cannot
+        // witness the gates' own reads, so this pin states the shape).
+        for turn in [true, false] {
+            let gate_opens: bool = !the_mouse_operation_is_prohibited(turn);
+            assert_eq!(gate_opens, !turn);
+        }
     }
 
     #[test]

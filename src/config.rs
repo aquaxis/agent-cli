@@ -9,7 +9,7 @@ use crate::theme::ColorMode;
 const DEFAULT_CONFIG: &str = r#"# agent-cli configuration
 
 [provider]
-# Backend to use: "claude" | "claude-code" | "codex" | "codex-code" |
+# Backend to use: "claude" | "claude-cli" | "codex" | "codex-cli" |
 # "strata" | "ollama" | "opencode" | "opencode-go" | "llama.cpp"
 kind = "claude"
 
@@ -21,7 +21,7 @@ thinking    = true
 # Opt-in: Anthropic prompt caching (system + tools + conversation tail).
 # prompt_cache = true
 
-[provider.claude-code]
+[provider.claude-cli]
 # Drives the locally installed Claude Code CLI (`claude`) as a backend. No API
 # key: it uses whatever authentication Claude Code itself already has.
 # bin       = "claude"       # executable name (resolved via PATH) or full path
@@ -40,7 +40,7 @@ thinking    = true
 # system_prompt_mode = "append"          # "append" | "replace"
 # extra_args         = []                # passed through verbatim
 
-[provider.codex-code]
+[provider.codex-cli]
 # Drives the locally installed OpenAI Codex CLI (`codex exec`) as a backend.
 # No API key: it uses whatever authentication Codex itself already has (e.g. a
 # ChatGPT login). Delegation only — codex runs its own tools inside its own
@@ -292,11 +292,11 @@ pub struct ProviderRoot {
     pub kind: String,
     #[serde(default)]
     pub claude: Option<ProviderEntry>,
-    #[serde(default, rename = "claude-code")]
+    #[serde(default, rename = "claude-cli")]
     pub claude_code: Option<ProviderEntry>,
     #[serde(default)]
     pub codex: Option<ProviderEntry>,
-    #[serde(default, rename = "codex-code")]
+    #[serde(default, rename = "codex-cli")]
     pub codex_code: Option<ProviderEntry>,
     #[serde(default)]
     pub strata: Option<ProviderEntry>,
@@ -384,61 +384,61 @@ pub struct ProviderEntry {
     /// `None`/absent => server default (non-deterministic).
     #[serde(default)]
     pub seed: Option<u64>,
-    /// claude-code only: the Claude Code executable. A value containing a path
+    /// claude-cli only: the Claude Code executable. A value containing a path
     /// separator is used as-is; otherwise it is resolved through `PATH`.
     /// `None`/absent => `"claude"`.
     #[serde(default)]
     pub bin: Option<String>,
-    /// claude-code only: who owns the agent loop. `"delegation"` (default)
+    /// claude-cli only: who owns the agent loop. `"delegation"` (default)
     /// lets Claude Code run its own tools; `"gateway"` passes `--tools ""` and
     /// uses it as a chat-only backend. Unknown values are rejected.
     #[serde(default)]
     pub mode: Option<String>,
-    /// claude-code only: `"stream"` (default, `--output-format stream-json`
+    /// claude-cli only: `"stream"` (default, `--output-format stream-json`
     /// with token-level deltas) or `"oneshot"` (one child per turn,
     /// `--output-format json`). Unknown values are rejected.
     #[serde(default)]
     pub transport: Option<String>,
-    /// claude-code only, delegation mode only: `"persistent"` (default) reuses
+    /// claude-cli only, delegation mode only: `"persistent"` (default) reuses
     /// one Claude Code session across turns and sends only new messages;
     /// `"ephemeral"` passes `--no-session-persistence` and re-sends the
     /// transcript each turn. Unknown values are rejected.
     #[serde(default)]
     pub session: Option<String>,
-    /// claude-code only: built-in Claude Code tools to enable (`--tools`).
+    /// claude-cli only: built-in Claude Code tools to enable (`--tools`).
     /// `None`/absent => flag omitted (Claude Code's own default set). Ignored
     /// in gateway mode, which always sends `--tools ""`.
     #[serde(default)]
     pub tools: Option<Vec<String>>,
-    /// claude-code only: `--allowed-tools`. `None`/absent => flag omitted.
+    /// claude-cli only: `--allowed-tools`. `None`/absent => flag omitted.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
-    /// claude-code only: `--disallowed-tools`. `None`/absent => flag omitted.
+    /// claude-cli only: `--disallowed-tools`. `None`/absent => flag omitted.
     #[serde(default)]
     pub disallowed_tools: Option<Vec<String>>,
-    /// claude-code only: per-turn wall-clock limit in seconds. On expiry the
+    /// claude-cli only: per-turn wall-clock limit in seconds. On expiry the
     /// child is killed and the turn ends with an error, leaving the provider
     /// usable for the next turn. `None`/absent => 900.
     #[serde(default)]
     pub turn_timeout_secs: Option<u64>,
-    /// claude-code only: `--permission-mode`. Passed through unvalidated;
+    /// claude-cli only: `--permission-mode`. Passed through unvalidated;
     /// Claude Code rejects unknown values itself. `None`/absent => omitted.
     #[serde(default)]
     pub permission_mode: Option<String>,
-    /// claude-code only: `--max-budget-usd`. `None`/absent => flag omitted.
+    /// claude-cli only: `--max-budget-usd`. `None`/absent => flag omitted.
     #[serde(default)]
     pub max_budget_usd: Option<f64>,
-    /// claude-code only: how the persona reaches Claude Code. `"append"`
+    /// claude-cli only: how the persona reaches Claude Code. `"append"`
     /// (default) uses `--append-system-prompt`; `"replace"` uses
     /// `--system-prompt`. Unknown values are rejected.
     #[serde(default)]
     pub system_prompt_mode: Option<String>,
-    /// CLI child backends (`claude-code`, `codex-code`) only: extra CLI
+    /// CLI child backends (`claude-cli`, `codex-cli`) only: extra CLI
     /// arguments appended verbatim before the prompt. Escape hatch for flags
     /// this config does not model.
     #[serde(default)]
     pub extra_args: Option<Vec<String>>,
-    /// codex-code only: sandbox policy passed as `-s` on every turn.
+    /// codex-cli only: sandbox policy passed as `-s` on every turn.
     /// `"workspace-write"` by default — codex's own default is read-only,
     /// which would block every command delegation must run. The accepted
     /// values are codex's: `read-only` | `workspace-write` |
@@ -446,21 +446,21 @@ pub struct ProviderEntry {
     /// unknown values itself.
     #[serde(default)]
     pub sandbox: Option<String>,
-    /// codex-code only: additional directories codex may write alongside the
+    /// codex-cli only: additional directories codex may write alongside the
     /// workspace (repeated `--add-dir` flags).
     #[serde(default)]
     pub add_dir: Option<Vec<String>>,
-    /// codex-code only: approval policy passed as `-c approval_policy=...`.
+    /// codex-cli only: approval policy passed as `-c approval_policy=...`.
     /// codex's values (`untrusted`, `on-failure`, `on-request`, `never`) are
     /// passed through unvalidated.
     #[serde(default)]
     pub approval_policy: Option<String>,
-    /// codex-code only: pass `--dangerously-bypass-approvals-and-sandbox`,
+    /// codex-cli only: pass `--dangerously-bypass-approvals-and-sandbox`,
     /// skipping every approval and sandboxing (dangerous; intended for
     /// externally-sandboxed environments). `None`/absent => flag omitted.
     #[serde(default)]
     pub bypass_sandbox_and_approvals: Option<bool>,
-    /// codex-code only: pass `--skip-git-repo-check` so codex runs outside a
+    /// codex-cli only: pass `--skip-git-repo-check` so codex runs outside a
     /// trusted git directory. `true` by default — agent-cli may legitimately
     /// run codex from a directory that is not a git repository at all, and
     /// delegation is exactly the shape that must not ask before each tool;
@@ -1226,9 +1226,9 @@ impl Config {
     pub fn provider_entry(&self, kind: &str) -> Option<&ProviderEntry> {
         match kind {
             "claude" => self.provider.claude.as_ref(),
-            "claude-code" => self.provider.claude_code.as_ref(),
+            "claude-cli" => self.provider.claude_code.as_ref(),
             "codex" => self.provider.codex.as_ref(),
-            "codex-code" => self.provider.codex_code.as_ref(),
+            "codex-cli" => self.provider.codex_code.as_ref(),
             "ollama" => self.provider.ollama.as_ref(),
             "opencode" | "opencode-go" => self.provider.opencode.as_ref(),
             "llama.cpp" => self.provider.llamacpp.as_ref(),
@@ -1272,13 +1272,13 @@ impl Config {
     fn provider_entry_mut(&mut self, kind: &str) -> Option<&mut ProviderEntry> {
         match kind {
             "claude" => Some(self.provider.claude.get_or_insert_with(Default::default)),
-            "claude-code" => Some(
+            "claude-cli" => Some(
                 self.provider
                     .claude_code
                     .get_or_insert_with(Default::default),
             ),
             "codex" => Some(self.provider.codex.get_or_insert_with(Default::default)),
-            "codex-code" => Some(
+            "codex-cli" => Some(
                 self.provider
                     .codex_code
                     .get_or_insert_with(Default::default),
@@ -2210,9 +2210,9 @@ show_thinking = "expanded"
     fn claude_code_section_parses_every_key() {
         let toml_src = r#"
 [provider]
-kind = "claude-code"
+kind = "claude-cli"
 
-[provider.claude-code]
+[provider.claude-cli]
 bin                = "/opt/bin/claude"
 model              = "opus"
 mode               = "gateway"
@@ -2248,22 +2248,22 @@ extra_args         = ["--add-dir", "/tmp"]
     fn provider_entry_resolves_claude_code() {
         let toml_src = r#"
 [provider]
-kind = "claude-code"
+kind = "claude-cli"
 
-[provider.claude-code]
+[provider.claude-cli]
 model = "opus"
 "#;
         let mut cfg: Config = toml::from_str(toml_src).unwrap();
         assert_eq!(
-            cfg.provider_entry("claude-code")
+            cfg.provider_entry("claude-cli")
                 .and_then(|e| e.model.as_deref()),
             Some("opus")
         );
-        cfg.provider_entry_mut("claude-code").unwrap().model = Some("sonnet".into());
+        cfg.provider_entry_mut("claude-cli").unwrap().model = Some("sonnet".into());
         assert_eq!(
             cfg.provider.claude_code.as_ref().unwrap().model.as_deref(),
             Some("sonnet"),
-            "the claude-code entry, not another backend's, must be mutated"
+            "the claude-cli entry, not another backend's, must be mutated"
         );
     }
 
@@ -2278,7 +2278,7 @@ model = "glm-5.1:cloud"
 "#;
         let cfg: Config = toml::from_str(toml_src).unwrap();
         assert!(cfg.provider.claude_code.is_none());
-        assert!(cfg.provider_entry("claude-code").is_none());
+        assert!(cfg.provider_entry("claude-cli").is_none());
         assert_eq!(
             cfg.provider_entry("ollama")
                 .and_then(|e| e.model.as_deref()),
@@ -2294,7 +2294,7 @@ model = "glm-5.1:cloud"
         let entry = cfg.provider.claude_code.as_ref().expect("section present");
         assert!(entry.bin.is_none());
         assert!(entry.mode.is_none());
-        assert!(DEFAULT_CONFIG.contains("\"claude-code\""));
+        assert!(DEFAULT_CONFIG.contains("\"claude-cli\""));
     }
 
     #[test]

@@ -39,7 +39,7 @@ agent-cli [--config <path>] <subcommand>
 | Option | Description |
 |--------|-------------|
 | `--name <name>` | Agent display name |
-| `--provider <kind>` | Override backend: `claude` / `claude-code` / `codex` / `codex-code` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp` |
+| `--provider <kind>` | Override backend: `claude` / `claude-cli` / `codex` / `codex-cli` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp` |
 | `--model <model>` | Override model |
 | `--persona <path>` | Explicit persona file path |
 | `--group <id>` | Group this agent joins; detached children inherit it. Overrides the `[runtime] group` config key. See [Groups](#groups) |
@@ -295,7 +295,7 @@ In the REPL, lines starting with `/` are commands; everything else is a normal p
 | `/send [--report&#124;--ask] <peer> <text>` | Send to a peer: a prompt (default), a report added to its conversation with no turn, or an ask that waits for the answer |
 | `/spawn [name] [provider]` | Create a detached agent peer (see [Detached agents](#detached-agents)) that outlives this session |
 | `/stop <peer>` | Stop a running peer (id or name), including detached agents |
-| `/tools` | List tools enabled for this agent (agent-cli's own registry; not offered to the model under `claude-code` delegation) |
+| `/tools` | List tools enabled for this agent (agent-cli's own registry; not offered to the model under `claude-cli` delegation) |
 | `/persona` | Show this agent's persona (role / skills / description / tool restrictions / source path) |
 | `/reload-persona` | Re-resolve and reload the persona file, updating the system prompt (history preserved) |
 | `/peer <id_or_name>` | Show a peer's persona summary |
@@ -354,7 +354,7 @@ On an interactive terminal, the REPL shows what it is doing while a turn runs:
 - The **line below** is redrawn in place about ten times a second: a spinner at the head of the line, then the time elapsed since the turn started (`0.4s`, `12.4s`, `2m03s`).
 - When the turn ends, both are replaced by a single permanent line — `✔ 12.4s` on success, `✗ 12.4s` when the turn ended with an error — and the prompt is drawn beneath it. A turn stopped with `Esc` instead prints `[info] cancelled by user` and leaves no mark.
 - The indicator pauses while a tool-approval prompt is on screen and resumes once you answer.
-- **Reasoning (`thinking`) is shown live below the spinner**, the last 10 rows at a time, with a `… +N more (click to expand)` marker when there is more. **Click the block** with the mouse to switch to as much of the reasoning as the screen can hold, and click again to go back to 10 rows; the choice is remembered for the following turns. The view belongs to the running turn — it is cleared when the turn ends, and the full reasoning is still written to the conversation log.
+- **Reasoning (`thinking`) is shown live below the spinner**, the last 10 rows at a time, with a `… +N more (click to expand)` marker when there is more. **Click the block** with the mouse to switch to as much of the reasoning as the screen can hold, and click again to go back to 10 rows — at idle only: while a turn is running no mouse operation is performed ("While a Turn Is Running" below), so the block is reachable by click once the turn ends; the choice is remembered for the following turns. The view belongs to the running turn — it is cleared when the turn ends, and the full reasoning is still written to the conversation log.
 - **Tool results are cut to 5 rows** while the indicator is on, ending in `… +N more lines`, so a large `bash` output cannot push the spinner down the screen. The full result is in the conversation log (`[runtime] log_dir`), and the model always receives it in full — only the on-screen copy is shortened.
 - Mouse reporting is on for the whole session while the wheel scrollback is enabled (`[ui] mouse_scroll`, on by default), which is what makes the wheel, this click and drag-to-select work. While it is on, dragging selects the log through agent-cli itself (see "Selecting and Copying From the Log" below); your terminal's own selection is still there under its usual override, normally holding **Shift**. With `[ui] mouse_scroll = false` the reporting is limited to a running turn, and only when reasoning is actually shown (`[ui] show_thinking` other than `"hidden"`); with `show_thinking = "hidden"` as well, it is never enabled and there is nothing to click.
 - While an answer is streaming the spinner is not drawn: the text itself flows down the screen, which shows the turn is alive.
@@ -417,7 +417,7 @@ What `!` is not for: it has no terminal of its own, so interactive and full-scre
 Turn the mouse wheel up and the session log scrolls behind the prompt: the prompt line stays exactly where it is, still showing what you had typed and where the cursor was, and stays editable while you read. Turn the wheel back down to return; reaching the bottom puts the live view back, and so does pressing `Esc`. `Enter` returns to the live view and then sends the line as usual, and `Ctrl+C` / `Ctrl+D` return to it and then mean what they always mean.
 
 - **The keyboard is unchanged.** `↑` / `↓` still move through the input history, the arrows still move within the line you are typing, and `Esc` / `Ctrl+C` still cancel a running turn once the view is back at the bottom. Only the wheel scrolls.
-- **It works during a turn.** While the agent is streaming an answer or running a tool you can scroll back over what it has already written; output arriving meanwhile is kept but does not move the view, and the bottom line tells you so: while the view is scrolled off the log's bottom the screen's bottom line reads **`Message below`** in inverted text and background, no spinner, no elapsed time — the running turn keeps going and the display returns when the view does. At an idle prompt the same marker hangs in a one-row block beneath the pinned prompt line. A turn that ends while you are scrolled leaves its `✔ <elapsed>` line in the log — the clock is written to the log only once, at the end, so the scrollable history holds the turn's output, not the spinner's beats. Everything appears in place when you return to the live view. On both screens the pinned block sits above the running clock mid-turn, and keeps the bottom row at every input-possible state: any running subagents you spawned are stacked directly *above* it, one row per live child, newest nearest the block, and the wheel's range ends above the topmost of those rows.
+- **It is barred during a turn.** While the agent is streaming an answer or running a tool the wheel is not performed: the turn's own output surface is left alone, the view stays on the live face, and the wheel works again the moment the turn ends. At an idle prompt you can scroll back over what has already been written; the bottom line tells you when the view is off the log's bottom: it reads **`Message below`** in inverted text and background, no spinner, no elapsed time, and the display returns when the view does. A turn that ends while you are scrolled leaves its `✔ <elapsed>` line in the log — the clock is written to the log only once, at the end, so the scrollable history holds the turn's output, not the spinner's beats. Everything appears in place when you return to the live view. On both screens the pinned block sits above the screen's bottom rows, and keeps the bottom row at every input-possible state: any running subagents you spawned are stacked directly *above* it, one row per live child, newest nearest the block, and the wheel's range ends above the topmost of those rows.
 - **The log is what agent-cli printed**, up to `[ui] scrollback_lines` lines (2000 by default) — the banner, your submitted lines, answers, tool calls and results, and each turn's `✔ <elapsed>`. The progress block itself is not part of it: it is erased and redrawn while a turn runs.
 - **Selecting text is agent-cli's own** — drag over the log and it is copied on release (see below). The terminal's own selection, and its own scrollback, are still available under the override your terminal uses, usually holding `Shift`; `[ui] mouse_scroll = false` gives the mouse back to the terminal entirely.
 - Scrolling is drawn on the terminal's alternate screen, so returning to the live view restores the screen — and the terminal's own scrollback — exactly as it was.
@@ -426,7 +426,7 @@ Turn the mouse wheel up and the session log scrolls behind the prompt: the promp
 
 Press the left mouse button over the session log and drag: the range is highlighted as you go, and on release it is copied to the clipboard. It works in the live view and while you are scrolled back, and a line reads out as the line it is — not as the rows your terminal happened to wrap it into.
 
-- **What you get is plain text.** Colours are stripped, the wrapping is undone, and nothing but the characters you dragged over reaches the clipboard. A selection spanning several lines pastes as several lines. What is copied is what was highlighted when you released, even mid-turn: lines the running turn streams under the drag do not shift the copied range.
+- **What you get is plain text.** Colours are stripped, the wrapping is undone, and nothing but the characters you dragged over reaches the clipboard. A selection spanning several lines pastes as several lines. What is copied is exactly what was highlighted when you released.
 - **A short line tells you what happened**: `[clip] copied 3 lines (214 bytes) to the clipboard via osc52`. A click that selects nothing says so and copies nothing.
 - **How it reaches the clipboard.** By default agent-cli writes it to your terminal with the OSC 52 escape sequence, so it lands on the clipboard of the machine you are *looking at* — which is what you want over SSH or from inside a container. Inside tmux both the bare and the passthrough-wrapped form are written, because tmux forwards each under a different setting (`set-clipboard on`, `allow-passthrough on`); under the stock defaults neither is forwarded. `agent-cli doctor` reports both.
 - **If your terminal ignores OSC 52**, set `[ui] copy_command` to a clipboard command and the text is piped to it instead: `copy_command = "wl-copy"`, or `"xclip -selection clipboard"`. See [`doc/troubleshooting.md`](troubleshooting.md).
@@ -496,12 +496,12 @@ Tool invocations (bash, read, write, send_to, monitor, edit, glob, grep, websear
 `/auto status` (or `/auto` with no argument) shows the current value. In approval mode, each tool request displays `[tool approval] <tool> <args>` and `approve? [y/N]:`. Only `y` / `yes` is accepted; anything else (blank input, other words) counts as denial.
 
 **Scope.** Approval governs the tools `agent-cli` itself runs. With
-`kind = "claude-code"` in the default `mode = "delegation"`, the tools are run
+`kind = "claude-cli"` in the default `mode = "delegation"`, the tools are run
 inside Claude Code and reported afterwards, so `auto_approve_tools`,
 `--auto-approve-tools`, `/auto`, and persona allow / deny lists do not gate
 them. Restrict that backend with its own `tools` / `allowed_tools` /
 `disallowed_tools` / `permission_mode` keys instead — see
-[`doc/providers/claude-code.md`](providers/claude-code.md).
+[`doc/providers/claude-cli.md`](providers/claude-cli.md).
 
 ### Suppressing `[thinking]` Output
 
@@ -547,28 +547,28 @@ ollama serve &
 agent-cli run --provider ollama --model glm-5.3-flash:cloud
 ```
 
-### 3. Local Claude Code CLI (claude-code)
+### 3. Local Claude Code CLI (claude-cli)
 
 Uses the `claude` CLI installed on the machine as the backend, with no API key —
 Claude Code brings its own authentication.
 
 ```toml
 [provider]
-kind = "claude-code"
+kind = "claude-cli"
 
-[provider.claude-code]
+[provider.claude-cli]
 # bin   = "claude"   # executable name (resolved on PATH) or an absolute path
 # model = "opus"     # omit to use Claude Code's own default
 ```
 
 ```bash
-agent-cli run --provider claude-code
+agent-cli run --provider claude-cli
 ```
 
 In the default `mode = "delegation"` Claude Code runs its own tools inside its
 own process, so agent-cli's tools and its approval prompt are not part of the
 turn; `mode = "gateway"` is chat-only. See
-[`doc/providers/claude-code.md`](providers/claude-code.md).
+[`doc/providers/claude-cli.md`](providers/claude-cli.md).
 
 ### 4. Two-process coordination (claude x ollama)
 

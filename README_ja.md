@@ -7,8 +7,8 @@
 ## 特長
 
 - スタンドアロン — tmux 不要。`agent-cli` を実行するだけです（引数なしは `agent-cli run` と等価）。
-- ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（REPL とツール自体は `claude` CLI を呼び出しません）。なお `claude` CLI を駆動する方法は、後述の `claude-code` バックエンドとして別途選択できます。
-- 9 つのバックエンド: `claude` / `claude-code` / `codex` / `codex-code` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
+- ゼロから実装した Claude Code 相当の REPL。組み込みツールと思考機能を備えます（REPL とツール自体は `claude` CLI を呼び出しません）。なお `claude` CLI を駆動する方法は、後述の `claude-cli` バックエンドとして別途選択できます。
+- 9 つのバックエンド: `claude` / `claude-cli` / `codex` / `codex-cli` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`。
 - マルチエージェント連携 — 別々のプロセスが `/send <peer> <text>` でプロンプトを交換します（`--report` でターンなしのレポート、`--ask` で回答を待つ ask も指定可能）。
 - デタッチドエージェント — `agent-cli spawn`（または `/spawn`）は、起動元プロセスに依存せず独自セッションで動くヘッドレスなピアを作成します。`agent-cli stop <peer>`（または `/stop`）で停止します。自分が起動したピアが稼働中の間、REPL には実行状態（名前と経過時間、稼働中の子ごとに 1 行、新しいものが下端に近い）が最下行ブロックの**上**に積まれ（スピナーの時計は画面最下行のまま）、ピアが終わるとその行は消えます。
 - グループ — 起動したコホートを `--group <id>` でタグ付け（デタッチドな子が継承）。`agent-cli list --group <id>` で絞り込み、`agent-cli groups` で稼働中のコホートを検出します。
@@ -23,8 +23,8 @@
 - ターンを消費しない結果の受け取り — 子は `send_to` の `delivery="report"` で完了した成果を親へ返せます。親の会話にそのまま追加され、**推論は一切発生しません**（画面には報告1件につき1行のみ）。まとめが必要になった時点で一度だけ統合させれば済みます。既定の `"prompt"` では相手が自分のセッションで応答し、`"ask"` はその応答を待って返します。仕事を配って各自に報告させ、最後に一度だけまとめる、という流れがそのまま書けます。
 - エージェント自身による子エージェント管理 — 切り離されたピアの作成（`spawn`）、対話（`send_to`）、自分が作ったピアの一覧（`list_agents`）、停止（`stop_agent`）をすべてツールとして行えます。各エージェントが見られる・止められるのは**自分が作った系統だけ**で、それ以外は理由付きで拒否されます。自律的な生成は `[spawn]`（同時に持てる子の数と生成の深さ）で上限が課されるため、誰も頼んでいない木が際限なく育つことはありません。`agent-cli spawn` / `list` / `stop` / `groups` は従来どおり人間用の無制限な操作です。
 - プロンプトからのシェル実行 — Claude Code と同様に `!<コマンド>` と入力すると、モデルを経由せず即座にシェルで実行します（承認プロンプトはありません）。出力は実行しながら逐次表示され、長いコマンドは `Esc` で中断できます。実行したコマンドとその出力はモデルへコンテキストとして渡されるので、続けて「この結果は？」と聞けます。タイムアウト・コンテキスト上限・無効化は `[shell]` で設定します。
-- マウスホイールでのスクロールバック — ホイールを回すと、**プロンプト行はその位置に表示したまま**これまでのログを上下にスクロールします。入力中の文字とカーソルはそのまま残り、編集も続けられます。ターン実行中もスクロールでき、実行中は画面下端にスピナーと経過時間が固定表示されます。スクロール中の最下行は**文字と背景を反転させた `Message below`（下にメッセージがあります）** を表示し、経過時間は非表示になります（表示は最下部へ戻ると復帰します）。アイドル時のスクロールでは、マーカーは固定プロンプト行の下に独立した 1 行として表示されます。実行中にターンが終了すれば `✔ <elapsed>` の行がログに残ります。最下部まで戻すか `Esc` で元の表示に戻ります。`Esc` での復帰時にはプロンプトが必ず再表示されます。キーボードの操作は変更していません（`↑` / `↓` は従来どおり入力履歴の移動です）。`[ui] mouse_scroll` と `[ui] scrollback_lines` で制御できます。
-- マウスでの選択とコピー — **ログ上をドラッグ**すると選択範囲がその場でハイライトされ、ボタンを離すとクリップボードにコピーされます。色は取り除かれ、端末による折り返しも元に戻るため、折り返された 1 行は 1 行のまま貼り付けられます。ライブ表示でもスクロールバック中でも使え、ターン実行中のドラッグでも、離した時点で画面にハイライトされていた範囲がそのままコピーされます。転送には OSC 52 を使うので、SSH 越しでも「いま見ている端末」のクリップボードに入ります。`[ui] copy_command` を設定すれば `wl-copy` / `xclip` などへパイプでき、`[ui] mouse_select = false` で無効化できます。
+- マウスホイールでのスクロールバック — ホイールを回すと、**プロンプト行はその位置に表示したまま**これまでのログを上下にスクロールします。入力中の文字とカーソルはそのまま残り、編集も続けられます。エージェントのターン実行中はスクロールしません — 実行中のターンこそがログの出力面なので、マウス操作はターン終了まで行わず、スピナーと経過時間は画面下端に固定表示されたままです。スクロール中の最下行は**文字と背景を反転させた `Message below`（下にメッセージがあります）** を表示し、経過時間は非表示になります（表示は最下部へ戻ると復帰します）。アイドル時のスクロールでは、マーカーは固定プロンプト行の下に独立した 1 行として表示されます。実行中にターンが終了すれば `✔ <elapsed>` の行がログに残ります。最下部まで戻すか `Esc` で元の表示に戻ります。`Esc` での復帰時にはプロンプトが必ず再表示されます。キーボードの操作は変更していません（`↑` / `↓` は従来どおり入力履歴の移動です）。`[ui] mouse_scroll` と `[ui] scrollback_lines` で制御できます。
+- マウスでの選択とコピー — **ログ上をドラッグ**すると選択範囲がその場でハイライトされ、ボタンを離すとクリップボードにコピーされます。色は取り除かれ、端末による折り返しも元に戻るため、折り返された 1 行は 1 行のまま貼り付けられます。ライブ表示でもアイドル時のスクロールバック中でも使えます。ターン実行中はドラッグを含むマウス操作が行われないため、コピーされるのはターン終了後に離した時点でハイライトされていた範囲です。転送には OSC 52 を使うので、SSH 越しでも「いま見ている端末」のクリップボードに入ります。`[ui] copy_command` を設定すれば `wl-copy` / `xclip` などへパイプでき、`[ui] mouse_select = false` で無効化できます。
 - 配色付きの表示 — プロンプトとツール名はシアン、引数はグレー、ツール結果と経過時間は暗めの黄、回答マーカーと起動バナーはマゼンタ、`✔` は緑、`✗` とエラーは赤、承認プロンプトは黄で表示します。スクロール中の最下行に表示される `Message below` マーカーのみ、文字と背景を反転させる反転表示を使います。回答本文は最も長く読む部分なので着色しません。色は端末に接続されたストリームにのみ出力し、`NO_COLOR` を尊重します。`[ui] color` で常時有効化・無効化もできます。
 - スクリプトから利用可能 — `agent-cli run` に質問をパイプで流し込む、あるいは稼働中のエージェントに `agent-cli ask <peer> <text>` で問い合わせて応答だけを標準出力で受け取れます。
 - ストリーミング応答は REPL のプロンプトと同期しており、応答完了後は常に新しい `> ` が再描画されます。
@@ -41,9 +41,9 @@
 | kind | API | デフォルトモデル |
 |------|-----|--------------|
 | claude | Anthropic Claude (Messages, SSE) | `claude-opus-5-5` |
-| claude-code | ローカルの Claude Code CLI を子プロセスとして駆動（API キー不要） | Claude Code 自身のデフォルト |
+| claude-cli | ローカルの Claude Code CLI を子プロセスとして駆動（API キー不要） | Claude Code 自身のデフォルト |
 | codex | OpenAI Chat Completions (SSE) | `gpt-5.6-terra` |
-| codex-code | ローカルの Codex CLI を子プロセスとして駆動（API キー不要） | Codex 自身のデフォルト |
+| codex-cli | ローカルの Codex CLI を子プロセスとして駆動（API キー不要） | Codex 自身のデフォルト |
 | strata | OpenAI Chat Completions (SSE、キーレスのローカルエンジン) | `strata` |
 | ollama | Ollama `/api/chat` (NDJSON) | `glm-5.3-flash:cloud` |
 | opencode | OpenCode — デュアルモード（下記参照） | `claude-sonnet-5-5` |
@@ -84,16 +84,16 @@
 を渡します。`[provider.strata]` で各フィールドを上書きすることもできます。
 [`doc/providers/strata.md`](doc/providers/strata.md) を参照してください。
 
-**`claude-code`** は、マシンにインストール済みの Claude Code CLI を子プロセスとして
+**`claude-cli`** は、マシンにインストール済みの Claude Code CLI を子プロセスとして
 起動し、プロバイダー抽象に適合させます。`agent-cli` の REPL・ペルソナ・
 エージェント間 IPC・ログ・カスタムスラッシュコマンドが、そのまま Claude Code を
 包む形になります。API キーは不要で、Claude Code 自身の認証をそのまま使います:
 
 ```toml
 [provider]
-kind = "claude-code"
+kind = "claude-cli"
 
-[provider.claude-code]
+[provider.claude-cli]
 mode      = "delegation"   # Claude Code 自身がツールを実行（デフォルト）
 transport = "stream"       # トークン単位のストリーミング（デフォルト）
 ```
@@ -102,34 +102,34 @@ transport = "stream"       # トークン単位のストリーミング（デフ
 Claude Code 側がツールを実行するため、agent-cli のツールレジストリと承認プロンプトは
 関与しません。また `gateway` モード（`--tools ""`）ではツールが一切実行されません。
 `claude -p` は外部のツール定義を受け付けないためです。
-[`doc/providers/claude-code.md`](doc/providers/claude-code.md) を参照してください。
+[`doc/providers/claude-cli.md`](doc/providers/claude-cli.md) を参照してください。
 
 必須の検証対象は `claude` と `ollama`（モデル `glm-5.3-flash:cloud`）です。
 
-**`codex-code`** は、マシンにインストール済みの OpenAI Codex CLI（`codex`）を子プロセスとして
-起動し、`claude-code` と同様にプロバイダー抽象に適合させます。委譲
+**`codex-cli`** は、マシンにインストール済みの OpenAI Codex CLI（`codex`）を子プロセスとして
+起動し、`claude-cli` と同様にプロバイダー抽象に適合させます。委譲
 （Codex が自身のサンドボックス内でツールを実行し、ツール使用とセッション動作は
-`claude-code` と同じ）と、Codex 自身のスレッド ID によるセッション維持、API キー不要
-（Codex 自身の認証—ChatGPT ログイン等—をそのまま使う）が特徴です。`claude-code` が
-トークン単位でストリーミングするのに対し、codex-code はターン単位のアイテム配信：
+`claude-cli` と同じ）と、Codex 自身のスレッド ID によるセッション維持、API キー不要
+（Codex 自身の認証—ChatGPT ログイン等—をそのまま使う）が特徴です。`claude-cli` が
+トークン単位でストリーミングするのに対し、codex-cli はターン単位のアイテム配信：
 `item.completed` ごとにテキスト全体が届きます。トランスポートは `items`（デフォルト、
 `--json`）と `oneshot`（`-o`、ターン終了時に応答全体）の2種。Codex にゲートウェイ
 モードはありません（`--tools ""` の相当物なし — codex の子は自身のエージェントを
 実行するため）。また system-prompt の専用フラグもなく、ペルソナはターンペイロードに
 乗ります。
-[`doc/providers/codex-code.md`](doc/providers/codex-code.md) を参照してください。
+[`doc/providers/codex-cli.md`](doc/providers/codex-cli.md) を参照してください。
 
 ```toml
 [provider]
-kind = "codex-code"
+kind = "codex-cli"
 
-[provider.codex-code]
+[provider.codex-cli]
 transport = "items"        # ターン単位のアイテムストリーム（--json、デフォルト）
 session   = "persistent"   # codex exec resume <thread_id> がセッションを維持
 sandbox   = "workspace-write"  # -s; codex 自身のデフォルトは read-only
 ```
 
-| 機能 | claude | claude-code | codex | codex-code | ollama | opencode | llama.cpp |
+| 機能 | claude | claude-cli | codex | codex-cli | ollama | opencode | llama.cpp |
 |------------|--------|-------------|-------|------------|--------|----------|-----------|
 | ストリーミング | ✓ | ✓（`transport = "stream"`） | ✓ | ✓（`transport = "items"`） | ✓ | ✓（クラウド SSE / ローカルはバッファ） | ✓ |
 | ツール使用 | ✓ | ✓ delegation モード（Claude Code **内部**で実行） | ✓（function calling） | ✓ delegation — Codex **内部**で実行 | ✓（モデル依存） | ✓ クラウド / ✗ ローカル (v1) | ✓（サーバービルド依存） |
@@ -237,13 +237,13 @@ thinking     = true                          # 思考ブロックを有効化
 # prompt_cache = true                         # オプトイン: Anthropic プロンプトキャッシュ
 ```
 
-**claude-code** — ローカルにインストール済みの Claude Code CLI を子プロセスとして駆動します。API キーは不要で、Claude Code 自身の認証を使います。以下のキーはすべて任意です:
+**claude-cli** — ローカルにインストール済みの Claude Code CLI を子プロセスとして駆動します。API キーは不要で、Claude Code 自身の認証を使います。以下のキーはすべて任意です:
 
 ```toml
 [provider]
-kind = "claude-code"
+kind = "claude-cli"
 
-[provider.claude-code]
+[provider.claude-cli]
 bin       = "claude"       # 実行ファイル名（PATH から解決）またはフルパス
 model     = "opus"       # --model。省略時は Claude Code 自身のデフォルト
 mode      = "delegation"   # "delegation"（Claude Code 側のツール）| "gateway"（チャットのみ）
@@ -494,7 +494,7 @@ agent-cli mcp list   # 各サーバーへ接続してツールを一覧表示
 
 承認モードでは、各ツール要求が `[tool approval] <tool> <args>` と `approve? [y/N]:` を表示します。受理されるのは `y` / `yes` のみで、それ以外（空入力や他の語）は拒否として扱われます。
 
-これは `agent-cli` 自身が実行するツールに対する仕組みです。`kind = "claude-code"`
+これは `agent-cli` 自身が実行するツールに対する仕組みです。`kind = "claude-cli"`
 を `delegation` モードで使う場合、ツールは Claude Code 内部で実行されるため、上記
 3 つの方法はいずれも適用されません。そのバックエンドの `permission_mode` /
 `tools` / `allowed_tools` / `disallowed_tools` で制御してください。
@@ -545,8 +545,8 @@ agent-cli mcp list   # 各サーバーへ接続してツールを一覧表示
 | `Esc` | エージェントの実行中はターンを停止して即座にプロンプトへ戻る。`!` コマンドの実行中はそれを中断。ログをスクロール中は元の表示へ復帰。承認プロンプトでは対象ツールを拒否。待機中のプロンプトでは履歴参照を抜ける、または行をクリア |
 | `Ctrl+C` | エージェントの実行中は `Esc` と同じ。待機中のプロンプトでは行をクリアし、空行なら終了（承認プロンプトでもこの「終了」の意味のままなので、拒否は `Esc` で行ってください） |
 | `Ctrl+D` | 空行で終了 |
-| マウスホイール | プロンプト行を固定したままログをスクロール。スクロール中の最下行は反転表示の `Message below`（実行中のターンの経過時間は非表示）（`[ui] mouse_scroll`） |
-| マウスドラッグ | ログの範囲を選択し、離すとクリップボードへコピー（`[ui] mouse_select`）。`Shift` + ドラッグは端末側の選択 |
+| マウスホイール | プロンプト行を固定したままログをスクロール（ターン実行中は禁止）。スクロール中の最下行は反転表示の `Message below`（実行中のターンの経過時間は非表示）（`[ui] mouse_scroll`） |
+| マウスドラッグ | ログの範囲を選択し、離すとクリップボードへコピー（ターン実行中は禁止）（`[ui] mouse_select`）。`Shift` + ドラッグは端末側の選択 |
 
 行が `/` で始まり空白を含まない間は、一致するコマンド名がプロンプトの**上の行**に一覧表示され、`Tab` でそこから補完できます。`!` で始まる行はモデルではなくシェルで実行されます。raw モードは TTY が必要で、パイプ入力では行単位の読み込みにフォールバックします（ツール、カスタムコマンド、ピア通信はそのまま動作します）。
 
@@ -652,7 +652,7 @@ You are a senior reviewer. Always propose minimal-diff fixes.
 - [`doc/tools.md`](doc/tools.md) — 組み込みツールの仕様
 - [`doc/architecture.md`](doc/architecture.md) — アーキテクチャ概要
 - [`doc/troubleshooting.md`](doc/troubleshooting.md) — 既知の不具合と対処
-- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-code.md`](doc/providers/claude-code.md) / [`codex.md`](doc/providers/codex.md) / [`codex-code.md`](doc/providers/codex-code.md) / [`strata.md`](doc/providers/strata.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — バックエンド別ガイド
+- [`doc/providers/claude.md`](doc/providers/claude.md) / [`claude-cli.md`](doc/providers/claude-cli.md) / [`codex.md`](doc/providers/codex.md) / [`codex-cli.md`](doc/providers/codex-cli.md) / [`strata.md`](doc/providers/strata.md) / [`ollama.md`](doc/providers/ollama.md) / [`opencode.md`](doc/providers/opencode.md) / [`llamacpp.md`](doc/providers/llamacpp.md) — バックエンド別ガイド
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — 開発ガイド
 - [`CHANGELOG.md`](CHANGELOG.md) — リリースノート
 

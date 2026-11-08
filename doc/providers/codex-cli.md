@@ -26,9 +26,9 @@ own default is read-only, which is why this backend defaults to
 
 ```toml
 [provider]
-kind = "codex-code"
+kind = "codex-cli"
 
-[provider.codex-code]
+[provider.codex-cli]
 bin       = "codex"        # executable name (resolved via PATH) or full path
 model     = "gpt-5.6-terra"  # -m; omit for Codex's own default
 transport = "items"        # "items" (--json item stream) | "oneshot"
@@ -105,7 +105,7 @@ gate) never discards a perfectly good thread.
 | Approval prompt | ✗ | Codex owns permission decisions; control with `sandbox`/`approval_policy`/`bypass_sandbox_and_approvals` |
 | agent-cli tool registry | ✗ | Cannot be offered to the child |
 
-The one knob that differs in meaning from claude-code's `system_prompt_mode`:
+The one knob that differs in meaning from claude-cli's `system_prompt_mode`:
 **there is no system-prompt flag** on the probed CLI, so the persona rides the
 turn payload (the system text is prepended to the prompt of a fresh leg, and
 a persona change re-enters through a fresh conversation).
@@ -114,8 +114,8 @@ a persona change re-enters through a fresh conversation).
 
 ```bash
 agent-cli providers          # shows the resolved codex binary
-agent-cli doctor             # with kind = "codex-code": checks binary + --version
-agent-cli selftest --provider codex-code
+agent-cli doctor             # with kind = "codex-cli": checks binary + --version
+agent-cli selftest --provider codex-cli
 ```
 
 ## Known Limitations
@@ -139,8 +139,8 @@ agent-cli selftest --provider codex-code
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `Codex CLI executable not found` | `codex` not on `PATH` | Install the Codex CLI, or set `bin` to its full path |
-| `codex-code: turn timed out` | Turn exceeded `turn_timeout_secs` | Raise the limit, or shorten the task |
-| `codex-code: ended without a result` | The CLI refused the invocation, or the turn failed mid-stream | Read the quoted stderr tail; check the model name and `extra_args` |
+| `codex-cli: turn timed out` | Turn exceeded `turn_timeout_secs` | Raise the limit, or shorten the task |
+| `codex-cli: ended without a result` | The CLI refused the invocation, or the turn failed mid-stream | Read the quoted stderr tail; check the model name and `extra_args` |
 | `no rollout found for thread id ...` | The recorded thread was lost (deleted sessions, `--ephemeral`) | Nothing to fix: the next turn re-enters fresh automatically |
 | `writing is blocked by read-only sandbox` | `sandbox = "read-only"` (Codex's own default) | Set `sandbox = "workspace-write"` |
 | `Not inside a trusted directory` | `skip_git_repo_check = false` and the working directory is not trusted | Trust the directory (`codex`), or set `skip_git_repo_check = true` |

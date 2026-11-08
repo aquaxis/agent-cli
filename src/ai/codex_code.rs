@@ -30,8 +30,8 @@
 //!
 //! Codex's default sandbox is **read-only**: a workspace write without
 //! `-s workspace-write` was rejected on the probed CLI ("writing is blocked
-//! by read-only sandbox"). The claude-code backend has `--permission-mode`;
-//! its counterpart knobs live on `[provider.codex-code]`: `sandbox` → `-s`
+//! by read-only sandbox"). The claude-cli backend has `--permission-mode`;
+//! its counterpart knobs live on `[provider.codex-cli]`: `sandbox` → `-s`
 //! (`read-only` | `workspace-write` | `danger-full-access`; the backend
 //! default is `workspace-write`, since delegation is exactly the shape that
 //! must run commands), `add_dir` → repeated `--add-dir` (exec-level flags
@@ -140,8 +140,8 @@ fn parse_enum<T: Copy>(
         .collect::<Vec<_>>()
         .join(" | ");
     Err(AppError::provider(
-        "codex-code",
-        format!("[provider.codex-code] {key}: unknown value \"{raw}\" (accepted: {accepted})"),
+        "codex-cli",
+        format!("[provider.codex-cli] {key}: unknown value \"{raw}\" (accepted: {accepted})"),
     ))
 }
 
@@ -190,7 +190,7 @@ impl Settings {
             bypass_sandbox_and_approvals: entry.bypass_sandbox_and_approvals.unwrap_or(false),
             // Default true, probe-backed: agent-cli runs codex from its own
             // possibly-untrusted working directory, and delegation is exactly
-            // the shape that must not ask before each tool (the claude-code
+            // the shape that must not ask before each tool (the claude-cli
             // delegation path behaves the same way).
             skip_git_repo_check: entry.skip_git_repo_check.unwrap_or(true),
             turn_timeout: Duration::from_secs(
@@ -234,7 +234,7 @@ pub(crate) struct TurnPlan {
 }
 
 /// Build the child's argument vector. Pure: no I/O, so the flag set of every
-/// session/transport combination is unit-testable, mirroring claude-code's
+/// session/transport combination is unit-testable, mirroring claude-cli's
 /// `build_args`.
 ///
 /// Flag order is fixed (and asserted by tests) so that changes are visible in
@@ -302,7 +302,7 @@ pub(crate) fn build_args(s: &Settings, plan: &TurnPlan) -> Vec<String> {
 /// The file one-shot turns write the reply to. Fixed relative name, dropped
 /// after the turn: one child per turn, no concurrency within a provider.
 pub(crate) fn oneshot_file() -> &'static str {
-    ".agent-cli-codex-code-last.txt"
+    ".agent-cli-codex-cli-last.txt"
 }
 
 /// Parser state across one turn's JSONL lines.
@@ -331,7 +331,7 @@ impl LineOutcome {
 /// `codex exec resume` on the next turn) and never surfaced to the REPL.
 /// Unknown line types (`turn.started`, `turn.completed`, item types a later
 /// release adds) and unparsable lines are ignored — the wire shapes are the
-/// CLI's implementation detail, as in the claude-code parser.
+/// CLI's implementation detail, as in the claude-cli parser.
 pub(crate) fn map_line(line: &str, st: &mut LineState) -> LineOutcome {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -389,7 +389,7 @@ pub(crate) fn map_value(v: &Value, st: &mut LineState) -> LineOutcome {
                     events.push(ProviderEvent::Error { message: msg });
                 }
                 // Other item types (reasoning, file changes, …) and any type a
-                // later CLI release adds: ignored, as claude-code tolerates
+                // later CLI release adds: ignored, as claude-cli tolerates
                 // unknown line types.
                 _ => {}
             }
@@ -457,7 +457,7 @@ pub(crate) fn fresh_prompt(messages: &[Message]) -> String {
 }
 
 /// System messages joined into one string, for change detection (a persona
-/// change re-enters through a fresh conversation, as the claude-code resident
+/// change re-enters through a fresh conversation, as the claude-cli resident
 /// path respawns).
 fn system_text(messages: &[Message]) -> Option<String> {
     let mut out = String::new();
@@ -491,10 +491,10 @@ pub(crate) fn resolve_bin(raw: &str) -> Result<PathBuf> {
 
 fn not_found(raw: &str) -> AppError {
     AppError::provider(
-        "codex-code",
+        "codex-cli",
         format!(
             "Codex CLI executable not found: \"{raw}\".\n  \
-             Install the Codex CLI, or set [provider.codex-code] bin to its full path."
+             Install the Codex CLI, or set [provider.codex-cli] bin to its full path."
         ),
     )
 }
@@ -542,13 +542,13 @@ async fn spawn(settings: &Settings, args: &[String], prompt: &str) -> Result<Chi
         .kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| {
         AppError::provider(
-            "codex-code",
+            "codex-cli",
             format!("failed to spawn {}: {e}", settings.bin.display()),
         )
     })?;
     {
         let mut stdin: ChildStdin = child.stdin.take().ok_or_else(|| {
-            AppError::provider("codex-code", "child stdin unavailable".to_string())
+            AppError::provider("codex-cli", "child stdin unavailable".to_string())
         })?;
         // A BrokenPipe on the prompt write is not a failure of this turn: it
         // means the child stopped reading before the prompt was complete —
@@ -564,7 +564,7 @@ async fn spawn(settings: &Settings, args: &[String], prompt: &str) -> Result<Chi
             }
             Err(e) => {
                 return Err(AppError::provider(
-                    "codex-code",
+                    "codex-cli",
                     format!("failed to send the prompt: {e}"),
                 ));
             }
@@ -574,7 +574,7 @@ async fn spawn(settings: &Settings, args: &[String], prompt: &str) -> Result<Chi
         if let Err(e) = stdin.shutdown().await {
             if e.kind() != std::io::ErrorKind::BrokenPipe {
                 return Err(AppError::provider(
-                    "codex-code",
+                    "codex-cli",
                     format!("failed to close the prompt pipe: {e}"),
                 ));
             }
@@ -583,7 +583,7 @@ async fn spawn(settings: &Settings, args: &[String], prompt: &str) -> Result<Chi
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| AppError::provider("codex-code", "child stdout unavailable"))?;
+        .ok_or_else(|| AppError::provider("codex-cli", "child stdout unavailable"))?;
     // Drained continuously: an undrained pipe would block the child once the
     // buffer fills, and the tail is what error messages quote. Lines ride an
     // unbounded channel (send never blocks), so the drain also finishes on
@@ -638,9 +638,9 @@ pub struct CodexCodeProvider {
 
 impl CodexCodeProvider {
     pub fn from_config(cfg: &Config, source: &ConfigSource) -> Result<Self> {
-        // An absent [provider.codex-code] section is fine: every key has a
+        // An absent [provider.codex-cli] section is fine: every key has a
         // default, and the backend needs no credentials of its own (codex
-        // carries its own authentication, as the claude-code backend does).
+        // carries its own authentication, as the claude-cli backend does).
         let entry = cfg.provider.codex_code.clone().unwrap_or_default();
         let bin = resolve_bin(entry.bin.as_deref().unwrap_or(DEFAULT_BIN))?;
         let settings = Settings::from_entry(&entry, bin)?;
@@ -679,7 +679,7 @@ impl CodexCodeProvider {
     /// first time) and records the thread it opens; a resume leg sends only
     /// the user turns codex has not seen; an ephemeral leg re-flattens every
     /// turn (each conversation stands alone). A persona change re-enters
-    /// fresh, as the claude-code resident path respawns on one.
+    /// fresh, as the claude-cli resident path respawns on one.
     async fn plan_for_turn(&self, messages: &[Message]) -> Result<TurnPlan> {
         let system = system_text(messages);
         {
@@ -736,14 +736,14 @@ impl CodexCodeProvider {
                         let _ = parts.child.wait().await;
                         self.clear_thread().await;
                         yield ProviderEvent::Error {
-                            message: self.error("codex-code: turn timed out", format!("no result within {:?}", self.settings.turn_timeout)),
+                            message: self.error("codex-cli: turn timed out", format!("no result within {:?}", self.settings.turn_timeout)),
                         };
                         yield ProviderEvent::Done;
                         return;
                     }
                     Ok(Err(e)) => {
                         self.clear_thread().await;
-                        yield ProviderEvent::Error { message: self.error("codex-code: read failed", e) };
+                        yield ProviderEvent::Error { message: self.error("codex-cli: read failed", e) };
                         yield ProviderEvent::Done;
                         return;
                     }
@@ -774,7 +774,7 @@ impl CodexCodeProvider {
                         } else {
                             yield ProviderEvent::Error {
                                 message: self.error(
-                                    "codex-code: ended without a result",
+                                    "codex-cli: ended without a result",
                                     format!("{exit_text} {stderr}"),
                                 ),
                             };
@@ -812,7 +812,7 @@ impl CodexCodeProvider {
         let plan = self.plan_for_turn(messages).await?;
         let args = build_args(&self.settings, &plan);
         // build_args leaves the `-` marker off for this transport: the prompt
-        // is the argv tail (claude-code's `plan.prompt` geometry, P5b).
+        // is the argv tail (claude-cli's `plan.prompt` geometry, P5b).
 
         let output = tokio::time::timeout(self.settings.turn_timeout, {
             let mut cmd = Command::new(&self.settings.bin);
@@ -830,7 +830,7 @@ impl CodexCodeProvider {
             Err(_) => vec![
                 ProviderEvent::Error {
                     message: self.error(
-                        "codex-code: turn timed out",
+                        "codex-cli: turn timed out",
                         format!("no result within {:?}", self.settings.turn_timeout),
                     ),
                 },
@@ -838,7 +838,7 @@ impl CodexCodeProvider {
             ],
             Ok(Err(e)) => vec![
                 ProviderEvent::Error {
-                    message: self.error("codex-code: failed to run", e),
+                    message: self.error("codex-cli: failed to run", e),
                 },
                 ProviderEvent::Done,
             ],
@@ -848,7 +848,7 @@ impl CodexCodeProvider {
                     vec![
                         ProviderEvent::Error {
                             message: self.error(
-                                &format!("codex-code: exited with {}", out.status),
+                                &format!("codex-cli: exited with {}", out.status),
                                 stderr.trim().to_string(),
                             ),
                         },
@@ -865,7 +865,7 @@ impl CodexCodeProvider {
                         _ => vec![
                             ProviderEvent::Error {
                                 message: self.error(
-                                    "codex-code: no last message",
+                                    "codex-cli: no last message",
                                     format!("{} absent or empty", oneshot_file()),
                                 ),
                             },
@@ -884,7 +884,7 @@ impl CodexCodeProvider {
 #[async_trait]
 impl Provider for CodexCodeProvider {
     fn name(&self) -> &'static str {
-        "codex-code"
+        "codex-cli"
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -912,7 +912,7 @@ impl Provider for CodexCodeProvider {
     ) -> Result<EventStream<'_>> {
         // `_tools` is unused by design: `codex exec` accepts no external tool
         // definitions (see the module header), so agent-cli's registry cannot
-        // be offered to it — the same delegation rule claude-code's module
+        // be offered to it — the same delegation rule claude-cli's module
         // header records.
         self.turn(messages).await
     }
@@ -1379,7 +1379,7 @@ fi
             let dir = tempfile::tempdir().unwrap();
             let bin = stub_bin(
                 dir.path(),
-                "cat > .agent-cli-codex-code-last.txt <<'EOF'\nwhole reply\nEOF",
+                "cat > .agent-cli-codex-cli-last.txt <<'EOF'\nwhole reply\nEOF",
             );
             let p = provider(bin, |s| s.transport = Transport::OneShot);
             let evs = run_turn(&p, &[user("hi")]).await;

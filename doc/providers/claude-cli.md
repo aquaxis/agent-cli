@@ -24,9 +24,9 @@ Verified against Claude Code `2.1.233`.
 
 ```toml
 [provider]
-kind = "claude-code"
+kind = "claude-cli"
 
-[provider.claude-code]
+[provider.claude-cli]
 bin       = "claude"       # executable name (resolved via PATH) or full path
 model     = "opus"         # --model; omit for Claude Code's own default
 mode      = "delegation"   # "delegation" | "gateway"
@@ -105,8 +105,8 @@ process is left behind.
 
 ```bash
 agent-cli providers          # shows the resolved claude binary
-agent-cli doctor             # with kind = "claude-code": checks binary + --version
-agent-cli selftest --provider claude-code
+agent-cli doctor             # with kind = "claude-cli": checks binary + --version
+agent-cli selftest --provider claude-cli
 ```
 
 ## Known Limitations
@@ -126,8 +126,8 @@ agent-cli selftest --provider claude-code
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `Claude Code executable not found` | `claude` not on `PATH` | Install Claude Code, or set `bin` to its full path |
-| `claude-code: turn timed out` | Turn exceeded `turn_timeout_secs` | Raise the limit, or shorten the task |
+| `claude-cli: turn timed out` | Turn exceeded `turn_timeout_secs` | Raise the limit, or shorten the task |
 | `error_max_budget_usd` | `--max-budget-usd` reached | Raise `max_budget_usd` |
-| `claude-code: exited with …` | The CLI refused the invocation | Read the quoted stderr; check `extra_args` and `permission_mode` |
+| `claude-cli: exited with …` | The CLI refused the invocation | Read the quoted stderr; check `extra_args` and `permission_mode` |
 | Model describes a tool but never runs it | Gateway mode | Switch to `mode = "delegation"` |
 | Tool ran but agent-cli never asked for approval | Expected in delegation mode | Control with `permission_mode` / `allowed_tools` |

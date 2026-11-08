@@ -107,8 +107,8 @@ fn parse_enum<T: Copy>(
         .collect::<Vec<_>>()
         .join(" | ");
     Err(AppError::provider(
-        "claude-code",
-        format!("[provider.claude-code] {key}: unknown value \"{raw}\" (accepted: {accepted})"),
+        "claude-cli",
+        format!("[provider.claude-cli] {key}: unknown value \"{raw}\" (accepted: {accepted})"),
     ))
 }
 
@@ -520,10 +520,10 @@ pub(crate) fn resolve_bin(raw: &str) -> Result<PathBuf> {
 
 fn not_found(raw: &str) -> AppError {
     AppError::provider(
-        "claude-code",
+        "claude-cli",
         format!(
             "Claude Code executable not found: \"{raw}\".\n  \
-             Install Claude Code, or set [provider.claude-code] bin to its full path."
+             Install Claude Code, or set [provider.claude-cli] bin to its full path."
         ),
     )
 }
@@ -568,7 +568,7 @@ fn spawn(settings: &Settings, args: &[String], pipe_stdin: bool) -> Result<Child
         .kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| {
         AppError::provider(
-            "claude-code",
+            "claude-cli",
             format!("failed to spawn {}: {e}", settings.bin.display()),
         )
     })?;
@@ -576,7 +576,7 @@ fn spawn(settings: &Settings, args: &[String], pipe_stdin: bool) -> Result<Child
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| AppError::provider("claude-code", "child stdout unavailable"))?;
+        .ok_or_else(|| AppError::provider("claude-cli", "child stdout unavailable"))?;
     let stderr_tail = Arc::new(StdMutex::new(VecDeque::new()));
     if let Some(stderr) = child.stderr.take() {
         let tail = Arc::clone(&stderr_tail);
@@ -628,7 +628,7 @@ pub struct ClaudeCodeProvider {
 
 impl ClaudeCodeProvider {
     pub fn from_config(cfg: &Config, source: &ConfigSource) -> Result<Self> {
-        // An absent [provider.claude-code] section is fine: every key has a
+        // An absent [provider.claude-cli] section is fine: every key has a
         // default, and the backend needs no credentials of its own.
         let entry = cfg.provider.claude_code.clone().unwrap_or_default();
         let bin = resolve_bin(entry.bin.as_deref().unwrap_or(DEFAULT_BIN))?;
@@ -674,7 +674,7 @@ impl ClaudeCodeProvider {
                 }
             };
             let text = last_user(messages).ok_or_else(|| {
-                AppError::provider("claude-code", "no user message to send".to_string())
+                AppError::provider("claude-cli", "no user message to send".to_string())
             })?;
             Ok(TurnPlan {
                 system_prompt: system,
@@ -709,7 +709,7 @@ impl ClaudeCodeProvider {
             Err(_) => vec![
                 ProviderEvent::Error {
                     message: self.error(
-                        "claude-code: turn timed out",
+                        "claude-cli: turn timed out",
                         format!("no result within {:?}", self.settings.turn_timeout),
                     ),
                 },
@@ -717,7 +717,7 @@ impl ClaudeCodeProvider {
             ],
             Ok(Err(e)) => vec![
                 ProviderEvent::Error {
-                    message: self.error("claude-code: failed to run", e),
+                    message: self.error("claude-cli: failed to run", e),
                 },
                 ProviderEvent::Done,
             ],
@@ -729,7 +729,7 @@ impl ClaudeCodeProvider {
                     vec![
                         ProviderEvent::Error {
                             message: self.error(
-                                &format!("claude-code: exited with {}", out.status),
+                                &format!("claude-cli: exited with {}", out.status),
                                 if stderr.trim().is_empty() {
                                     stdout.trim().to_string()
                                 } else {
@@ -753,7 +753,7 @@ impl ClaudeCodeProvider {
                         Err(e) => vec![
                             ProviderEvent::Error {
                                 message: self.error(
-                                    "claude-code: could not parse output",
+                                    "claude-cli: could not parse output",
                                     format!("{e}: {}", excerpt(&stdout)),
                                 ),
                             },
@@ -782,13 +782,13 @@ impl ClaudeCodeProvider {
                     Err(_) => {
                         let _ = parts.child.start_kill();
                         yield ProviderEvent::Error {
-                            message: self.error("claude-code: turn timed out", format!("no result within {:?}", self.settings.turn_timeout)),
+                            message: self.error("claude-cli: turn timed out", format!("no result within {:?}", self.settings.turn_timeout)),
                         };
                         yield ProviderEvent::Done;
                         return;
                     }
                     Ok(Err(e)) => {
-                        yield ProviderEvent::Error { message: self.error("claude-code: read failed", e) };
+                        yield ProviderEvent::Error { message: self.error("claude-cli: read failed", e) };
                         yield ProviderEvent::Done;
                         return;
                     }
@@ -797,7 +797,7 @@ impl ClaudeCodeProvider {
                         let status = parts.child.wait().await.ok();
                         yield ProviderEvent::Error {
                             message: self.error(
-                                "claude-code: ended without a result",
+                                "claude-cli: ended without a result",
                                 format!(
                                     "exit {} {}",
                                     status.map(|s| s.to_string()).unwrap_or_else(|| "unknown".into()),
@@ -840,7 +840,7 @@ impl ClaudeCodeProvider {
             let args = build_args(&self.settings, &plan);
             let mut parts = spawn(&self.settings, &args, true)?;
             let stdin = parts.stdin.take().ok_or_else(|| {
-                AppError::provider("claude-code", "child stdin unavailable".to_string())
+                AppError::provider("claude-cli", "child stdin unavailable".to_string())
             })?;
             *guard = Some(Session {
                 parts,
@@ -854,7 +854,7 @@ impl ClaudeCodeProvider {
         let text = new_user_text(messages, session.sent);
         let text = if text.is_empty() {
             last_user(messages).ok_or_else(|| {
-                AppError::provider("claude-code", "no user message to send".to_string())
+                AppError::provider("claude-cli", "no user message to send".to_string())
             })?
         } else {
             text
@@ -863,14 +863,14 @@ impl ClaudeCodeProvider {
 
         let line = format!("{}\n", user_line(&text));
         if let Err(e) = session.stdin.write_all(line.as_bytes()).await {
-            let msg = self.error("claude-code: failed to send the turn", e);
+            let msg = self.error("claude-cli: failed to send the turn", e);
             *guard = None;
-            return Err(AppError::provider("claude-code", msg));
+            return Err(AppError::provider("claude-cli", msg));
         }
         if let Err(e) = session.stdin.flush().await {
-            let msg = self.error("claude-code: failed to send the turn", e);
+            let msg = self.error("claude-cli: failed to send the turn", e);
             *guard = None;
-            return Err(AppError::provider("claude-code", msg));
+            return Err(AppError::provider("claude-cli", msg));
         }
 
         let deadline = Instant::now() + self.settings.turn_timeout;
@@ -892,14 +892,14 @@ impl ClaudeCodeProvider {
                         let _ = session.parts.child.start_kill();
                         *guard = None;
                         yield ProviderEvent::Error {
-                            message: self.error("claude-code: turn timed out", format!("no result within {:?}", self.settings.turn_timeout)),
+                            message: self.error("claude-cli: turn timed out", format!("no result within {:?}", self.settings.turn_timeout)),
                         };
                         yield ProviderEvent::Done;
                         return;
                     }
                     Ok(Err(e)) => {
                         *guard = None;
-                        yield ProviderEvent::Error { message: self.error("claude-code: read failed", e) };
+                        yield ProviderEvent::Error { message: self.error("claude-cli: read failed", e) };
                         yield ProviderEvent::Done;
                         return;
                     }
@@ -909,7 +909,7 @@ impl ClaudeCodeProvider {
                         *guard = None;
                         yield ProviderEvent::Error {
                             message: self.error(
-                                "claude-code: child exited",
+                                "claude-cli: child exited",
                                 format!(
                                     "exit {} {tail}",
                                     status.map(|s| s.to_string()).unwrap_or_else(|| "unknown".into())
@@ -958,7 +958,7 @@ fn excerpt(s: &str) -> String {
 #[async_trait]
 impl Provider for ClaudeCodeProvider {
     fn name(&self) -> &'static str {
-        "claude-code"
+        "claude-cli"
     }
 
     fn capabilities(&self) -> Capabilities {

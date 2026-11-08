@@ -136,12 +136,12 @@ pub fn build(cfg: &mut Config, source: &ConfigSource) -> Result<Box<dyn Provider
     let kind = cfg.provider.kind.as_str();
     match kind {
         "claude" => Ok(Box::new(claude::ClaudeProvider::from_config(cfg, source)?)),
-        "claude-code" => Ok(Box::new(claude_code::ClaudeCodeProvider::from_config(
+        "claude-cli" => Ok(Box::new(claude_code::ClaudeCodeProvider::from_config(
             cfg, source,
         )?)),
         "codex" => Ok(Box::new(codex::CodexProvider::from_config(cfg, source)?)),
         "strata" => Ok(Box::new(codex::CodexProvider::from_config(cfg, source)?)),
-        "codex-code" => Ok(Box::new(codex_code::CodexCodeProvider::from_config(
+        "codex-cli" => Ok(Box::new(codex_code::CodexCodeProvider::from_config(
             cfg, source,
         )?)),
         "ollama" => Ok(Box::new(ollama::OllamaProvider::from_config(cfg, source)?)),
@@ -157,9 +157,9 @@ pub fn build(cfg: &mut Config, source: &ConfigSource) -> Result<Box<dyn Provider
 
 pub const SUPPORTED: &[&str] = &[
     "claude",
-    "claude-code",
+    "claude-cli",
     "codex",
-    "codex-code",
+    "codex-cli",
     "ollama",
     "opencode",
     "opencode-go",

@@ -16,10 +16,10 @@ model by the HTTP backends (`claude`, `codex`, `ollama`, `opencode`,
 `opencode-go`, `llama.cpp`), which return `tool_use` requests that `agent-cli`
 executes through the approval flow described below.
 
-The `claude-code` backend is different, because the model it drives is Claude
+The `claude-cli` backend is different, because the model it drives is Claude
 Code, which carries tools of its own:
 
-| `[provider.claude-code] mode` | Tools the model can use | This document applies |
+| `[provider.claude-cli] mode` | Tools the model can use | This document applies |
 |---|---|---|
 | `"delegation"` (default) | Claude Code's own, executed inside Claude Code and reported afterwards | No — configure that set with `tools` / `allowed_tools` / `disallowed_tools` / `permission_mode` |
 | `"gateway"` | none (`--tools ""`, chat only) | No |
@@ -27,7 +27,7 @@ Code, which carries tools of its own:
 `agent-cli`'s registry is never handed to that backend, so neither the approval
 flow, nor persona `allowed_tools` / `denied_tools`, nor `[permissions]` restrict
 what Claude Code runs — there is nothing on agent-cli's side of the boundary to
-gate. See [`providers/claude-code.md`](providers/claude-code.md).
+gate. See [`providers/claude-cli.md`](providers/claude-cli.md).
 
 ## Tool Execution Approval
 
@@ -65,7 +65,7 @@ It is the tool-level equivalent of the `agent-cli spawn` subcommand /
 | Key | Type | Required | Description |
 |-----|------|----------|-------------|
 | `name` | string | No | Display name for the new agent |
-| `provider` | string | No | Backend override (`claude` / `claude-code` / `codex` / `codex-code` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`) |
+| `provider` | string | No | Backend override (`claude` / `claude-cli` / `codex` / `codex-cli` / `strata` / `ollama` / `opencode` / `opencode-go` / `llama.cpp`) |
 | `model` | string | No | Model override |
 | `persona` | string | No | Persona file path |
 | `group` | string | No | Group id for the new agent; omit to inherit this agent's group (see [`usage.md`](usage.md) "Groups") |

@@ -97,9 +97,9 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 ```toml
 [provider]                  # Which backend to use
 [provider.claude]           # claude backend-specific settings
-[provider.claude-code]      # claude-code backend (drives the local `claude` CLI)
+[provider.claude-cli]      # claude-cli backend (drives the local `claude` CLI)
 [provider.codex]            # codex (OpenAI) backend-specific settings
-[provider.codex-code]       # codex-code backend (drives the local `codex` CLI)
+[provider.codex-cli]       # codex-cli backend (drives the local `codex` CLI)
 [provider.ollama]           # ollama backend-specific settings
 [provider.opencode]         # opencode backend (local serve / OpenCode Zen)
 [provider."llama.cpp"]      # llama.cpp server-specific settings (key must be quoted)
@@ -124,7 +124,7 @@ Copy it to the resolved path and edit, or point `--config` at your own copy.
 
 | Key | Type | Default | Required | Description |
 |------|----|------|------|------|
-| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"claude-code"` / `"codex"` / `"codex-code"` / `"strata"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
+| `kind` | string | `"claude"` | Yes | Backend to use: `"claude"` / `"claude-cli"` / `"codex"` / `"codex-cli"` / `"strata"` / `"ollama"` / `"opencode"` / `"opencode-go"` / `"llama.cpp"` |
 
 ### `[provider.claude]` / `[provider.codex]` / `[provider.strata]` / `[provider.ollama]` / `[provider.opencode]` / `[provider."llama.cpp"]`
 
@@ -170,13 +170,13 @@ Per-backend defaults:
 | opencode-go | `minimax-m3.1-flash` (also defaults `api = "openai"`) | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
 | llama.cpp | `default` | `http://127.0.0.1:8080` | (optional) |
 
-### `[provider.claude-code]`
+### `[provider.claude-cli]`
 
 Drives the locally installed **Claude Code CLI** (`claude`) as a backend. It
 takes no `api_key_env`, `base_url`, or `request_timeout_secs`: authentication
 and endpoints belong to Claude Code itself. Every key below is optional, and the
 whole section may be omitted. See
-[`doc/providers/claude-code.md`](providers/claude-code.md).
+[`doc/providers/claude-cli.md`](providers/claude-cli.md).
 
 | Key | Type | Default | Description |
 |------|----|------|------|
@@ -208,13 +208,13 @@ Two consequences worth knowing before choosing a mode:
   Control permissions with `permission_mode` / `tools` / `allowed_tools` /
   `disallowed_tools`.
 
-### `[provider.codex-code]`
+### `[provider.codex-cli]`
 
 Drives the locally installed **Codex CLI** (`codex exec`) as a backend — the
-codex sibling of `[provider.claude-code]`. It takes no `api_key_env`,
+codex sibling of `[provider.claude-cli]`. It takes no `api_key_env`,
 `base_url`, or `request_timeout_secs`: authentication belongs to Codex itself
 (e.g. a ChatGPT login). Every key below is optional, and the whole section may
-be omitted. See [`doc/providers/codex-code.md`](providers/codex-code.md).
+be omitted. See [`doc/providers/codex-cli.md`](providers/codex-cli.md).
 
 | Key | Type | Default | Description |
 |------|----|------|------|
@@ -237,7 +237,7 @@ Two consequences worth knowing before choosing this backend:
 
 - **Delegation only.** Codex runs its own agent and accepts no external tool
   list, so agent-cli's tool registry and approval prompt are never involved
-  (no gateway mode — the `--tools ""` counterpart claude-code has does not
+  (no gateway mode — the `--tools ""` counterpart claude-cli has does not
   exist). Tool activity arrives already executed inside codex's sandbox and is
   reported, not re-run.
 - **The stream is turn-grain.** Codex emits whole texts per completed item on
@@ -990,10 +990,10 @@ denied by permission rule: deny "bash(rm -rf ~/**)"
 - **`!<command>` typed at the prompt** is your own command, not a tool call the
   model asked for. It is never gated: a rule there would gate you against
   yourself. See [`doc/usage.md`](usage.md).
-- **The `claude-code` backend in delegation mode** runs its tools inside Claude
+- **The `claude-cli` backend in delegation mode** runs its tools inside Claude
   Code, where agent-cli has nothing to gate. Use that backend's own
   `permission_mode` / `tools` / `allowed_tools` / `disallowed_tools` — see
-  [`doc/providers/claude-code.md`](providers/claude-code.md).
+  [`doc/providers/claude-cli.md`](providers/claude-cli.md).
 
 ### 12.6 A guardrail, not a sandbox
 

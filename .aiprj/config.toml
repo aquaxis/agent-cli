@@ -9,7 +9,7 @@
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Provider: the AI backend. Only one `kind` is active at a time.
-# Supported: "claude" | "claude-code" | "codex" | "ollama" | "opencode" |
+# Supported: "claude" | "claude-cli" | "codex" | "ollama" | "opencode" |
 #            "opencode-go" | "llama.cpp"
 # ─────────────────────────────────────────────────────────────────────────────
 [provider]
@@ -27,7 +27,7 @@ thinking    = true
 # --- Claude Code CLI (drives the locally installed `claude` binary) ---
 # No API key: it inherits whatever authentication Claude Code already has.
 # Not the same backend as [provider.claude] above, which is the Anthropic API.
-# [provider.claude-code]
+# [provider.claude-cli]
 # bin       = "claude"       # executable name (resolved via PATH) or full path
 # model     = "sonnet"       # --model; omit for Claude Code's own default
 # mode      = "delegation"   # "delegation" (Claude Code runs its own tools)
