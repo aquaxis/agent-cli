@@ -34,25 +34,37 @@ jobs:
           echo "newest tag: $TAG"
 
           # The tag's own CHANGELOG section: body under the `## [X]` heading.
-          # awk must read to the end: an early `exit` closes the read while
-          # `git show` is still writing (88 KB of history here), so the
-          # writer dies of SIGPIPE (exit 141) under pipefail. Stop printing
-          # instead of exiting.
-          SECTION="$(git show "$TAG:CHANGELOG.md" |
-            awk -v want="## [$VERSION]" '
+          section_of() {
+            git show "$1:CHANGELOG.md" |
+            awk -v want="## [$2]" '
               index($0, want) == 1 { on = 1; next }
               on && /^## \[/ { on = 0 }
               on { print }
-            ')"
+            '
+          }
+
+          # Title summary: the section's lead sentence. Sections open with a
+          # "### Kind" heading and one bold bullet ("- **Lead** — text.");
+          # older ones start straight at the bullet or plain text. Strip
+          # whichever prefix is there, then cut at the closing bold marker
+          # when one remains, else at the first em-dash.
+          summary_of() {
+            printf '%s\n' "$1" | tr '\n' ' ' | tr -s ' ' |
+            sed -E 's/^ ### [A-Za-z]+ - //;s/^- \*\*//;s/^- //;s/^\*\*//;s/\*\*.*//;s/ — .*//;s/`//g' |
+            head -n1 | sed 's/ *$//'
+          }
+
+          # awk must read to the end: an early `exit` closes the read while
+          # `git show` is still writing (88 KB of history here), so the writer
+          # dies of SIGPIPE (exit 141) under pipefail. Stop printing instead.
+          SECTION="$(section_of "$TAG" "$VERSION")"
 
           if [ -z "$SECTION" ]; then
             echo "no CHANGELOG section for $VERSION; refusing to publish a bare release"
             exit 1
           fi
 
-          SUMMARY="$(printf '%s\n' "$SECTION" | tr '\n' ' ' | tr -s ' ' |
-            sed 's/^ ### Fixed //' | sed 's/^- \*\*//;s/\*\* .*//;s/`//g' | head -n1 |
-            sed 's/ *$//')"
+          SUMMARY="$(summary_of "$SECTION")"
 
           if [ -n "$SUMMARY" ]; then
             TITLE="$TAG — $SUMMARY"
@@ -61,20 +73,37 @@ jobs:
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            # Published already: keep the title aligned with the summary, so a
-            # later refinement of the extraction lands on the next run.
+            # Published already: keep the title aligned with the summary.
             gh release edit "$TAG" --title "$TITLE" >/dev/null 2>&1 || true
             echo "release $TAG published; title checked"
-            exit 0
+          else
+            NOTES_FILE="$(mktemp)"
+            trap 'rm -f "$NOTES_FILE"' EXIT
+            printf '%s\n' "$SECTION" > "$NOTES_FILE"
+
+            echo "publishing: $TITLE"
+            gh release create "$TAG" \
+              --verify-tag \
+              --latest \
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE"
           fi
 
-          NOTES_FILE="$(mktemp)"
-          trap 'rm -f "$NOTES_FILE"' EXIT
-          printf '%s\n' "$SECTION" > "$NOTES_FILE"
-
-          echo "publishing: $TITLE"
-          gh release create "$TAG" \
-            --verify-tag \
-            --latest \
-            --title "$TITLE" \
-            --notes-file "$NOTES_FILE"
+          # Re-title older releases whose titles still carry the extracted
+          # heading residue ("… — ### Added - **Lead…"), so a refinement of
+          # summary_of lands on them too. Idempotent: a title this rule
+          # produced matches nothing.
+          gh release list --limit 30 --json tagName --jq '.[].tagName' |
+          while read -r R_TAG; do
+            R_TITLE="$(gh release view "$R_TAG" --json name --jq .name 2>/dev/null)" || true
+            case "$R_TITLE" in
+              *"### "*)
+                R_VERSION="${R_TAG#v}"
+                R_SECTION="$(section_of "$R_TAG" "$R_VERSION")"
+                [ -n "$R_SECTION" ] || continue
+                R_SUMMARY="$(summary_of "$R_SECTION")"
+                [ -n "$R_SUMMARY" ] || continue
+                gh release edit "$R_TAG" --title "$R_TAG — $R_SUMMARY" >/dev/null 2>&1 || true
+                ;;
+            esac
+          done || true
