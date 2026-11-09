@@ -7,7 +7,8 @@ use clap::{Parser, Subcommand};
     name = "agent-cli",
     version,
     about = "Standalone multi-agent CLI with Claude Code-equivalent functionality",
-    long_about = None
+    long_about = None,
+    before_help = concat!("Usage reference: ", env!("CARGO_PKG_REPOSITORY"), "/blob/main/doc/usage.md")
 )]
 pub struct Cli {
     /// Config file to use, replacing the default chain. Repeatable: later files
@@ -189,6 +190,26 @@ pub enum McpAction {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn cli_leads_help_with_usage_link() {
+        // The top-level `--help` opens with the usage.md link on GitHub (the
+        // repository URL from Cargo.toml, pinned to the `main` branch).
+        let expected = format!(
+            "Usage reference: {}/blob/main/doc/usage.md",
+            env!("CARGO_PKG_REPOSITORY")
+        );
+        let rendered = Cli::command().render_help().to_string();
+        let first = rendered
+            .lines()
+            .next()
+            .unwrap_or_else(|| panic!("empty help output"));
+        assert_eq!(first, expected, "help must lead with the usage.md link");
+        assert!(
+            rendered.contains("Usage: agent-cli"),
+            "the link must precede the usage line, not replace it"
+        );
+    }
 
     #[test]
     fn cli_help_compiles_and_lists_known_subcommands() {

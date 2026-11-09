@@ -4,6 +4,18 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.51.0]
+
+### Added
+
+- **The `agent-cli --help` output opens with a usage link** — `Usage reference:
+  https://github.com/aquaxis/agent-cli/blob/main/doc/usage.md` renders as the
+  first line of the top-level help (both `-h` and `--help`), pointing at the
+  GitHub page of `doc/usage.md`. The URL is built from the crate's
+  `CARGO_PKG_REPOSITORY` (Cargo.toml's `repository` field), so a fork's help
+  points at the fork's own usage page. A regression test pins the link to the
+  help's first line and its placement ahead of the usage line.
+
 ## [0.50.0]
 
 ### Added
