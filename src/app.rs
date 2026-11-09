@@ -972,11 +972,6 @@ impl PromptState {
     }
 }
 
-/// The prompt's colour for a line that is being typed or echoed: a line that
-/// will be run in the shell is marked with the same yellow bold that the
-/// approval prompt uses, so "this is not going to the model" is visible before
-/// `Enter` is pressed.
-
 /// The one-shot mode (FR-47a): one prompt in, the answer out, the session ends.
 /// `run -p "<prompt>"` (the `Command::OneShot` arm) lands here. The assembly
 /// mirrors `run_headless`'s — persona, provider, tools, MCP, the conversation
@@ -1115,6 +1110,11 @@ pub async fn run_oneshot(mut config: Config, source: ConfigSource, args: RunArgs
     registry_handle.cleanup();
     Ok(())
 }
+
+/// The prompt's colour for a line that is being typed or echoed: a line that
+/// will be run in the shell is marked with the same yellow bold that the
+/// approval prompt uses, so "this is not going to the model" is visible before
+/// `Enter` is pressed.
 fn prompt_line_role(line: &str, shell_enabled: bool) -> Role {
     if shell_enabled && line.trim_start().starts_with('!') {
         Role::Confirm
@@ -4533,6 +4533,37 @@ fn format_elapsed(d: Duration) -> String {
     }
 }
 
+/// The `ToolCall` line as `display_event` renders it: cut to a single terminal
+/// row when the progress indicator is drawing (`compact_output`), otherwise the
+/// full historical form. Pure, so the tests pin both shapes without a terminal.
+fn tool_call_line(compact_output: bool, name: &str, args: &serde_json::Value) -> String {
+    let line = one_line_tool_call(name, args);
+    if compact_output {
+        // Cut first, style second: the truncation counts columns, so it
+        // must never see an escape sequence.
+        crate::editor::truncate_display(&line, PromptRenderer::terminal_width().saturating_sub(1))
+    } else {
+        format!("[tool-call] {name} {args}")
+    }
+}
+
+/// The `ToolResult` line as `display_event` renders it: the row-budgeted dump
+/// when the progress indicator is drawing (`compact_output`), otherwise the
+/// full historical form. Pure, so the tests pin both shapes without a terminal.
+fn tool_result_line(compact_output: bool, mark: &str, name: &str, output: &str) -> String {
+    if compact_output {
+        compact_tool_result(
+            mark,
+            name,
+            output,
+            PromptRenderer::terminal_width(),
+            TOOL_RESULT_ROWS,
+        )
+    } else {
+        format!("[tool-result {mark}] {name}: {output}")
+    }
+}
+
 /// One-line rendering of a tool call for the indicator's activity row. Mirrors
 /// the wording of the permanent `[tool-call]` line so the two read the same.
 fn one_line_tool_call(name: &str, args: &serde_json::Value) -> String {
@@ -5187,33 +5218,13 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
             }
         },
         AgentEvent::ToolCall { name, args } => {
-            let line = one_line_tool_call(&name, &args);
-            // Cut first, style second: the truncation counts columns, so it
-            // must never see an escape sequence.
-            let line = if state.compact_output {
-                crate::editor::truncate_display(
-                    &line,
-                    PromptRenderer::terminal_width().saturating_sub(1),
-                )
-            } else {
-                format!("[tool-call] {name} {args}")
-            };
+            let line = tool_call_line(state.compact_output, &name, &args);
             let styled = style_tool_call_line(&state.theme, &line);
             state.section_header_styled(&styled);
         }
         AgentEvent::ToolResult { name, ok, output } => {
             let mark = if ok { "ok" } else { "ERR" };
-            let line = if state.compact_output {
-                compact_tool_result(
-                    mark,
-                    &name,
-                    &output,
-                    PromptRenderer::terminal_width(),
-                    TOOL_RESULT_ROWS,
-                )
-            } else {
-                format!("[tool-result {mark}] {name}: {output}")
-            };
+            let line = tool_result_line(state.compact_output, mark, &name, &output);
             raw_eprintln(rm, &style_rows(&state.theme, Role::ToolOutput, &line));
         }
         AgentEvent::Done => {
@@ -8513,20 +8524,14 @@ mod tests {
     fn tool_call_line_is_cut_to_one_row_while_the_indicator_is_drawing() {
         let long = serde_json::json!({ "command": "cargo test ".repeat(40) });
         // Without the indicator the line keeps its full, historical form.
-        let mut plain = DisplayState::new(false);
-        assert!(!plain.compact_output);
+        let plain = tool_call_line(false, "bash", &long);
+        assert_eq!(plain, format!("[tool-call] bash {long}"));
         // With it, the activity line is cut to a single terminal row so the
         // spinner stays directly beneath it.
-        plain.compact_output = true;
-        let cut = crate::editor::truncate_display(
-            &one_line_tool_call("bash", &long),
-            PromptRenderer::terminal_width().saturating_sub(1),
-        );
+        let cut = tool_call_line(true, "bash", &long);
         assert!(cut.ends_with('…'));
         assert!(!cut.contains('\n'));
-        assert!(
-            crate::editor::str_display_width(&cut) < PromptRenderer::terminal_width()
-        );
+        assert!(crate::editor::str_display_width(&cut) < PromptRenderer::terminal_width());
     }
 
     // --- Live `thinking` view under the spinner ---
@@ -8796,9 +8801,14 @@ mod tests {
             compact_tool_result("ok", "bash", &long, 80, usize::MAX),
             verbatim
         );
-        let mut state = DisplayState::new(false);
-        assert!(!state.compact_output, "off unless the indicator is enabled");
-        state.compact_output = true;
+        // The elision arms only while the indicator draws: with compact_output
+        // off, display_event's tool-result arm prints the historical verbatim
+        // form; with it on, the result is cut to the row budget.
+        assert_eq!(tool_result_line(false, "ok", "bash", &long), verbatim);
+        let cut = tool_result_line(true, "ok", "bash", &long);
+        let rows: Vec<&str> = cut.split('\n').collect();
+        assert_eq!(rows.len(), TOOL_RESULT_ROWS + 1, "{rows:?}");
+        assert!(rows[TOOL_RESULT_ROWS].starts_with("… +"));
     }
 
     #[test]

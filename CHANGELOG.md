@@ -4,6 +4,24 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.51.2]
+
+### Fixed
+
+- **The prompt-line doc comment sits above `prompt_line_role` again.** The
+  comment ("The prompt's colour for a line that is being typed or echoed …")
+  has drifted below its function during earlier restructuring of the display
+  loop and stranded itself just above `run_oneshot`, where the 1.94.1 clippy
+  generation reported `empty_line_after_doc_comments`. The comment is
+  reattached above its function.
+- **The indicator's tool rows render through shared pure helpers.** The
+  `ToolCall` / `ToolResult` arms of `display_event` now consult
+  `state.compact_output` via the new `tool_call_line()` / `tool_result_line()`
+  helpers (which wrap `one_line_tool_call` / `compact_tool_result`), and the
+  two drawing tests — which only built a `DisplayState` nobody read and were
+  flagged as unused assignments by the newer clippy generations — pin the
+  helpers directly instead.
+
 ## [0.51.1]
 
 ### Fixed
