@@ -1,8 +1,10 @@
-# The .aiprj project ledger (three documents, work logs, rules) is tracked;
-# the standing instruction file stays local (every work log embeds its text).
-.aiprj/instructions.md
+# The .aiprj project ledgers and the .agent-cli tool state stay local;
+# both directories are excluded from GitHub per the exclusion list.
+.aiprj
 
 # AI tools
+.agent-cli
+.agents
 .claude
 .mcp.json
 
