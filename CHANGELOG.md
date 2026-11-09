@@ -4,6 +4,36 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.50.0]
+
+### Added
+
+- **An `orchestrator` example persona ships under `example/agents/`** — a
+  fourth bundled persona that formalizes the spawn/send_to delegation loop
+  the multi-agent guide describes: the body instructs the agent not to
+  implement anything itself but to observe the working tree and to
+  decompose, delegate (one instruction per message, fire-and-forget
+  `spawn` with `prompt`, plus `send_to` with `delivery="ask"` to collect),
+  wait, and iterate until the delegated tasks land, with explicit prohibitions
+  against blind resend loops, ledger rewriting, and out-of-scope work.
+  It is verified to parse by `bundled_example_personas_parse` like the
+  other three, and `doc/personas.md` §7.4/§8.2 document it.
+
+### Fixed
+
+- **The bundled `coder` and `reviewer` example personas now name the
+  canonical tool names.** `allowed_tools`/`denied_tools` in
+  `example/agents/coder.md` and `example/agents/reviewer.md` carried the
+  retired names `shell`/`fs_read`/`fs_write`; the tool registry resolves
+  them via the legacy alias map (`src/tools/mod.rs`), so the effective
+  permission sets were correct — no functional harm (verified by the
+  registry tests) — but the files presented names that the `/tools` output
+  and the docs use differently, and the coder's body text invited the model
+  to call tools the registry never registers by that name. Both files and
+  `doc/personas.md` §7 now read `bash`/`read`/`write`, and the `.gitignore`
+  entry that still named the retired `codex-code` oneshot file follows the
+  renamed backend kind.
+
 ## [0.49.0]
 
 ### Changed

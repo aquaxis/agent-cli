@@ -7,10 +7,10 @@ skills:
   - Security review
 description: Reviewer focused on safety and performance
 allowed_tools:
-  - shell
-  - fs_read
+  - bash
+  - read
 denied_tools:
-  - fs_write
+  - write
 ---
 
 You are a senior code reviewer. Always keep the following in mind during reviews:
