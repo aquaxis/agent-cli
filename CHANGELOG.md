@@ -4,6 +4,19 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.51.1]
+
+### Fixed
+
+- **The release workflow's section-title extraction stands the CHANGELOG's
+  current layout.** The title summarizer only stripped a `### Fixed` heading,
+  so sections that open with another kind (`### Added`, `### Changed`,
+  `### Removed`) shipped titles carrying the heading and bullet markup
+  verbatim (`v0.51.0 — ### Added - **The agent-cli --help output opens with
+  a usage link`). The extraction is a function now and handles every
+  layout, and the publish run repairs the affected older releases' titles
+  as well.
+
 ## [0.51.0]
 
 ### Added
