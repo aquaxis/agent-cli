@@ -2409,7 +2409,7 @@ fn live_children_states(
     // the spawn order itself: the registry's read order is the filesystem's,
     // not the spawn order — sort oldest-first, which puts the newest on the
     // row just above the block (or the clock) that holds the bottom.
-    children.sort_by(|a, b| a.started_at.cmp(&b.started_at));
+    children.sort_by_key(|a| a.started_at);
     children
         .into_iter()
         .map(|e| {

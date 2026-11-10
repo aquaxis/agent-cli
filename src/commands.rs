@@ -1247,8 +1247,8 @@ fn clipboard_report(copy_command: &str, in_tmux: bool) -> Vec<String> {
             "[doctor] clipboard route  : {cmd} ([ui] copy_command) — the [clip] line reports its exit status"
         )];
     }
-    let mut lines = vec![format!(
-        "[doctor] clipboard route  : osc52 (set [ui] copy_command to override)"
+    let mut lines = vec![String::from(
+        "[doctor] clipboard route  : osc52 (set [ui] copy_command to override)",
     )];
     if in_tmux {
         lines.push(

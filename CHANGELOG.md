@@ -4,6 +4,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.52.0]
+
+### Fixed
+
+- **The 1.99 clippy generation's two standing notices are cleared.** The
+  children-of indicator sorted its rows with a closure comparator
+  (`unnecessary_sort_by` at `src/app.rs:2412`) and the doctor's clipboard
+  report built a constant line through `format!` with no interpolation
+  (`useless_format` at `src/commands.rs:1250`); the former now sorts through
+  `sort_by_key` on `started_at` (identical order, the oldest-first face the
+  row-stacking rule pins) and the latter constructs the line directly with
+  `String::from`. Verified: build clean, 669 unit + 6 integration tests green,
+  clippy finishes with zero warnings.
+
 ## [0.51.2]
 
 ### Fixed
