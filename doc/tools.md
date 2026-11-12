@@ -297,6 +297,7 @@ error naming the three valid ones rather than a guess.
 - `"prompt"` and `"report"` are asynchronous: success means the peer acknowledged receipt, not that it has finished with it.
 - On the receiving side, a prompt is prefixed with `[peer prompt from <agent-id>]` and a report with `[peer report from <agent-id>]`, so an agent that receives several can tell them apart.
 - `"report"` against an agent-cli older than this feature is delivered **as a prompt instead**, and the tool result says so: the text still arrives, but that peer will answer it rather than only record it.
+- A message arriving while the peer is mid-turn is **never lost**: peer messages are queued in arrival order ahead of whatever it is doing, and are processed when the current turn ends — a report is then just added to the conversation, a prompt opens the next turn. Cancelling a turn does not discard what is queued behind it.
 
 ### Distributing work to child agents
 
@@ -314,6 +315,16 @@ would run a turn per result, answering messages that have no recipient. Note tha
 tool calls within one turn run sequentially, so collecting with
 `delivery="ask"` waits for one child at a time; reporting avoids the wait
 entirely.
+
+A report also wakes nothing: it sits in the parent's conversation until its next
+turn, which normally arrives with the user's next prompt. A child whose parent
+must act on the result right away — an unattended run, nobody waiting to ask —
+can send the report and then a one-line doorbell with `delivery="prompt"`:
+`report sent` is enough. Both are queued in order, so the doorbell's forced turn
+opens with the report already in the parent's conversation and the parent acts
+on it then. Each doorbell still costs the parent one turn, so keep the
+report-only default while a user is around, and write the doorbell rule into
+the same spawn prompt that asks for the report.
 
 ## `monitor`
 

@@ -537,6 +537,7 @@ A child hands a result back with `send_to` and `delivery="report"` (see [`doc/to
 | Symptom | Cause / remedy |
 |------|------|
 | The parent shows `[info] peer report from … : N characters` and nothing else | Working as intended: a report is added to the conversation and costs no turn. Ask the parent about it and the answer uses it |
+| The report arrived while the parent was running another turn | Nothing is lost: peer messages are queued in arrival order and processed when the current turn ends — a report is then added to the conversation, a prompt opens the next turn. Cancelling the turn does not discard what is queued behind it |
 | The parent answered the report instead of only recording it | It was sent as a prompt. Either `delivery` was omitted (the default is `"prompt"`), or the peer is an older agent-cli — in that case the tool result says `does not support report delivery`, and the text was delivered as a prompt so that it still arrived |
 | `unknown delivery "…"` | Use `"prompt"`, `"report"` or `"ask"`. The difference is whether the peer spends a turn, so an unrecognised value is refused rather than guessed |
 | A child never reported | Nothing makes a child report automatically — the parent's prompt has to ask for it. Check with `agent-cli list` that the child is still running, and remember it processes one message at a time, so it will not report until its current task ends |

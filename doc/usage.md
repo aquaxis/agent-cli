@@ -125,6 +125,13 @@ The last clause matters: without it the agent tends to collect with
 `[info] peer report from …` line per result and **no answer between them**; ask
 for the summary once they have arrived.
 
+Reports pile up rather than wake the parent: they are read on its next turn,
+normally your next prompt. For an unattended run, have each child send its
+report and then a one-line doorbell prompt (`delivery="prompt"`, the text
+saying just `report sent`) — the doorbell's forced turn finds the report
+already in the parent's conversation and the parent acts on it immediately.
+Each doorbell is one turn, so keep this for runs nobody is watching.
+
 See [`tools.md`](tools.md) for `send_to`'s arguments and
 [`architecture.md`](architecture.md) for how a report reaches the conversation.
 
@@ -358,6 +365,7 @@ On an interactive terminal, the REPL shows what it is doing while a turn runs:
 - **Tool results are cut to 5 rows** while the indicator is on, ending in `… +N more lines`, so a large `bash` output cannot push the spinner down the screen. The full result is in the conversation log (`[runtime] log_dir`), and the model always receives it in full — only the on-screen copy is shortened.
 - Mouse reporting is on for the whole session while the wheel scrollback is enabled (`[ui] mouse_scroll`, on by default), which is what makes the wheel, this click and drag-to-select work. While it is on, dragging selects the log through agent-cli itself (see "Selecting and Copying From the Log" below); your terminal's own selection is still there under its usual override, normally holding **Shift**. With `[ui] mouse_scroll = false` the reporting is limited to a running turn, and only when reasoning is actually shown (`[ui] show_thinking` other than `"hidden"`); with `show_thinking = "hidden"` as well, it is never enabled and there is nothing to click.
 - While an answer is streaming the spinner is not drawn: the text itself flows down the screen, which shows the turn is alive.
+- **What you type mid-turn is not queued**: while a turn runs, an interactive (raw-mode) REPL discards every key except `Esc` / `Ctrl+C` (which cancel), so a line typed while the spinner runs must be retyped — the tool-approval prompt is the exception and reads your y/N answer instead. With piped input, the lines already sent wait and are read once the turn ends. Peer messages are the other way round: a prompt or report arriving mid-turn is queued and delivered in order, never dropped (see [`doc/tools.md`](tools.md)).
 
 It is drawn only when both stdin and stderr are terminals, so piped or redirected output is unaffected, and it can be turned off with `[ui] show_progress = false` (see [`doc/config.md`](config.md)). With it off, tool calls are printed in full again exactly as before.
 
