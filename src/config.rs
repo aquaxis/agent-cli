@@ -1883,6 +1883,29 @@ show_progress = false
         assert!(!off.ui.show_progress);
     }
 
+    /// `[ui] show_tool_results` defaults to true, so a config file written
+    /// before the key existed keeps printing the tool lines.
+    #[test]
+    fn show_tool_results_defaults_to_enabled() {
+        assert!(UiConfig::default().show_tool_results);
+        let cfg: Config = toml::from_str(tests_default_config()).unwrap();
+        assert!(
+            cfg.ui.show_tool_results,
+            "absent key must default to true"
+        );
+        let off: Config = toml::from_str(
+            r#"
+[provider]
+kind = "ollama"
+
+[ui]
+show_tool_results = false
+"#,
+        )
+        .unwrap();
+        assert!(!off.ui.show_tool_results);
+    }
+
     /// The wheel scrollback is on by default and keeps 2000 lines, so a config
     /// file written before the keys existed behaves as the feature intends.
     #[test]
