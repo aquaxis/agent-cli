@@ -74,11 +74,7 @@ impl CodexProvider {
                     .into_app_error()
             })?),
         };
-        let context = ProviderContext::new(
-            source,
-            entry.api_key_env.clone(),
-            api_key.as_deref(),
-        );
+        let context = ProviderContext::new(source, entry.api_key_env.clone(), api_key.as_deref());
         let base_url = entry
             .base_url
             .clone()
@@ -427,9 +423,7 @@ mod tests {
             let mut buf = [0u8; 4096];
             let n = stream.read(&mut buf).unwrap_or(0);
             let raw = String::from_utf8_lossy(&buf[..n]).to_string();
-            let _ = stream.write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n",
-            );
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n");
             let _ = stream.flush();
             raw
         })

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures::stream::StreamExt;
@@ -273,12 +273,9 @@ impl Agent {
                         if let Some(reply_socket) = reply_to {
                             let reply = crate::ipc::IpcMessage::PromptReply {
                                 from: self.id.clone(),
-                                text: "message not processed: the agent was cancelled"
-                                    .to_string(),
+                                text: "message not processed: the agent was cancelled".to_string(),
                             };
-                            if let Err(e) =
-                                crate::ipc::client::send(&reply_socket, &reply).await
-                            {
+                            if let Err(e) = crate::ipc::client::send(&reply_socket, &reply).await {
                                 tracing::warn!(
                                     error = %e,
                                     "failed to send stop reply to {}",
@@ -333,9 +330,7 @@ impl Agent {
                             from: self.id.clone(),
                             text: response_text,
                         };
-                        if let Err(e) =
-                            crate::ipc::client::send(&reply_socket, &reply).await
-                        {
+                        if let Err(e) = crate::ipc::client::send(&reply_socket, &reply).await {
                             tracing::warn!(
                                 error = %e,
                                 "failed to send PromptReply to {}",
@@ -473,8 +468,7 @@ impl Agent {
         // transport is the registry seam, not an IPC message: the parent
         // already re-reads the registry every beat for `live_children_states`,
         // and the entry is what survives a peer that dies mid-turn.
-        crate::ipc::registry::set_turn_state(&self.registry_dir, &self.id, Some("working"))
-            .await;
+        crate::ipc::registry::set_turn_state(&self.registry_dir, &self.id, Some("working")).await;
 
         // Hybrid history-window management (opt-in `[history]`). Runs before
         // the provider call so the compacted history is what gets sent.
@@ -497,9 +491,7 @@ impl Agent {
                 Err(e) => {
                     let message = e.to_string();
                     if let Some(l) = log {
-                        l.write(LogEvent::Error { message: &message })
-                            .await
-                            .ok();
+                        l.write(LogEvent::Error { message: &message }).await.ok();
                     }
                     let _ = event_tx
                         .send(AgentEvent::Error {
@@ -556,9 +548,7 @@ impl Agent {
                     ProviderEvent::Error { message } => {
                         had_error = true;
                         if let Some(l) = log {
-                            l.write(LogEvent::Error { message: &message })
-                                .await
-                                .ok();
+                            l.write(LogEvent::Error { message: &message }).await.ok();
                         }
                         let _ = event_tx
                             .send(AgentEvent::Error {
@@ -595,10 +585,7 @@ impl Agent {
                 Some(reasoning.clone())
             };
 
-            if !assistant_text.is_empty()
-                || !tool_calls.is_empty()
-                || reasoning_content.is_some()
-            {
+            if !assistant_text.is_empty() || !tool_calls.is_empty() || reasoning_content.is_some() {
                 if let Some(l) = log {
                     l.write(LogEvent::Assistant {
                         text: &assistant_text,
@@ -1043,7 +1030,10 @@ mod tests {
         let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
 
         let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
-        in_tx.send(AgentInput::UserPrompt("read it".into())).await.unwrap();
+        in_tx
+            .send(AgentInput::UserPrompt("read it".into()))
+            .await
+            .unwrap();
 
         let mut saw_read_result = false;
         while let Some(ev) = ev_rx.recv().await {
@@ -1071,8 +1061,16 @@ mod tests {
     #[test]
     fn cancel_tool_results_fills_every_unresolved_call() {
         let unresolved = vec![
-            ("call-1".to_string(), "bash".to_string(), serde_json::json!({})),
-            ("call-2".to_string(), "read".to_string(), serde_json::json!({})),
+            (
+                "call-1".to_string(),
+                "bash".to_string(),
+                serde_json::json!({}),
+            ),
+            (
+                "call-2".to_string(),
+                "read".to_string(),
+                serde_json::json!({}),
+            ),
         ];
         let msgs = cancel_tool_results(&unresolved);
         assert_eq!(msgs.len(), 2);
@@ -1123,8 +1121,10 @@ mod tests {
             },
             ProviderEvent::Done,
         ]];
-        let mut agent =
-            build_test_agent(scripts, Agent::build_initial_history(&Persona::builtin_default()));
+        let mut agent = build_test_agent(
+            scripts,
+            Agent::build_initial_history(&Persona::builtin_default()),
+        );
         agent.history.push(Message::User {
             content: "run it".into(),
         });
@@ -1207,8 +1207,10 @@ mod tests {
             },
             ProviderEvent::Done,
         ]];
-        let mut agent =
-            build_test_agent(scripts, Agent::build_initial_history(&Persona::builtin_default()));
+        let mut agent = build_test_agent(
+            scripts,
+            Agent::build_initial_history(&Persona::builtin_default()),
+        );
         agent.history.push(Message::User {
             content: "hello".into(),
         });
@@ -1223,13 +1225,19 @@ mod tests {
             match ev {
                 AgentEvent::Text { delta } => text.push_str(&delta),
                 AgentEvent::Info { message } => {
-                    assert_ne!(message, "cancelled by user", "the turn must not be cancelled")
+                    assert_ne!(
+                        message, "cancelled by user",
+                        "the turn must not be cancelled"
+                    )
                 }
                 _ => {}
             }
         }
         assert_eq!(text, "answer");
-        assert!(!agent.cancel.is_cancelled(), "the turn start clears the flag");
+        assert!(
+            !agent.cancel.is_cancelled(),
+            "the turn start clears the flag"
+        );
     }
 
     // --- Turn boundary (progress indicator) ---
@@ -1318,21 +1326,21 @@ mod tests {
         let history = Agent::build_initial_history(&Persona::builtin_default());
         let agent = Agent {
             exit_when_idle: true,
-            ..build_test_agent(
-                vec![vec![ProviderEvent::Done]],
-                history.clone(),
-            )
+            ..build_test_agent(vec![vec![ProviderEvent::Done]], history.clone())
         };
         let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
         let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
 
         let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
-        in_tx.send(AgentInput::PeerPrompt {
-            from: AgentId::new(),
-            from_name: Some("parent".into()),
-            text: "do the work".into(),
-            reply_to: None,
-        }).await.unwrap();
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("parent".into()),
+                text: "do the work".into(),
+                reply_to: None,
+            })
+            .await
+            .unwrap();
         // Drop the sender: with the turn done and the channel quiet, the
         // flagged loop has nothing left to wait for.
         drop(in_tx);
@@ -1373,22 +1381,24 @@ mod tests {
         let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
 
         let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
-        in_tx.send(AgentInput::PeerPrompt {
-            from: AgentId::new(),
-            from_name: Some("parent".into()),
-            text: "first".into(),
-            reply_to: None,
-        })
-        .await
-        .unwrap();
-        in_tx.send(AgentInput::PeerPrompt {
-            from: AgentId::new(),
-            from_name: Some("parent".into()),
-            text: "second".into(),
-            reply_to: None,
-        })
-        .await
-        .unwrap();
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("parent".into()),
+                text: "first".into(),
+                reply_to: None,
+            })
+            .await
+            .unwrap();
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("parent".into()),
+                text: "second".into(),
+                reply_to: None,
+            })
+            .await
+            .unwrap();
         let _ = in_tx; // the sender stays alive; the queued prompt must be served
 
         // Two turns must complete (two Done events), then the loop waits on —
@@ -1404,10 +1414,9 @@ mod tests {
                 None => panic!("the agent ended its loop before the queued turn was served"),
             }
         }
-        let still_running = tokio::time::timeout(
-            std::time::Duration::from_millis(300),
-            async { let _ = handle.await; },
-        )
+        let still_running = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+            let _ = handle.await;
+        })
         .await
         .is_err();
         assert!(
@@ -1430,12 +1439,15 @@ mod tests {
         let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(32);
 
         let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
-        in_tx.send(AgentInput::PeerPrompt {
-            from: AgentId::new(),
-            from_name: Some("parent".into()),
-            text: "do the work".into(),
-            reply_to: None,
-        }).await.unwrap();
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: Some("parent".into()),
+                text: "do the work".into(),
+                reply_to: None,
+            })
+            .await
+            .unwrap();
 
         // Wait for the turn's Done, then prove the agent is still parked (a
         // second recv on the same handle resolves only if the loop ended —
@@ -1447,10 +1459,9 @@ mod tests {
                 None => panic!("the unflagged agent must not end its loop"),
             }
         }
-        let still_running = tokio::time::timeout(
-            std::time::Duration::from_millis(300),
-            async { let _ = handle.await; },
-        )
+        let still_running = tokio::time::timeout(std::time::Duration::from_millis(300), async {
+            let _ = handle.await;
+        })
         .await
         .is_err();
         assert!(
@@ -2129,7 +2140,10 @@ mod tests {
              a user cancel stops the turn, not the session"
         );
         assert!(saw_second_done, "the queued prompt's turn should complete");
-        assert!(saw_cancelled_turn, "the first turn should close as cancelled");
+        assert!(
+            saw_cancelled_turn,
+            "the first turn should close as cancelled"
+        );
 
         drop(in_tx);
         let _ = handle.await;

@@ -76,7 +76,9 @@ pub fn classify_line(line: &str, shell_enabled: bool) -> Line<'_> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellStatus {
     Exited(i32),
-    TimedOut { after_ms: u64 },
+    TimedOut {
+        after_ms: u64,
+    },
     Cancelled,
     /// The command could not be started at all.
     Failed(String),
@@ -402,10 +404,7 @@ mod tests {
             classify_line("what does ! mean", true),
             Line::Prompt("what does ! mean")
         );
-        assert_eq!(
-            classify_line("really?!", true),
-            Line::Prompt("really?!")
-        );
+        assert_eq!(classify_line("really?!", true), Line::Prompt("really?!"));
     }
 
     #[test]
@@ -546,7 +545,10 @@ mod tests {
     async fn the_model_copy_is_capped_while_the_command_still_runs_to_the_end() {
         // 400 lines of ~20 bytes against a 1 KiB cap: the run must complete and
         // keep only the tail.
-        let mut run = ShellRun::spawn("for i in $(seq 1 400); do echo line-$i; done", &cfg(10_000, 1));
+        let mut run = ShellRun::spawn(
+            "for i in $(seq 1 400); do echo line-$i; done",
+            &cfg(10_000, 1),
+        );
         let (lines, status) = drain(&mut run).await;
         assert_eq!(status, ShellStatus::Exited(0));
         assert_eq!(lines.len(), 400, "every line reached the screen");

@@ -112,7 +112,10 @@ mod tests {
         match denied {
             Allowance::Denied(why) => {
                 assert!(why.contains("child limit reached"), "{why}");
-                assert!(why.contains('4'), "the limit and the count are named: {why}");
+                assert!(
+                    why.contains('4'),
+                    "the limit and the count are named: {why}"
+                );
                 assert!(why.contains("stop_agent"), "it says what would help: {why}");
             }
             Allowance::Allowed => panic!("4 children against a limit of 4 must be denied"),
@@ -130,7 +133,10 @@ mod tests {
         match spawn_allowance(0, 2, limits(4, 2)) {
             Allowance::Denied(why) => {
                 assert!(why.contains("depth limit reached"), "{why}");
-                assert!(why.contains("depth 2"), "the agent's own depth is named: {why}");
+                assert!(
+                    why.contains("depth 2"),
+                    "the agent's own depth is named: {why}"
+                );
             }
             Allowance::Allowed => panic!("an agent at the depth limit must be denied"),
         }
@@ -169,7 +175,13 @@ mod tests {
         assert_eq!(limits.max_children, 2);
         assert_eq!(limits.max_depth, 1);
         assert_eq!(spawn_allowance(1, 0, limits), Allowance::Allowed);
-        assert!(matches!(spawn_allowance(2, 0, limits), Allowance::Denied(_)));
-        assert!(matches!(spawn_allowance(0, 1, limits), Allowance::Denied(_)));
+        assert!(matches!(
+            spawn_allowance(2, 0, limits),
+            Allowance::Denied(_)
+        ));
+        assert!(matches!(
+            spawn_allowance(0, 1, limits),
+            Allowance::Denied(_)
+        ));
     }
 }

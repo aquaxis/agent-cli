@@ -183,10 +183,7 @@ enabled = ["websearch"]
     #[tokio::test]
     async fn websearch_unconfigured_returns_err() {
         let tool = WebSearchTool::new(cfg());
-        let out = tool
-            .invoke(json!({"query": "rust"}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.invoke(json!({"query": "rust"}), &ctx()).await.unwrap();
         assert!(!out.ok);
         assert!(out.content.contains("not configured"));
     }

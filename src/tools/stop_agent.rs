@@ -49,8 +49,8 @@ impl Tool for StopAgentTool {
             Ok(t) => t,
             Err(_) => {
                 return Ok(ToolOutput::err(format!(
-                    "no running agent matches {key:?}. Use list_agents to see the agents you can stop."
-                )))
+                "no running agent matches {key:?}. Use list_agents to see the agents you can stop."
+            )))
             }
         };
 
@@ -122,7 +122,10 @@ mod tests {
         let other_root = register(dir, "other", &[]).await;
         let sibling = register(dir, "sibling", std::slice::from_ref(&other_root)).await;
 
-        for (key, expect) in [("other", "you did not create it"), ("sibling", "you did not create it")] {
+        for (key, expect) in [
+            ("other", "you did not create it"),
+            ("sibling", "you did not create it"),
+        ] {
             let out = StopAgentTool
                 .invoke(json!({ "agent": key }), &ctx(dir, me.clone(), &[]))
                 .await
@@ -144,7 +147,10 @@ mod tests {
         let me = register(dir, "me", std::slice::from_ref(&parent)).await;
 
         let out = StopAgentTool
-            .invoke(json!({"agent": "parent"}), &ctx(dir, me, std::slice::from_ref(&parent)))
+            .invoke(
+                json!({"agent": "parent"}),
+                &ctx(dir, me, std::slice::from_ref(&parent)),
+            )
             .await
             .unwrap();
         assert!(!out.ok);
@@ -178,7 +184,11 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.ok);
-        assert!(out.content.contains("no running agent matches"), "{}", out.content);
+        assert!(
+            out.content.contains("no running agent matches"),
+            "{}",
+            out.content
+        );
     }
 
     #[test]
@@ -203,7 +213,9 @@ mod tests {
         };
 
         // A direct child and a grandchild are ours, whoever is in between.
-        assert!(stop_permission(&entry(&child, std::slice::from_ref(&me)), &me, &[], "child").is_ok());
+        assert!(
+            stop_permission(&entry(&child, std::slice::from_ref(&me)), &me, &[], "child").is_ok()
+        );
         let grandchild = AgentId::new();
         assert!(stop_permission(
             &entry(&grandchild, &[me.clone(), child.clone()]),

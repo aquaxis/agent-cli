@@ -188,8 +188,12 @@ mod tests {
 
     async fn setup() -> TempDir {
         let dir = TempDir::new().unwrap();
-        tokio::fs::write(dir.path().join("a.txt"), "alpha\nbeta\nGAMMA\n").await.unwrap();
-        tokio::fs::write(dir.path().join("b.log"), "gamma here\n").await.unwrap();
+        tokio::fs::write(dir.path().join("a.txt"), "alpha\nbeta\nGAMMA\n")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("b.log"), "gamma here\n")
+            .await
+            .unwrap();
         dir
     }
 

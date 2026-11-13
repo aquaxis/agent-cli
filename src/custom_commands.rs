@@ -174,7 +174,11 @@ mod tests {
     #[test]
     fn expand_template_at_missing_file() {
         let out = expand_template("See @/no/such/path/here.txt", "");
-        assert!(out.contains("[error: cannot read @/no/such/path/here.txt]"), "{}", out);
+        assert!(
+            out.contains("[error: cannot read @/no/such/path/here.txt]"),
+            "{}",
+            out
+        );
     }
 
     #[test]

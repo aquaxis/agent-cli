@@ -77,5 +77,4 @@ impl AppError {
     pub fn persona(msg: impl Into<String>) -> Self {
         AppError::Persona(msg.into())
     }
-
 }

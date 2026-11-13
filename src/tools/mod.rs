@@ -17,9 +17,9 @@ pub mod bash;
 pub mod edit;
 pub mod glob;
 pub mod grep;
+pub mod list_agents;
 pub mod monitor;
 pub mod read;
-pub mod list_agents;
 pub mod send_to;
 pub mod spawn;
 pub mod stop_agent;
@@ -121,7 +121,10 @@ impl ToolRegistry {
             ("edit", Arc::new(edit::EditTool)),
             ("glob", Arc::new(glob::GlobTool)),
             ("grep", Arc::new(grep::GrepTool)),
-            ("websearch", Arc::new(websearch::WebSearchTool::new(cfg.clone()))),
+            (
+                "websearch",
+                Arc::new(websearch::WebSearchTool::new(cfg.clone())),
+            ),
             ("webfetch", Arc::new(webfetch::WebFetchTool)),
         ];
         for (name, tool) in candidates {
@@ -241,8 +244,16 @@ mod tests {
         // All implemented candidate tools are registered regardless of enabled
         // list (enabled filtering happens in build()).
         for name in [
-            "bash", "read", "write", "send_to", "monitor", "edit", "glob", "grep",
-            "websearch", "webfetch",
+            "bash",
+            "read",
+            "write",
+            "send_to",
+            "monitor",
+            "edit",
+            "glob",
+            "grep",
+            "websearch",
+            "webfetch",
         ] {
             assert!(reg.get(name).is_some(), "tool not registered: {name}");
         }
@@ -253,7 +264,10 @@ mod tests {
         let cfg = default_cfg();
         let reg = ToolRegistry::build(&cfg, None, None);
         for old in ["shell", "fs_read", "fs_write"] {
-            assert!(reg.get(old).is_none(), "old tool name still registered: {old}");
+            assert!(
+                reg.get(old).is_none(),
+                "old tool name still registered: {old}"
+            );
         }
     }
 
@@ -269,9 +283,18 @@ enabled = ["shell", "fs_read", "fs_write", "send_to"]
 "#;
         let cfg: Config = toml::from_str(toml_src).unwrap();
         let reg = ToolRegistry::build(&cfg, None, None);
-        assert!(reg.get("bash").is_some(), "legacy 'shell' should enable bash");
-        assert!(reg.get("read").is_some(), "legacy 'fs_read' should enable read");
-        assert!(reg.get("write").is_some(), "legacy 'fs_write' should enable write");
+        assert!(
+            reg.get("bash").is_some(),
+            "legacy 'shell' should enable bash"
+        );
+        assert!(
+            reg.get("read").is_some(),
+            "legacy 'fs_read' should enable read"
+        );
+        assert!(
+            reg.get("write").is_some(),
+            "legacy 'fs_write' should enable write"
+        );
         assert!(reg.get("send_to").is_some());
         // Legacy names themselves are not registered as tool keys.
         assert!(reg.get("shell").is_none());
@@ -305,11 +328,14 @@ max_output_kb = 256
         // The default enabled list does NOT include the network tools.
         assert!(reg.get("bash").is_some());
         assert!(reg.get("websearch").is_some()); // registered (candidate), enabled-independent
-        // With an explicit allowlist, only allowlisted tools remain.
+                                                 // With an explicit allowlist, only allowlisted tools remain.
         let allow = vec!["read".to_string(), "edit".to_string()];
         let reg2 = ToolRegistry::build(&cfg, Some(&allow), None);
         assert!(reg2.get("read").is_some());
         assert!(reg2.get("edit").is_some());
-        assert!(reg2.get("bash").is_none(), "bash should be filtered out by allowlist");
+        assert!(
+            reg2.get("bash").is_none(),
+            "bash should be filtered out by allowlist"
+        );
     }
 }

@@ -43,12 +43,22 @@ impl Route {
 /// appears in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    Sent { bytes: usize, lines: usize, route: Route },
+    Sent {
+        bytes: usize,
+        lines: usize,
+        route: Route,
+    },
     /// A click, or a selection that covered no characters.
     Empty,
     /// Larger than the terminal will accept; refused rather than truncated.
-    TooLarge { bytes: usize, limit: usize },
-    Failed { route: Route, reason: String },
+    TooLarge {
+        bytes: usize,
+        limit: usize,
+    },
+    Failed {
+        route: Route,
+        reason: String,
+    },
 }
 
 /// The payload limit of an OSC 52 write, in bytes of the text being encoded.
@@ -63,7 +73,11 @@ impl Outcome {
     /// The one line shown to the user.
     pub fn message(&self) -> String {
         match self {
-            Outcome::Sent { bytes, lines, route } => {
+            Outcome::Sent {
+                bytes,
+                lines,
+                route,
+            } => {
                 let unit = if *lines == 1 { "line" } else { "lines" };
                 format!(
                     "copied {lines} {unit} ({bytes} bytes) to the clipboard via {}",
@@ -96,8 +110,7 @@ impl Outcome {
 /// Standard base64, no line breaks. Twenty lines rather than a dependency for
 /// the one place the project needs it.
 pub fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b = [
@@ -167,7 +180,11 @@ pub(crate) fn in_tmux() -> bool {
 /// Put `text` on the clipboard, by `copy_command` when one is configured and by
 /// OSC 52 otherwise. `write` receives the escape sequence for the OSC 52 route;
 /// it is the terminal in the REPL and a buffer in the tests.
-pub fn copy(text: &str, copy_command: &str, write: impl FnOnce(&str) -> std::io::Result<()>) -> Outcome {
+pub fn copy(
+    text: &str,
+    copy_command: &str,
+    write: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Outcome {
     if text.is_empty() {
         return Outcome::Empty;
     }
@@ -177,7 +194,11 @@ pub fn copy(text: &str, copy_command: &str, write: impl FnOnce(&str) -> std::io:
     if !cmd.is_empty() {
         let route = Route::Command(cmd.to_string());
         return match pipe_to_command(cmd, text) {
-            Ok(()) => Outcome::Sent { bytes, lines, route },
+            Ok(()) => Outcome::Sent {
+                bytes,
+                lines,
+                route,
+            },
             Err(reason) => Outcome::Failed { route, reason },
         };
     }
@@ -213,7 +234,9 @@ fn pipe_to_command(cmd: &str, text: &str) -> Result<(), String> {
         .spawn()
         .map_err(|e| e.to_string())?;
     if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| e.to_string())?;
     }
     // Dropping stdin closes the pipe, which is what lets the command exit.
     drop(child.stdin.take());
@@ -270,12 +293,19 @@ mod tests {
     #[test]
     fn osc52_is_wrapped_for_tmux() {
         let seq = osc52("foo", true);
-        assert!(seq.starts_with("\u{1b}]52;c;Zm9v\u{7}"), "bare form first: {seq:?}");
+        assert!(
+            seq.starts_with("\u{1b}]52;c;Zm9v\u{7}"),
+            "bare form first: {seq:?}"
+        );
         assert!(
             seq.contains("\u{1b}Ptmux;\u{1b}\u{1b}]52;c;Zm9v\u{7}\u{1b}\\"),
             "wrapped form second: {seq:?}"
         );
-        assert_eq!(seq.matches("]52;c;Zm9v").count(), 2, "one payload, two forms: {seq:?}");
+        assert_eq!(
+            seq.matches("]52;c;Zm9v").count(),
+            2,
+            "one payload, two forms: {seq:?}"
+        );
     }
 
     #[test]
@@ -289,7 +319,10 @@ mod tests {
                 route: Route::Osc52
             }
         );
-        assert!(written.contains("]52;c;"), "the sequence was written: {written:?}");
+        assert!(
+            written.contains("]52;c;"),
+            "the sequence was written: {written:?}"
+        );
         let msg = outcome.message();
         assert!(msg.contains("2 lines"), "{msg}");
         assert!(msg.contains("osc52"), "{msg}");
@@ -319,7 +352,10 @@ mod tests {
             }
         );
         assert!(written.is_empty(), "a partial copy is worse than none");
-        assert!(outcome.message().contains("copy_command"), "the way out is named");
+        assert!(
+            outcome.message().contains("copy_command"),
+            "the way out is named"
+        );
         // One byte under the limit still goes.
         let ok = "x".repeat(OSC52_LIMIT);
         let (outcome, written) = capture(&ok, "");
@@ -334,7 +370,13 @@ mod tests {
         let cmd = format!("cat > {}", file.display());
         let (outcome, written) = capture("piped text", &cmd);
         assert!(
-            matches!(outcome, Outcome::Sent { route: Route::Command(_), .. }),
+            matches!(
+                outcome,
+                Outcome::Sent {
+                    route: Route::Command(_),
+                    ..
+                }
+            ),
             "{outcome:?}"
         );
         assert!(written.is_empty(), "the terminal route is not used as well");

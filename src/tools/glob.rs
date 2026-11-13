@@ -57,7 +57,10 @@ impl Tool for GlobTool {
             Err(e) => return Ok(ToolOutput::err(format!("invalid pattern: {e}"))),
         };
         let mut matches: Vec<String> = Vec::new();
-        for entry in walkdir::WalkDir::new(&base).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(&base)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -90,8 +93,12 @@ mod tests {
 
     async fn setup() -> TempDir {
         let dir = TempDir::new().unwrap();
-        tokio::fs::write(dir.path().join("a.txt"), "x").await.unwrap();
-        tokio::fs::write(dir.path().join("b.rs"), "x").await.unwrap();
+        tokio::fs::write(dir.path().join("a.txt"), "x")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("b.rs"), "x")
+            .await
+            .unwrap();
         tokio::fs::create_dir(dir.path().join("sub")).await.unwrap();
         tokio::fs::write(dir.path().join("sub").join("c.txt"), "x")
             .await

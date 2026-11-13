@@ -1012,8 +1012,7 @@ mod tests {
         s.bypass_sandbox_and_approvals = true;
         s.skip_git_repo_check = false;
         let args = build_args(&s, &plan(SessionAction::New));
-        assert!(args
-            .contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
         assert!(!args.contains(&"--skip-git-repo-check".to_string()));
     }
 
@@ -1022,7 +1021,9 @@ mod tests {
         let mut s = settings();
         s.transport = Transport::OneShot;
         let args = build_args(&s, &plan(SessionAction::None));
-        assert!(args.windows(2).any(|w| w == ["--output-last-message", oneshot_file()]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--output-last-message", oneshot_file()]));
         assert!(!args.contains(&"--json".to_string()));
         assert_eq!(args.last().unwrap(), "hi");
     }
@@ -1091,7 +1092,10 @@ mod tests {
         ]);
         assert_eq!(text_of(&evs), "P1OK");
         assert!(!done); // EOF ends the turn, not turn.completed
-        assert_eq!(thread.as_deref(), Some("01a1aa4b-7794-7982-a688-b57decc9a63d"));
+        assert_eq!(
+            thread.as_deref(),
+            Some("01a1aa4b-7794-7982-a688-b57decc9a63d")
+        );
         assert!(!evs.iter().any(|e| matches!(e, ProviderEvent::Done)));
     }
 

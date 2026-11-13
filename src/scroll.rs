@@ -262,7 +262,12 @@ pub fn body_rows(height: usize, prompt_rows: u16) -> usize {
 /// installed transcript with less than `want` wrapped rows returns what is
 /// there; `None` when no transcript is installed (piped/serve paths).
 pub fn tail_for_region(cols: usize, want: usize) -> Option<Vec<String>> {
-    with(|t| tail_rows(t, cols, want).into_iter().map(|r| r.text).collect())
+    with(|t| {
+        tail_rows(t, cols, want)
+            .into_iter()
+            .map(|r| r.text)
+            .collect()
+    })
 }
 
 /// Where the view sits, in wrapped rows above the bottom of the transcript.

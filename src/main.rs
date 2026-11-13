@@ -9,8 +9,8 @@ mod clip;
 mod commands;
 mod config;
 mod custom_commands;
-mod error;
 mod editor;
+mod error;
 mod history;
 mod id;
 mod ipc;
@@ -92,7 +92,11 @@ async fn run() -> Result<()> {
             let cfg = config::load(&source)?;
             commands::send(&cfg, &peer, &text).await
         }
-        Command::Ask { peer, text, timeout } => {
+        Command::Ask {
+            peer,
+            text,
+            timeout,
+        } => {
             let cfg = config::load(&source)?;
             commands::ask(&cfg, &peer, &text, timeout).await
         }
@@ -106,8 +110,19 @@ async fn run() -> Result<()> {
         }
         // `update` depends only on compile-time identity + the network, not on
         // the config file, so it is dispatched without `config::load`.
-        Command::Update { check, force, yes, git_ref } => {
-            update::run(update::UpdateOpts { check, force, yes, git_ref }).await
+        Command::Update {
+            check,
+            force,
+            yes,
+            git_ref,
+        } => {
+            update::run(update::UpdateOpts {
+                check,
+                force,
+                yes,
+                git_ref,
+            })
+            .await
         }
         Command::Selftest { provider } => {
             let cfg = config::load(&source)?;

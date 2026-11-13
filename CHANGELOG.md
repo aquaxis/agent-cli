@@ -4,6 +4,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.53.0]
+
+### Added
+
+- **The `[tool-call]`/`[tool-result]` traffic can be silenced with `[ui] show_tool_results = false`.** The new key (default `true`) gates the two `display_event` arms so the tool call and its result print nothing while a turn runs — a turn reduces to its `[answer]` text and the completion mark — whatever the progress indicator is doing; the model and the conversation log still receive every call and result in full, and the progress indicator keeps drawing.
+
 ## [0.52.0]
 
 ### Fixed

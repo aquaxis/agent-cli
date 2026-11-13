@@ -54,7 +54,10 @@ impl OllamaProvider {
         let key_env = entry.api_key_env.clone();
         let key_value = key_env.as_ref().and_then(|k| std::env::var(k).ok());
         let context = ProviderContext::new(source, key_env, key_value.as_deref());
-        let max_retries = entry.max_retries.map(|n| n as u32).unwrap_or(DEFAULT_MAX_RETRIES);
+        let max_retries = entry
+            .max_retries
+            .map(|n| n as u32)
+            .unwrap_or(DEFAULT_MAX_RETRIES);
         Ok(Self {
             base_url,
             model,

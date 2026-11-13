@@ -53,8 +53,7 @@ pub async fn spawn_detached(
     args: &RunArgs,
     ancestors: &[crate::id::AgentId],
 ) -> Result<RegistryEntry> {
-    let exe =
-        std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
+    let exe = std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
 
     // Snapshot existing registry ids so we can identify the one the child adds.
     let before: std::collections::HashSet<String> = registry::list_entries(registry_dir)
@@ -98,7 +97,10 @@ pub async fn spawn_detached(
     // every existing subcommand keeps the command line — and the behaviour —
     // it has always had.
     if !ancestors.is_empty() {
-        cmd.env(registry::ENV_ANCESTORS, registry::ancestors_to_env(ancestors));
+        cmd.env(
+            registry::ENV_ANCESTORS,
+            registry::ancestors_to_env(ancestors),
+        );
     }
 
     // Double fork so the serve process is fully detached: a new session
@@ -406,11 +408,7 @@ pub async fn ask_and_receive(
         other => return Err(AppError::ipc(format!("unexpected response: {:?}", other))),
     }
 
-    let result = tokio::time::timeout(
-        Duration::from_secs(timeout_secs),
-        reply_rx.recv(),
-    )
-    .await;
+    let result = tokio::time::timeout(Duration::from_secs(timeout_secs), reply_rx.recv()).await;
 
     drop(reply_server);
     drop(reply_dir);
@@ -441,13 +439,15 @@ pub async fn providers(cfg: &Config) -> Result<()> {
             .and_then(|e| e.model.clone())
             .unwrap_or_else(|| "-".into());
         let key_status = match (*kind, entry) {
-            ("claude", Some(e)) | ("codex", Some(e)) | ("strata", Some(e)) => match &e.api_key_env {
-                Some(env) => match std::env::var(env) {
-                    Ok(_) => format!("env {env}: set"),
-                    Err(_) => format!("env {env}: NOT set"),
-                },
-                None => "no api_key_env configured (keyless)".into(),
-            },
+            ("claude", Some(e)) | ("codex", Some(e)) | ("strata", Some(e)) => {
+                match &e.api_key_env {
+                    Some(env) => match std::env::var(env) {
+                        Ok(_) => format!("env {env}: set"),
+                        Err(_) => format!("env {env}: NOT set"),
+                    },
+                    None => "no api_key_env configured (keyless)".into(),
+                }
+            }
             ("ollama", Some(_)) | ("llama.cpp", Some(_)) => "local server".into(),
             // No API key of its own: it runs the Claude Code CLI, which brings
             // its own authentication. What matters is whether the binary exists.
@@ -1280,9 +1280,9 @@ pub fn config_edit(source: &ConfigSource) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::registry::RegistryEntry;
     use crate::ipc::server::IpcServer;
     use crate::ipc::IpcMessage;
-    use crate::ipc::registry::RegistryEntry;
     use chrono::Utc;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -1290,7 +1290,11 @@ mod tests {
     #[test]
     fn the_clipboard_report_names_the_command_route_when_one_is_set() {
         let lines = clipboard_report("  wl-copy  ", true);
-        assert_eq!(lines.len(), 1, "a command route needs no tmux lines: {lines:?}");
+        assert_eq!(
+            lines.len(),
+            1,
+            "a command route needs no tmux lines: {lines:?}"
+        );
         assert!(lines[0].contains("wl-copy"), "{lines:?}");
         assert!(lines[0].contains("copy_command"), "{lines:?}");
         assert!(lines[0].contains("exit status"), "{lines:?}");
@@ -1310,7 +1314,10 @@ mod tests {
     fn the_clipboard_report_outside_tmux_says_the_send_is_not_the_arrival() {
         let lines = clipboard_report("", false);
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[1].contains("confirms the send, not the arrival"), "{lines:?}");
+        assert!(
+            lines[1].contains("confirms the send, not the arrival"),
+            "{lines:?}"
+        );
         assert!(lines[1].contains("copy_command"), "{lines:?}");
     }
 
@@ -1341,9 +1348,15 @@ mod tests {
         let out = aggregate_groups(entries);
         // grouped buckets sorted by id first (alpha, team), ungrouped last.
         assert_eq!(out.len(), 3);
-        assert_eq!(out[0].group.as_ref().map(|g| g.to_string()), Some("alpha".into()));
+        assert_eq!(
+            out[0].group.as_ref().map(|g| g.to_string()),
+            Some("alpha".into())
+        );
         assert_eq!(out[0].members.len(), 1);
-        assert_eq!(out[1].group.as_ref().map(|g| g.to_string()), Some("team".into()));
+        assert_eq!(
+            out[1].group.as_ref().map(|g| g.to_string()),
+            Some("team".into())
+        );
         assert_eq!(out[1].members.len(), 2);
         assert!(out[2].group.is_none());
         assert_eq!(out[2].members.len(), 1);
@@ -1359,11 +1372,7 @@ mod tests {
 
     /// Create a mock peer that receives a Prompt and sends a PromptReply
     /// back to the specified reply_to socket.
-    async fn setup_mock_peer(
-        registry_dir: &Path,
-        name: &str,
-        reply_text: &str,
-    ) -> RegistryEntry {
+    async fn setup_mock_peer(registry_dir: &Path, name: &str, reply_text: &str) -> RegistryEntry {
         let id = AgentId::new();
         let socket_path = registry_dir.join(format!("{}.sock", id.as_str()));
         let mut server = IpcServer::bind(socket_path.clone()).await.unwrap();
@@ -1432,7 +1441,11 @@ registry_dir = {:?}
         .await
         .expect("ask_and_receive timeout");
 
-        assert!(result.is_ok(), "ask_and_receive should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "ask_and_receive should succeed: {:?}",
+            result.err()
+        );
         assert_eq!(result.unwrap(), "HELLO from mock");
     }
 

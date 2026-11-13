@@ -72,8 +72,7 @@ pub async fn run(opts: UpdateOpts) -> Result<()> {
     // here — the build always runs. `--check` above still reports the release.
     let target = target_ref(opts.git_ref.as_deref());
 
-    let exe =
-        std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
+    let exe = std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
     let prefix = install_prefix(&exe).ok_or_else(|| {
         AppError::Other(format!(
             "cannot derive install prefix from {}",

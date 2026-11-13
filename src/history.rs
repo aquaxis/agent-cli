@@ -33,7 +33,10 @@ fn message_weighted_chars(m: &Message) -> usize {
                     n
                 })
                 .sum();
-            let reasoning = reasoning_content.as_deref().map(weighted_chars).unwrap_or(0);
+            let reasoning = reasoning_content
+                .as_deref()
+                .map(weighted_chars)
+                .unwrap_or(0);
             weighted_chars(content) + extra + reasoning
         }
         Message::ToolResult { content, .. } => weighted_chars(content),
@@ -51,15 +54,7 @@ fn weighted_chars(s: &str) -> usize {
     // estimate ≥ the real token count for the CJK-heavy histories (the
     // budget must not be exceeded, so over-estimating CJK is the safe side),
     // while narrow text divides by 4 exactly as before.
-    s.chars()
-        .map(|c| {
-            if is_wide(c) {
-                3
-            } else {
-                1
-            }
-        })
-        .sum()
+    s.chars().map(|c| if is_wide(c) { 3 } else { 1 }).sum()
 }
 
 /// Whether `c` renders wide (CJK ideographs, kana, hangul, fullwidth forms,
@@ -96,10 +91,7 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
 /// after the leading `System` prefix and before the last `keep_recent_turns`
 /// messages. `None` when nothing qualifies (too short / all system / all
 /// recent).
-pub fn old_span(
-    messages: &[Message],
-    keep_recent_turns: usize,
-) -> Option<std::ops::Range<usize>> {
+pub fn old_span(messages: &[Message], keep_recent_turns: usize) -> Option<std::ops::Range<usize>> {
     let start = messages
         .iter()
         .position(|m| !matches!(m, Message::System { .. }))
@@ -282,18 +274,15 @@ mod tests {
         // index 2 and orphaning the tool message. The guard must pull `end`
         // back to 2 so the pair stays in the kept tail.
         let msgs = vec![
-            sys("persona"),     // 0
-            user("u1"),         // 1
+            sys("persona"),       // 0
+            user("u1"),           // 1
             asst_call("a", "c1"), // 2  (Assistant with tool_calls)
-            tr("c1"),           // 3  (its ToolResult)
+            tr("c1"),             // 3  (its ToolResult)
         ];
         let span = old_span(&msgs, 1).expect("span");
         assert_eq!(span, 1..2, "boundary pulled back before the pair");
         // The kept tail [2..] starts with the Assistant, not the ToolResult.
-        assert!(matches!(
-            msgs[span.end],
-            Message::Assistant { .. }
-        ));
+        assert!(matches!(msgs[span.end], Message::Assistant { .. }));
     }
 
     #[test]
@@ -379,7 +368,13 @@ mod tests {
     #[test]
     fn truncate_never_touches_the_old_span() {
         let big = "z".repeat(400);
-        let mut msgs = vec![sys("p"), user("u"), asst("a"), tr_big("c1", &big), asst("last")];
+        let mut msgs = vec![
+            sys("p"),
+            user("u"),
+            asst("a"),
+            tr_big("c1", &big),
+            asst("last"),
+        ];
         // keep=1 keeps only the last message (not a ToolResult) — nothing in
         // the kept window is oversized, the old span's monster stays (the
         // summarizer/drop path owns it).

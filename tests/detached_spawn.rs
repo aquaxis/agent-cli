@@ -99,8 +99,16 @@ fn a_reported_result_is_recorded_without_a_turn() {
     };
 
     let parent = spawn("ctx-parent");
-    let parent_id = parent.get("id").and_then(|i| i.as_str()).unwrap().to_string();
-    let parent_socket = parent.get("socket").and_then(|s| s.as_str()).unwrap().to_string();
+    let parent_id = parent
+        .get("id")
+        .and_then(|i| i.as_str())
+        .unwrap()
+        .to_string();
+    let parent_socket = parent
+        .get("socket")
+        .and_then(|s| s.as_str())
+        .unwrap()
+        .to_string();
 
     // The report, sent the way a child's `send_to` would send it.
     let payload = format!(
@@ -461,7 +469,10 @@ fn a_repeated_config_flag_layers_and_the_chain_is_reportable() {
     let lines: Vec<&str> = printed.lines().collect();
     assert_eq!(lines.len(), 2, "both layers should be reported: {printed}");
     assert!(lines[0].ends_with("base.toml"), "base first: {printed}");
-    assert!(lines[1].ends_with("overlay.toml"), "overlay last: {printed}");
+    assert!(
+        lines[1].ends_with("overlay.toml"),
+        "overlay last: {printed}"
+    );
 }
 
 /// FR-05 / AC-05: a detached child runs under the **whole** chain its parent
@@ -560,7 +571,10 @@ enabled = []
         "the child must be handed both layers, got: {args:?}"
     );
     assert!(passed[0].ends_with("base.toml"), "base first: {args:?}");
-    assert!(passed[1].ends_with("overlay.toml"), "overlay last: {args:?}");
+    assert!(
+        passed[1].ends_with("overlay.toml"),
+        "overlay last: {args:?}"
+    );
 
     let _ = Command::new(bin())
         .arg("--config")

@@ -186,6 +186,10 @@ max_output_kb = 256      # truncate stdout/stderr beyond this (KB)
 show_thinking    = "collapsed"
 # Activity line + spinner/elapsed while a turn runs (interactive terminals only).
 show_progress    = true
+# Print the [tool-call] / [tool-result] lines at all. false silences the whole
+# tool traffic on screen (both lines, as one choice); the model still sees
+# every call and result in full, and the conversation log keeps the text.
+show_tool_results = true
 # Colour the output: "auto" (terminals only, honours NO_COLOR) / "always" / "never".
 color            = "auto"
 # Scroll the session log with the mouse wheel, keeping the prompt line pinned.

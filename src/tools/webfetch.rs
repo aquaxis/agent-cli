@@ -96,7 +96,8 @@ async fn http_body(url: &str, timeout: Duration) -> Result<String> {
 }
 
 #[async_trait]
-impl Tool for WebFetchTool {    fn name(&self) -> &str {
+impl Tool for WebFetchTool {
+    fn name(&self) -> &str {
         "webfetch"
     }
 

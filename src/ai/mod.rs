@@ -172,9 +172,7 @@ pub const SUPPORTED: &[&str] = &[
 /// kept verbatim at the end so the original text (e.g. reqwest's
 /// "error decoding response body") stays grep-able.
 pub(crate) fn stream_mid_body(provider: &str, model: &str, raw: &str) -> String {
-    format!(
-        "provider stream ended mid-body (provider {provider}, model {model}): {raw}"
-    )
+    format!("provider stream ended mid-body (provider {provider}, model {model}): {raw}")
 }
 
 /// Build the diagnostic error for a response the provider rejected.
@@ -448,7 +446,9 @@ mod diagnostics_tests {
             "error decoding response body",
         );
         assert!(
-            m.starts_with("provider stream ended mid-body (provider ollama, model glm-5.3-flash:cloud): "),
+            m.starts_with(
+                "provider stream ended mid-body (provider ollama, model glm-5.3-flash:cloud): "
+            ),
             "context prefix missing: {m}"
         );
         assert!(
@@ -487,7 +487,10 @@ mod diagnostics_tests {
         // key rule and send the user off to reissue a perfectly good key.
         let body = r#"{"type":"error","error":{"type":"ModelError","message":"Model claude-sonnet-4-5 is not supported"}}"#;
         let hint = derive_hint(Some(401), body).expect("hint");
-        assert!(hint.contains("/models"), "hint should point at the catalogue: {hint}");
+        assert!(
+            hint.contains("/models"),
+            "hint should point at the catalogue: {hint}"
+        );
         assert!(
             !hint.contains("revoked"),
             "a model error must not be reported as a key problem: {hint}"

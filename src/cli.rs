@@ -316,10 +316,13 @@ mod tests {
 
     #[test]
     fn cli_parses_ask_subcommand() {
-        let cli = Cli::try_parse_from(["agent-cli", "ask", "alice", "hello"])
-            .expect("parse ask");
+        let cli = Cli::try_parse_from(["agent-cli", "ask", "alice", "hello"]).expect("parse ask");
         match cli.command {
-            Some(Command::Ask { peer, text, timeout }) => {
+            Some(Command::Ask {
+                peer,
+                text,
+                timeout,
+            }) => {
                 assert_eq!(peer, "alice");
                 assert_eq!(text, "hello");
                 assert_eq!(timeout, 120);
@@ -330,8 +333,15 @@ mod tests {
 
     #[test]
     fn cli_parses_spawn_with_run_args() {
-        let cli = Cli::try_parse_from(["agent-cli", "spawn", "--name", "worker", "--provider", "ollama"])
-            .expect("parse spawn");
+        let cli = Cli::try_parse_from([
+            "agent-cli",
+            "spawn",
+            "--name",
+            "worker",
+            "--provider",
+            "ollama",
+        ])
+        .expect("parse spawn");
         assert!(matches!(cli.command, Some(Command::Spawn)));
         assert_eq!(cli.run_args.name.as_deref(), Some("worker"));
         assert_eq!(cli.run_args.provider.as_deref(), Some("ollama"));
@@ -339,7 +349,8 @@ mod tests {
 
     #[test]
     fn cli_parses_serve() {
-        let cli = Cli::try_parse_from(["agent-cli", "serve", "--name", "worker"]).expect("parse serve");
+        let cli =
+            Cli::try_parse_from(["agent-cli", "serve", "--name", "worker"]).expect("parse serve");
         assert!(matches!(cli.command, Some(Command::Serve)));
         assert_eq!(cli.run_args.name.as_deref(), Some("worker"));
     }
@@ -384,18 +395,34 @@ mod tests {
     fn cli_parses_update() {
         let cli = Cli::try_parse_from(["agent-cli", "update"]).expect("parse update");
         match cli.command {
-            Some(Command::Update { check, force, yes, git_ref }) => {
+            Some(Command::Update {
+                check,
+                force,
+                yes,
+                git_ref,
+            }) => {
                 assert!(!check && !force && !yes && git_ref.is_none());
             }
             other => panic!("expected Update, got {other:?}"),
         }
 
         let cli = Cli::try_parse_from([
-            "agent-cli", "update", "--check", "--force", "--yes", "--ref", "v0.6.0",
+            "agent-cli",
+            "update",
+            "--check",
+            "--force",
+            "--yes",
+            "--ref",
+            "v0.6.0",
         ])
         .expect("parse update with flags");
         match cli.command {
-            Some(Command::Update { check, force, yes, git_ref }) => {
+            Some(Command::Update {
+                check,
+                force,
+                yes,
+                git_ref,
+            }) => {
                 assert!(check && force && yes);
                 assert_eq!(git_ref.as_deref(), Some("v0.6.0"));
             }
@@ -428,7 +455,11 @@ mod tests {
         let cli = Cli::try_parse_from(["agent-cli", "ask", "--timeout", "30", "alice", "hi"])
             .expect("parse ask with timeout");
         match cli.command {
-            Some(Command::Ask { peer, text, timeout }) => {
+            Some(Command::Ask {
+                peer,
+                text,
+                timeout,
+            }) => {
                 assert_eq!(peer, "alice");
                 assert_eq!(text, "hi");
                 assert_eq!(timeout, 30);

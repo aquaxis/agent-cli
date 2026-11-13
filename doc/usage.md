@@ -369,6 +369,8 @@ On an interactive terminal, the REPL shows what it is doing while a turn runs:
 
 It is drawn only when both stdin and stderr are terminals, so piped or redirected output is unaffected, and it can be turned off with `[ui] show_progress = false` (see [`doc/config.md`](config.md)). With it off, tool calls are printed in full again exactly as before.
 
+With `[ui] show_tool_results = false`, neither the `[tool-call]` nor the `[tool-result]` lines are printed at all, whatever the indicator is doing — the model and the conversation log still receive every call and result in full (see [`doc/config.md`](config.md)).
+
 ### Colours on Screen
 
 On an interactive terminal the output is colour-coded, so the parts you wrote, the parts that say what is happening, and the parts you may skim past are told apart at a glance:

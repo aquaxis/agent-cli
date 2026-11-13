@@ -684,6 +684,12 @@ pub struct UiConfig {
     /// terminal, where the indicator is never drawn.
     #[serde(default = "default_show_progress")]
     pub show_progress: bool,
+    /// Print the `[tool-call]` and `[tool-result]` lines on screen. Turning
+    /// this off silences both entirely, whatever the progress indicator is
+    /// doing; the model and the conversation log still receive every call and
+    /// result in full.
+    #[serde(default = "default_show_tool_results")]
+    pub show_tool_results: bool,
     /// Colour the terminal output: `"auto"` (colour a stream when it is an
     /// interactive terminal and `NO_COLOR` is unset), `"always"`, `"never"`.
     #[serde(default = "default_color")]
@@ -717,6 +723,7 @@ impl Default for UiConfig {
         Self {
             show_thinking: default_show_thinking(),
             show_progress: default_show_progress(),
+            show_tool_results: default_show_tool_results(),
             color: default_color(),
             mouse_scroll: default_mouse_scroll(),
             scrollback_lines: default_scrollback_lines(),
@@ -731,6 +738,10 @@ fn default_show_thinking() -> String {
 }
 
 fn default_show_progress() -> bool {
+    true
+}
+
+fn default_show_tool_results() -> bool {
     true
 }
 
@@ -1046,7 +1057,11 @@ fn merge_at(base: toml::Value, overlay: toml::Value, path: &[&str]) -> toml::Val
     match (base, overlay) {
         (Value::Table(mut b), Value::Table(o)) => {
             for (k, ov) in o {
-                let next: Vec<&str> = path.iter().copied().chain(std::iter::once(k.as_str())).collect();
+                let next: Vec<&str> = path
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(k.as_str()))
+                    .collect();
                 let merged = match b.remove(&k) {
                     Some(bv) => merge_at(bv, ov, &next),
                     None => ov,
@@ -1172,9 +1187,8 @@ pub fn load(source: &ConfigSource) -> Result<Config> {
     let mut merged: Option<toml::Value> = None;
     for path in present {
         let raw = std::fs::read_to_string(path)?;
-        let value: toml::Value = toml::from_str(&raw).map_err(|e| {
-            AppError::config(format!("{}: {e}", path.display()))
-        })?;
+        let value: toml::Value = toml::from_str(&raw)
+            .map_err(|e| AppError::config(format!("{}: {e}", path.display())))?;
         let (value, renames) = canonicalize_aliases(value, path);
         for rename in &renames {
             tracing::info!(file = %path.display(), rename, "renamed legacy key to its canonical spelling");
@@ -1191,9 +1205,9 @@ pub fn load(source: &ConfigSource) -> Result<Config> {
         .map(|p| p.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let cfg: Config = merged.try_into().map_err(|e| {
-        AppError::config(format!("merged configuration ({chain}): {e}"))
-    })?;
+    let cfg: Config = merged
+        .try_into()
+        .map_err(|e| AppError::config(format!("merged configuration ({chain}): {e}")))?;
     Ok(cfg)
 }
 
@@ -1285,7 +1299,9 @@ impl Config {
             ),
 
             "ollama" => Some(self.provider.ollama.get_or_insert_with(Default::default)),
-            "opencode" | "opencode-go" => Some(self.provider.opencode.get_or_insert_with(Default::default)),
+            "opencode" | "opencode-go" => {
+                Some(self.provider.opencode.get_or_insert_with(Default::default))
+            }
             "llama.cpp" => Some(self.provider.llamacpp.get_or_insert_with(Default::default)),
             _ => None,
         }
@@ -1459,13 +1475,17 @@ mod tests {
     #[test]
     fn repeated_explicit_configs_layer_left_to_right() {
         // This is how a detached child is handed the chain its parent resolved.
-        let src = resolve_path(&[PathBuf::from("/a/base.toml"), PathBuf::from("/b/over.toml")])
-            .unwrap();
+        let src =
+            resolve_path(&[PathBuf::from("/a/base.toml"), PathBuf::from("/b/over.toml")]).unwrap();
         assert_eq!(
             src.chain(),
             [PathBuf::from("/a/base.toml"), PathBuf::from("/b/over.toml")].as_slice()
         );
-        assert_eq!(src.path(), PathBuf::from("/b/over.toml"), "the last one wins");
+        assert_eq!(
+            src.path(),
+            PathBuf::from("/b/over.toml"),
+            "the last one wins"
+        );
         assert!(src.from_explicit);
     }
 
@@ -1571,7 +1591,9 @@ allow = ["read(**)"]
 "#,
         );
         assert!(
-            cfg.permissions.deny.contains(&"bash(rm -rf ~/**)".to_string()),
+            cfg.permissions
+                .deny
+                .contains(&"bash(rm -rf ~/**)".to_string()),
             "the user's deny survives the project layer: {:?}",
             cfg.permissions.deny
         );
@@ -1654,10 +1676,7 @@ allow = ["read(**)"]
             layers: vec![dir.path().join("nope.toml")],
             from_explicit: true,
         };
-        assert!(matches!(
-            load(&source),
-            Err(AppError::ConfigNotFound(_))
-        ));
+        assert!(matches!(load(&source), Err(AppError::ConfigNotFound(_))));
     }
 
     #[test]
@@ -2301,7 +2320,10 @@ model = "glm-5.1:cloud"
     fn provider_entry_opencode_go_returns_opencode_entry() {
         let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
         let entry = cfg.provider_entry("opencode-go");
-        assert!(entry.is_some(), "opencode-go should resolve to opencode entry");
+        assert!(
+            entry.is_some(),
+            "opencode-go should resolve to opencode entry"
+        );
         assert_eq!(
             entry.unwrap().model.as_deref(),
             Some("claude-sonnet-4-5"),
@@ -2313,7 +2335,10 @@ model = "glm-5.1:cloud"
     fn provider_entry_mut_opencode_go_returns_opencode_entry() {
         let mut cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
         let entry = cfg.provider_entry_mut("opencode-go");
-        assert!(entry.is_some(), "opencode-go should resolve to opencode entry_mut");
+        assert!(
+            entry.is_some(),
+            "opencode-go should resolve to opencode entry_mut"
+        );
         let entry = entry.unwrap();
         entry.model = Some("custom-model".to_string());
         assert_eq!(
@@ -2336,7 +2361,10 @@ api_key_env = "OPENCODE_API_KEY"
         cfg.apply_opencode_go_defaults();
         assert_eq!(cfg.provider.kind, "opencode");
         let entry = cfg.provider.opencode.as_ref().unwrap();
-        assert_eq!(entry.base_url.as_deref(), Some("https://opencode.ai/zen/go/v1"));
+        assert_eq!(
+            entry.base_url.as_deref(),
+            Some("https://opencode.ai/zen/go/v1")
+        );
         assert_eq!(entry.api.as_deref(), Some("openai"));
         assert_eq!(entry.model.as_deref(), Some("qwen3.8-max"));
         assert_eq!(entry.api_key_env.as_deref(), Some("OPENCODE_API_KEY"));
@@ -2352,7 +2380,10 @@ kind = "opencode-go"
         cfg.apply_opencode_go_defaults();
         assert_eq!(cfg.provider.kind, "opencode");
         let entry = cfg.provider.opencode.as_ref().unwrap();
-        assert_eq!(entry.base_url.as_deref(), Some("https://opencode.ai/zen/go/v1"));
+        assert_eq!(
+            entry.base_url.as_deref(),
+            Some("https://opencode.ai/zen/go/v1")
+        );
         assert_eq!(entry.api.as_deref(), Some("openai"));
         assert_eq!(entry.model.as_deref(), Some("qwen3.8-max"));
         assert_eq!(entry.api_key_env.as_deref(), Some("OPENCODE_API_KEY"));
@@ -2383,11 +2414,23 @@ session_id = "ses_pinned"
 "#;
         let cfg: Config = toml::from_str(toml_src).unwrap();
         assert_eq!(
-            cfg.provider.opencode.as_ref().unwrap().session_id.as_deref(),
+            cfg.provider
+                .opencode
+                .as_ref()
+                .unwrap()
+                .session_id
+                .as_deref(),
             Some("ses_pinned")
         );
-        let bare: Config = toml::from_str("[provider]\nkind = \"opencode\"\n\n[provider.opencode]\n").unwrap();
-        assert!(bare.provider.opencode.as_ref().unwrap().session_id.is_none());
+        let bare: Config =
+            toml::from_str("[provider]\nkind = \"opencode\"\n\n[provider.opencode]\n").unwrap();
+        assert!(bare
+            .provider
+            .opencode
+            .as_ref()
+            .unwrap()
+            .session_id
+            .is_none());
     }
 
     #[test]
@@ -2408,7 +2451,10 @@ api         = "openai"
         let entry = cfg.provider.opencode.as_ref().unwrap();
         assert_eq!(entry.api_key_env.as_deref(), Some("MY_CUSTOM_KEY"));
         assert_eq!(entry.model.as_deref(), Some("gpt-5"));
-        assert_eq!(entry.base_url.as_deref(), Some("https://custom.example.com/v1"));
+        assert_eq!(
+            entry.base_url.as_deref(),
+            Some("https://custom.example.com/v1")
+        );
         assert_eq!(entry.api.as_deref(), Some("openai"));
     }
 
@@ -2494,7 +2540,10 @@ api_key_env = "STRATA_API_KEY"
         assert_eq!(cfg.provider.kind, "claude");
         let kind_before = cfg.provider.kind.clone();
         cfg.apply_opencode_go_defaults();
-        assert_eq!(cfg.provider.kind, kind_before, "no-op for non-opencode-go kind");
+        assert_eq!(
+            cfg.provider.kind, kind_before,
+            "no-op for non-opencode-go kind"
+        );
     }
 
     // ── Per-layer alias normalization (the `duplicate field` failure) ────────
@@ -2571,10 +2620,7 @@ api_key_env = "STRATA_API_KEY"
         assert_eq!(cfg.tools.bash.timeout_ms, 60_000);
         // The legacy table's keys fill where the canonical one is absent:
         let (v, _) = canonicalize_aliases(
-            parse(&layer(
-                "timeout_ms    = 60000",
-                "max_output_kb = 512",
-            )),
+            parse(&layer("timeout_ms    = 60000", "max_output_kb = 512")),
             Path::new("x.toml"),
         );
         let fills: Config = v.try_into().unwrap();
@@ -2586,7 +2632,10 @@ api_key_env = "STRATA_API_KEY"
     fn the_sibling_alias_pair_loads_in_both_orders() {
         let both = |base: &str, over: &str| -> String {
             let dir = tempfile::tempdir().unwrap();
-            let (b, o) = (dir.path().join("base.toml"), dir.path().join("overlay.toml"));
+            let (b, o) = (
+                dir.path().join("base.toml"),
+                dir.path().join("overlay.toml"),
+            );
             std::fs::write(&b, base).unwrap();
             std::fs::write(&o, over).unwrap();
             load(&ConfigSource {
@@ -2665,8 +2714,12 @@ api_key_env = "STRATA_API_KEY"
         let over = dir.path().join("overlay.toml");
         std::fs::write(&base, PROVIDER).unwrap();
         std::fs::write(&over, PROVIDER).unwrap(); // provider twice: no conflict
-        // A genuine type error the normalization does not touch:
-        std::fs::write(&over, "[provider]\nkind = \"claude\"\n\n[ui]\nmouse_scroll = \"not-a-bool\"\n").unwrap();
+                                                  // A genuine type error the normalization does not touch:
+        std::fs::write(
+            &over,
+            "[provider]\nkind = \"claude\"\n\n[ui]\nmouse_scroll = \"not-a-bool\"\n",
+        )
+        .unwrap();
         let err = load(&ConfigSource {
             layers: vec![base, over],
             from_explicit: true,

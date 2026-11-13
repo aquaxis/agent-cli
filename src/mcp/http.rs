@@ -99,7 +99,11 @@ impl Drop for HttpTransport {
                 let client = self.client.clone();
                 let url = self.url.clone();
                 handle.spawn(async move {
-                    let _ = client.delete(&url).header("Mcp-Session-Id", sid).send().await;
+                    let _ = client
+                        .delete(&url)
+                        .header("Mcp-Session-Id", sid)
+                        .send()
+                        .await;
                 });
             }
         }

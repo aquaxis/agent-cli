@@ -4,13 +4,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::tools::send_to::Delivery;
 use chrono::Utc;
 use crossterm::event::{self, Event as CtEvent, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{self, ClearType};
 use crossterm::ExecutableCommand;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::{mpsc, oneshot, watch, RwLock};
-use crate::tools::send_to::Delivery;
 
 use crate::agent::{Agent, AgentEvent, AgentInput, ApprovalRequest, CancelToken};
 use crate::ai;
@@ -340,6 +340,10 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         use std::io::IsTerminal;
         stdin_is_tty() && std::io::stderr().is_terminal() && config.ui.show_progress
     };
+    // The `[tool-call]`/`[tool-result]` screen lines are printed only when the
+    // new `[ui] show_tool_results` keeps them on; the flag travels through the
+    // display task like the indicator's own switch.
+    let show_tool_results = config.ui.show_tool_results;
     // Colour scheme. Resolved once, separately per stream, so a redirected
     // answer stays plain even while the status display keeps its colour.
     let theme = Theme::from_env(config.ui.color_mode());
@@ -371,7 +375,9 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let (approval_tx, approval_rx) = mpsc::channel::<ApprovalRequest>(8);
 
     // Compiled once: a tool call costs a walk of the rule list, never a parse.
-    let permissions = Arc::new(crate::permissions::Ruleset::from_config(&config.permissions));
+    let permissions = Arc::new(crate::permissions::Ruleset::from_config(
+        &config.permissions,
+    ));
     report_permission_warnings(&permissions, &theme);
 
     let initial_persona = resolution.persona.clone();
@@ -571,6 +577,7 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         show_thinking,
         theme,
         progress_enabled,
+        show_tool_results,
         stdin_is_tty(),
     ));
 
@@ -719,7 +726,9 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
     // `[permissions] deny` is therefore the *only* thing that can stop a tool
     // call here, which is precisely why a deny outranks auto-approval.
     let auto_approve = Arc::new(AtomicBool::new(true));
-    let permissions = Arc::new(crate::permissions::Ruleset::from_config(&config.permissions));
+    let permissions = Arc::new(crate::permissions::Ruleset::from_config(
+        &config.permissions,
+    ));
     for warning in permissions.warnings() {
         tracing::warn!(target: "permissions", "{warning}");
     }
@@ -850,8 +859,10 @@ pub async fn run_headless(mut config: Config, source: ConfigSource, args: RunArg
     };
 
     let show_thinking = config.ui.show_thinking_mode();
+    let show_tool_results = config.ui.show_tool_results;
     let display_task = tokio::spawn(async move {
         let mut display_state = DisplayState::new(stdin_is_tty());
+        display_state.show_tool_results = show_tool_results;
         while let Some(ev) = event_rx.recv().await {
             display_event(ev, show_thinking, &mut display_state);
         }
@@ -981,7 +992,12 @@ impl PromptState {
 /// stdout as the model produces it (the `Text` deltas, plain), and nothing
 /// else prints (the one-shot's output stays pipe-friendly: the answer alone,
 /// errors to stderr).
-pub async fn run_oneshot(mut config: Config, source: ConfigSource, args: RunArgs, prompt: String) -> Result<()> {
+pub async fn run_oneshot(
+    mut config: Config,
+    source: ConfigSource,
+    args: RunArgs,
+    prompt: String,
+) -> Result<()> {
     config.apply_overrides(args.provider.as_deref(), args.model.as_deref());
 
     let id = AgentId::new();
@@ -1037,7 +1053,9 @@ pub async fn run_oneshot(mut config: Config, source: ConfigSource, args: RunArgs
     let history = Agent::build_initial_history(&resolution.persona);
     // No console answers an approval mid-shot: the headless rule applies.
     let auto_approve = Arc::new(AtomicBool::new(true));
-    let permissions = Arc::new(crate::permissions::Ruleset::from_config(&config.permissions));
+    let permissions = Arc::new(crate::permissions::Ruleset::from_config(
+        &config.permissions,
+    ));
     for warning in permissions.warnings() {
         tracing::warn!(target: "permissions", "{warning}");
     }
@@ -1066,9 +1084,7 @@ pub async fn run_oneshot(mut config: Config, source: ConfigSource, args: RunArgs
     let (input_tx, input_rx) = mpsc::channel::<AgentInput>(8);
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(64);
 
-    let mut agent_handle = tokio::spawn({
-        async move { agent.run(input_rx, event_tx).await }
-    });
+    let mut agent_handle = tokio::spawn(async move { agent.run(input_rx, event_tx).await });
 
     // The one prompt, then the input channel closes: the agent processes it
     // and its loop ends (exit_when_idle), the task finishes, the answer has
@@ -1199,7 +1215,6 @@ struct PromptRenderer {
     peer_rows: u16,
 }
 
-
 impl PromptRenderer {
     fn new() -> Self {
         Self {
@@ -1217,7 +1232,10 @@ impl PromptRenderer {
     }
 
     fn terminal_width() -> usize {
-        terminal::size().map(|(w, _)| w as usize).unwrap_or(80).max(1)
+        terminal::size()
+            .map(|(w, _)| w as usize)
+            .unwrap_or(80)
+            .max(1)
     }
 
     /// Move to the top-left of the previously rendered block and clear it
@@ -1477,9 +1495,7 @@ fn click_hits_clock_block(clock_top: u16, clock_rows: u16, row: u16) -> bool {
     // The status row is the block's LAST row now (FR-46a's face order): the
     // hit range excludes it and covers the rows above it — the reasoning
     // rows and the elision marker the toggle serves.
-    let bottom = clock_top
-        .saturating_add(clock_rows)
-        .saturating_sub(1);
+    let bottom = clock_top.saturating_add(clock_rows).saturating_sub(1);
     clock_rows > 1 && row >= clock_top && row < bottom
 }
 
@@ -1778,9 +1794,7 @@ struct ZoneBeatPlan {
 fn zone_beat_plan(span_top: u16, block_n: u16, peers_n: u16) -> ZoneBeatPlan {
     ZoneBeatPlan {
         block_home: span_top.saturating_sub(block_n),
-        peers_top: span_top
-            .saturating_sub(block_n)
-            .saturating_sub(peers_n),
+        peers_top: span_top.saturating_sub(block_n).saturating_sub(peers_n),
         sweep_to: span_top,
     }
 }
@@ -1833,14 +1847,10 @@ fn zone_beat(block_rows: &[String]) {
         return;
     }
     let block_n = block_rows.len() as u16;
-    let peers = live_peer_lines(
-        &session.registry_dir,
-        &session.self_id,
-        width,
-    )
-    .into_iter()
-    .map(|l| session.theme.err(Role::Peer, &l).into_owned())
-    .collect::<Vec<_>>();
+    let peers = live_peer_lines(&session.registry_dir, &session.self_id, width)
+        .into_iter()
+        .map(|l| session.theme.err(Role::Peer, &l).into_owned())
+        .collect::<Vec<_>>();
     let peers_n = peers.len() as u16;
     // The composition reads bottom-up from the span: the clock block (the run
     // display) on the rows above the span, the peers' band above the block —
@@ -2402,8 +2412,7 @@ fn live_children_states(
     registry_dir: &Path,
     self_id: &crate::id::AgentId,
 ) -> Vec<(String, std::time::Duration, Option<String>)> {
-    let mut children = crate::ipc::registry::children_of(registry_dir, self_id)
-        .unwrap_or_default();
+    let mut children = crate::ipc::registry::children_of(registry_dir, self_id).unwrap_or_default();
     // The rows stack from the bottom line upward with the newest nearest the
     // bottom (AS-26), and the painter walks downward over this list, so it is
     // the spawn order itself: the registry's read order is the filesystem's,
@@ -2597,6 +2606,7 @@ async fn run_display_task(
     show_thinking: ShowThinkingMode,
     theme: Theme,
     progress_enabled: bool,
+    show_tool_results: bool,
     has_tty: bool,
 ) {
     let mut display_state = DisplayState::new(has_tty);
@@ -2606,6 +2616,10 @@ async fn run_display_task(
     // With the indicator on, reasoning is shown live in its block rather
     // than streamed into the scrollback.
     display_state.capture_thinking = progress_enabled && show_thinking != ShowThinkingMode::Hidden;
+    // The `[tool-call]`/`[tool-result]` lines print only while the key keeps
+    // them on; when it is off the whole turn reduces to the streamed text and
+    // the completion mark.
+    display_state.show_tool_results = show_tool_results;
     display_state.theme = theme;
     // Where the cursor stands after the last displayed event; the indicator
     // may only paint from column 0 of a fresh row.
@@ -2689,6 +2703,7 @@ async fn run_display_task(
                     &ev,
                     show_thinking,
                     display_state.capture_thinking,
+                    display_state.show_tool_results,
                     at_line_start,
                 );
                 display_event(ev, show_thinking, &mut display_state);
@@ -2778,7 +2793,11 @@ enum KeyAction {
 
 /// Navigate history up and return the history entries for `InputState`.
 /// This function needs the history slice, which we read from `ReplState`.
-fn handle_key(key_event: KeyEvent, input: &mut InputState, history: &[String]) -> Option<KeyAction> {
+fn handle_key(
+    key_event: KeyEvent,
+    input: &mut InputState,
+    history: &[String],
+) -> Option<KeyAction> {
     // Ignore key release events (Windows sends both press and release)
     if key_event.kind == crossterm::event::KeyEventKind::Release {
         return None;
@@ -3033,9 +3052,7 @@ async fn cursor_position_via_pump(
         return Err(std::io::Error::other("input pump is gone"));
     };
     let (reply_tx, reply_rx) = oneshot::channel();
-    let query = CursorQuery {
-        reply: reply_tx,
-    };
+    let query = CursorQuery { reply: reply_tx };
     if query_tx.send(query).is_err() {
         return Err(std::io::Error::other("input pump is gone"));
     }
@@ -3112,15 +3129,14 @@ async fn run_input_loop_raw(
     // being painted onto the prompt's own bottom row by the cursor-relative
     // block. Low frequency: the loop only has to notice, never to race.
     const ZONE_RECONCILE_MS: u64 = 150;
-    let mut zone_timer = tokio::time::interval(tokio::time::Duration::from_millis(
-        ZONE_RECONCILE_MS,
-    ));
+    let mut zone_timer =
+        tokio::time::interval(tokio::time::Duration::from_millis(ZONE_RECONCILE_MS));
     zone_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     zone_timer.tick().await; // consume the immediate first tick
-    // The wheel scrollback: the terminal has to report mouse events for the
-    // whole session, not only while a turn runs, so the input loop owns
-    // reporting here (the indicator's own switch is disabled in that case) and
-    // `RawModeGuard::drop` turns it off exactly once, when raw mode ends.
+                             // The wheel scrollback: the terminal has to report mouse events for the
+                             // whole session, not only while a turn runs, so the input loop owns
+                             // reporting here (the indicator's own switch is disabled in that case) and
+                             // `RawModeGuard::drop` turns it off exactly once, when raw mode ends.
     let mut overlay = ScrollOverlay::new();
     if state.scroll {
         let _ = std::io::stderr().execute(crossterm::event::EnableMouseCapture);
@@ -4405,9 +4421,7 @@ fn handle_permissions_command(state: &Arc<ReplState>, raw_mode: bool) {
             out.push_str(&format!("    {}\n", rule.raw));
         }
         out.push_str(&format!("  default_mode: {}\n", rules.default_mode()));
-        out.push_str(
-            "  a deny outranks an allow, the default mode, and /auto on\n",
-        );
+        out.push_str("  a deny outranks an allow, the default mode, and /auto on\n");
     }
     for warning in rules.warnings() {
         out.push_str(&format!("  warning: {warning}\n"));
@@ -4443,6 +4457,10 @@ struct DisplayState {
     /// When true, `thinking` text is not printed inline: the progress
     /// indicator shows it live under the spinner instead.
     capture_thinking: bool,
+    /// When false, the `[tool-call]` and `[tool-result]` lines are not
+    /// printed at all (`[ui] show_tool_results`); the conversation log and
+    /// the model still see every call and result in full.
+    show_tool_results: bool,
     /// Colour scheme. Styling is applied at the print sites below, always
     /// *after* the line has been measured and cut, so the column maths in
     /// `crate::editor` never sees an escape sequence.
@@ -4458,6 +4476,7 @@ impl DisplayState {
             raw_mode,
             compact_output: false,
             capture_thinking: false,
+            show_tool_results: true,
             theme: Theme::plain(),
         }
     }
@@ -4637,6 +4656,7 @@ fn event_ends_at_line_start(
     ev: &AgentEvent,
     mode: ShowThinkingMode,
     capture_thinking: bool,
+    show_tool_results: bool,
     prev: bool,
 ) -> bool {
     match ev {
@@ -4655,6 +4675,8 @@ fn event_ends_at_line_start(
             ShowThinkingMode::Hidden => prev,
             _ => false,
         },
+        // Suppressed by the key prints nothing, so the previous state stands.
+        AgentEvent::ToolCall { .. } | AgentEvent::ToolResult { .. } if !show_tool_results => prev,
         AgentEvent::ToolCall { .. }
         | AgentEvent::ToolResult { .. }
         | AgentEvent::Info { .. }
@@ -5217,16 +5239,20 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
                 raw_eprint(rm, &state.theme.err(Role::Thinking, &text));
             }
         },
-        AgentEvent::ToolCall { name, args } => {
+        // `[ui] show_tool_results = false`: neither line is printed at all —
+        // the empty arms keep the match exhaustive.
+        AgentEvent::ToolCall { name, args } if state.show_tool_results => {
             let line = tool_call_line(state.compact_output, &name, &args);
             let styled = style_tool_call_line(&state.theme, &line);
             state.section_header_styled(&styled);
         }
-        AgentEvent::ToolResult { name, ok, output } => {
+        AgentEvent::ToolCall { .. } => {}
+        AgentEvent::ToolResult { name, ok, output } if state.show_tool_results => {
             let mark = if ok { "ok" } else { "ERR" };
             let line = tool_result_line(state.compact_output, mark, &name, &output);
             raw_eprintln(rm, &style_rows(&state.theme, Role::ToolOutput, &line));
         }
+        AgentEvent::ToolResult { .. } => {}
         AgentEvent::Done => {
             state.reset();
             raw_println(rm, "");
@@ -5235,7 +5261,10 @@ fn display_event(ev: AgentEvent, show_thinking: ShowThinkingMode, state: &mut Di
             state.reset();
             let line = format!("[error] {message}");
             // The separating newline stays outside the sequence.
-            raw_eprintln(rm, &format!("\n{}", style_rows(&state.theme, Role::Failure, &line)));
+            raw_eprintln(
+                rm,
+                &format!("\n{}", style_rows(&state.theme, Role::Failure, &line)),
+            );
         }
         AgentEvent::Info { message } => {
             let line = format!("[info] {message}");
@@ -5477,7 +5506,7 @@ async fn render_prompt(
     state: &Arc<ReplState>,
     input_state: &InputState,
 ) {
-render_prompt_with_run(
+    render_prompt_with_run(
         overlay,
         renderer,
         stdout,
@@ -5541,9 +5570,7 @@ async fn render_prompt_with_run(
                 suggestion: sug.as_deref(),
                 peer_lines: peers.clone(),
                 run_row,
-                text: overlay
-                    .view_active()
-                    .then(|| SCROLLED_MARK.to_string()),
+                text: overlay.view_active().then(|| SCROLLED_MARK.to_string()),
             },
         );
     } else {
@@ -5571,7 +5598,7 @@ async fn render_prompt_with_run(
         // the elapsed row above the span (FR-37a/FR-40); `finish` still records
         // the outcome row, so nothing is lost from the transcript.
         lock_indicator(&state.indicator).set_prompt_owned(true);
-renderer.render(
+        renderer.render(
             stdout,
             &state.theme,
             role,
@@ -5610,7 +5637,7 @@ async fn draw_scrolled(
     } else {
         (Role::PromptSymbol, PROMPT)
     };
-        render_prompt_with_run(
+    render_prompt_with_run(
         overlay,
         renderer,
         stdout,
@@ -5640,20 +5667,32 @@ async fn handle_repl_command(
             raw_println(raw_mode, "  /send [--report|--ask] <peer> <text>");
             raw_println(raw_mode, "                              Send to a peer (id or name): a one-shot prompt (default),");
             raw_println(raw_mode, "                              a report added to its conversation with no turn, or an ask");
-            raw_println(raw_mode, "                              that waits for the answer (up to 120s).");
-            raw_println(raw_mode, "  /tools                      List tools enabled for this agent.");
+            raw_println(
+                raw_mode,
+                "                              that waits for the answer (up to 120s).",
+            );
+            raw_println(
+                raw_mode,
+                "  /tools                      List tools enabled for this agent.",
+            );
             raw_println(raw_mode, "  /persona                    Show this agent's persona (role / skills / source path).");
             raw_println(raw_mode, "  /reload-persona             Re-resolve and reload the persona; system prompt is replaced, history kept.");
             raw_println(raw_mode, "  /spawn [name] [provider]    Create a detached agent-cli peer that outlives this session.");
             raw_println(raw_mode, "  /stop <peer>                Stop a running peer (id or name); detached agents too.");
-            raw_println(raw_mode, "  /peer <id_or_name>          Show a peer's persona summary.");
+            raw_println(
+                raw_mode,
+                "  /peer <id_or_name>          Show a peer's persona summary.",
+            );
             raw_println(raw_mode, "  /history [n]                Show last n (default 20) user inputs from this session.");
             raw_println(raw_mode, "  /clear, /reset              Clear conversation history (persona / system prompt are kept).");
             raw_println(raw_mode, "  /cancel                     Request cancel of the in-flight AI response or tool call.");
             raw_println(raw_mode, "  /auto [on|off|status]       Toggle tool-approval skip. No arg / 'status' shows current value.");
             raw_println(raw_mode, "  /permissions                Show the [permissions] rules in force and where they came from.");
             raw_println(raw_mode, "  /commands                   List custom slash commands from .agent-cli/commands.");
-            raw_println(raw_mode, "  /reload-commands            Re-scan the custom commands directory.");
+            raw_println(
+                raw_mode,
+                "  /reload-commands            Re-scan the custom commands directory.",
+            );
             raw_println(raw_mode, "  /help                       Show this help.");
             raw_println(raw_mode, "  /quit, /exit                Terminate (full aliases). Ctrl+D, Ctrl+C, SIGTERM also exit cleanly.");
             raw_println(raw_mode, "");
@@ -5661,30 +5700,57 @@ async fn handle_repl_command(
             raw_println(raw_mode, "  !<command>                  Run a shell command right away (no approval); its output");
             raw_println(raw_mode, "                              is shown and handed to the model as context. Esc stops it.");
             raw_println(raw_mode, "  Tab                         Complete the slash command being typed, from the list");
-            raw_println(raw_mode, "                              shown on the row above the prompt.");
+            raw_println(
+                raw_mode,
+                "                              shown on the row above the prompt.",
+            );
             raw_println(raw_mode, "  Mouse wheel                 Scroll back through this session's log with the prompt");
             raw_println(raw_mode, "                              line pinned; the screen's bottom line reads inverted");
             raw_println(raw_mode, "                              \"Message below\" while you are scrolled — no spinner, no");
             raw_println(raw_mode, "                              elapsed time, at rest or mid-turn — and Esc or scrolling");
             raw_println(raw_mode, "                              to the bottom always returns to the live view with the");
-            raw_println(raw_mode, "                              prompt re-displayed.");
+            raw_println(
+                raw_mode,
+                "                              prompt re-displayed.",
+            );
             raw_println(raw_mode, "  Mouse drag                  Select a range of the log; releasing copies it to the");
             raw_println(raw_mode, "                              clipboard as plain text. Shift-drag selects with the");
-            raw_println(raw_mode, "                              terminal instead ([ui] mouse_select, copy_command).");
+            raw_println(
+                raw_mode,
+                "                              terminal instead ([ui] mouse_select, copy_command).",
+            );
             raw_println(raw_mode, "  Esc                         Stop a running turn or shell command; at the tool-approval");
             raw_println(raw_mode, "                              prompt, deny the pending tool. After the stop, the line");
-            raw_println(raw_mode, "                              reads [info] cancelled by user and the prompt is");
+            raw_println(
+                raw_mode,
+                "                              reads [info] cancelled by user and the prompt is",
+            );
             raw_println(raw_mode, "                              re-displayed.");
-            raw_println(raw_mode, "  Subagents                   Each running subagent shows its name and operating");
+            raw_println(
+                raw_mode,
+                "  Subagents                   Each running subagent shows its name and operating",
+            );
             raw_println(raw_mode, "                              time stacked above the clock block; the row goes when");
             raw_println(raw_mode, "                              the subagent ends, and the clock takes the bottom line back");
             raw_println(raw_mode, "                              while the agent runs, the prompt when you can type again.");
             raw_println(raw_mode, "");
             raw_println(raw_mode, "Tool approval can be skipped via:");
-            raw_println(raw_mode, "  - REPL command  : /auto on  (toggleable at runtime)");
-            raw_println(raw_mode, "  - CLI flag      : agent-cli run --auto-approve-tools");
-            raw_println(raw_mode, "  - Config file   : [runtime] auto_approve_tools = true");
-            raw_println(raw_mode, "  None of these override a [permissions] deny rule: a deny is refused");
+            raw_println(
+                raw_mode,
+                "  - REPL command  : /auto on  (toggleable at runtime)",
+            );
+            raw_println(
+                raw_mode,
+                "  - CLI flag      : agent-cli run --auto-approve-tools",
+            );
+            raw_println(
+                raw_mode,
+                "  - Config file   : [runtime] auto_approve_tools = true",
+            );
+            raw_println(
+                raw_mode,
+                "  None of these override a [permissions] deny rule: a deny is refused",
+            );
             raw_println(raw_mode, "  even with /auto on. See /permissions.");
             // Custom commands section (FR-12).
             let cmds = state.commands.read().await;
@@ -5777,7 +5843,10 @@ async fn handle_repl_command(
             let count = new_cmds.len();
             let mut cmds = state.commands.write().await;
             *cmds = new_cmds;
-            raw_println(raw_mode, &format!("[reload-commands] {} command(s) loaded", count));
+            raw_println(
+                raw_mode,
+                &format!("[reload-commands] {} command(s) loaded", count),
+            );
         }
         _ => {
             // FR-05/FR-06: built-in commands take precedence; otherwise look up
@@ -5819,10 +5888,7 @@ async fn handle_repl_command(
                     let cc = &prefix_matches[0];
                     let resolved_name = cc.name.clone();
                     let prompt = custom_commands::expand_template(&cc.content, arg);
-                    raw_println(
-                        raw_mode,
-                        &format!("[auto] /{} → /{}", cmd, resolved_name),
-                    );
+                    raw_println(raw_mode, &format!("[auto] /{} → /{}", cmd, resolved_name));
                     if input_tx.send(AgentInput::UserPrompt(prompt)).await.is_err() {
                         raw_eprintln(raw_mode, "[error] failed to send custom command prompt");
                         return CommandResult::Continue;
@@ -5836,16 +5902,10 @@ async fn handle_repl_command(
                     return CommandResult::SubmittedPrompt;
                 }
                 _ => {
-                    raw_println(
-                        raw_mode,
-                        &format!("ambiguous command: /{cmd} matches:"),
-                    );
+                    raw_println(raw_mode, &format!("ambiguous command: /{cmd} matches:"));
                     for cc in &prefix_matches {
                         let first_line = cc.content.lines().next().unwrap_or("");
-                        raw_println(
-                            raw_mode,
-                            &format!("  /{}  {}", cc.name, first_line),
-                        );
+                        raw_println(raw_mode, &format!("  /{}  {}", cc.name, first_line));
                     }
                 }
             }
@@ -5884,7 +5944,14 @@ async fn spawn_peer(arg: &str, state: &Arc<ReplState>, raw_mode: bool) {
     // The child's chain is this session's chain plus this session itself.
     let mut chain = state.ancestors.clone();
     chain.push(state.id.clone());
-    match crate::commands::spawn_detached(state.config_source.chain(), &state.registry_dir, &run_args, &chain).await {
+    match crate::commands::spawn_detached(
+        state.config_source.chain(),
+        &state.registry_dir,
+        &run_args,
+        &chain,
+    )
+    .await
+    {
         Ok(entry) => raw_println(
             raw_mode,
             &format!(
@@ -5923,14 +5990,17 @@ fn list_peers(registry_dir: &Path, raw_mode: bool) {
                     .as_ref()
                     .map(|p| p.role.clone())
                     .unwrap_or_default();
-                raw_println(raw_mode, &format!(
-                    "{}\t{}\t{}\t{}\t{}",
-                    e.id,
-                    e.name.clone().unwrap_or_else(|| "-".into()),
-                    e.provider,
-                    e.model,
-                    role
-                ));
+                raw_println(
+                    raw_mode,
+                    &format!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        e.id,
+                        e.name.clone().unwrap_or_else(|| "-".into()),
+                        e.provider,
+                        e.model,
+                        role
+                    ),
+                );
             }
         }
         Err(e) => raw_eprintln(raw_mode, &format!("[error] {e}")),
@@ -5980,7 +6050,11 @@ fn parse_send_args(arg: &str) -> std::result::Result<(Delivery, String, String),
     if peer.is_empty() || text.is_empty() {
         return Err(USAGE.to_string());
     }
-    Ok((delivery.unwrap_or(Delivery::Prompt), peer.to_string(), text.to_string()))
+    Ok((
+        delivery.unwrap_or(Delivery::Prompt),
+        peer.to_string(),
+        text.to_string(),
+    ))
 }
 
 /// Resolve an option token that carries its dashes (`--report` → Report; an
@@ -6019,10 +6093,8 @@ async fn send_to_peer(arg: &str, registry_dir: &Path, raw_mode: bool) -> Command
                 CommandResult::Continue
             }
             Delivery::Report => {
-                match crate::tools::send_to::deliver_report(
-                    &p.id, registry_dir, &peer_name, &text,
-                )
-                .await
+                match crate::tools::send_to::deliver_report(&p.id, registry_dir, &peer_name, &text)
+                    .await
                 {
                     Ok(outcome) => raw_println(raw_mode, &outcome),
                     Err(why) => raw_eprintln(raw_mode, &format!("[error] {why}")),
@@ -6034,7 +6106,10 @@ async fn send_to_peer(arg: &str, registry_dir: &Path, raw_mode: bool) -> Command
             // when it arrives, so a slow peer cannot hold the prompt hostage.
             Delivery::Ask => {
                 let ask = crate::tools::send_to::PeerAsk::spawn(
-                    &p.id, registry_dir.to_path_buf(), peer_name, text,
+                    &p.id,
+                    registry_dir.to_path_buf(),
+                    peer_name,
+                    text,
                 );
                 raw_println(
                     raw_mode,
@@ -6051,13 +6126,22 @@ async fn send_to_peer(arg: &str, registry_dir: &Path, raw_mode: bool) -> Command
 }
 
 fn print_persona(persona: &Persona, raw_mode: bool) {
-    raw_println(raw_mode, &format!(
-        "name        : {}",
-        persona.frontmatter.name.as_deref().unwrap_or("-")
-    ));
-    raw_println(raw_mode, &format!("role        : {}", persona.frontmatter.role));
+    raw_println(
+        raw_mode,
+        &format!(
+            "name        : {}",
+            persona.frontmatter.name.as_deref().unwrap_or("-")
+        ),
+    );
+    raw_println(
+        raw_mode,
+        &format!("role        : {}", persona.frontmatter.role),
+    );
     if !persona.frontmatter.skills.is_empty() {
-        raw_println(raw_mode, &format!("skills      : {}", persona.frontmatter.skills.join(", ")));
+        raw_println(
+            raw_mode,
+            &format!("skills      : {}", persona.frontmatter.skills.join(", ")),
+        );
     }
     if let Some(d) = &persona.frontmatter.description {
         raw_println(raw_mode, &format!("description : {d}"));
@@ -6078,7 +6162,11 @@ fn print_persona(persona: &Persona, raw_mode: bool) {
     }
 }
 
-async fn reload_persona(state: &Arc<ReplState>, input_tx: &mpsc::Sender<AgentInput>, raw_mode: bool) {
+async fn reload_persona(
+    state: &Arc<ReplState>,
+    input_tx: &mpsc::Sender<AgentInput>,
+    raw_mode: bool,
+) {
     let resolution = match persona::resolve(
         state.cli_persona_path.as_deref(),
         &state.persona_file_setting,
@@ -6102,13 +6190,16 @@ async fn reload_persona(state: &Arc<ReplState>, input_tx: &mpsc::Sender<AgentInp
         return;
     }
     let p = state.persona.read().await;
-    raw_println(raw_mode, &format!(
-        "persona reloaded from {}",
-        match &p.source_path {
-            Some(path) => path.display().to_string(),
-            None => "(builtin default)".to_string(),
-        }
-    ));
+    raw_println(
+        raw_mode,
+        &format!(
+            "persona reloaded from {}",
+            match &p.source_path {
+                Some(path) => path.display().to_string(),
+                None => "(builtin default)".to_string(),
+            }
+        ),
+    );
 }
 
 fn peer_summary(arg: &str, registry_dir: &Path, raw_mode: bool) {
@@ -6177,6 +6268,7 @@ mod tests {
             ShowThinkingMode::Hidden,
             Theme::plain(),
             false,
+            true,
             false,
         ));
         // Twelve terminals, no Pending consumer ever armed.
@@ -6232,7 +6324,11 @@ mod tests {
 
     #[test]
     fn input_state_navigate_up_twice_then_enter_submits_correct_entry() {
-        let history = vec!["first".to_string(), "second".to_string(), "third".to_string()];
+        let history = vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ];
         let mut s = InputState::new();
         s.line = String::new();
         s.navigate_up(&history);
@@ -6448,10 +6544,7 @@ mod tests {
             .await;
         });
 
-        writer
-            .write_all(b"!echo from-the-shell\n")
-            .await
-            .unwrap();
+        writer.write_all(b"!echo from-the-shell\n").await.unwrap();
         let msg = tokio::time::timeout(Duration::from_secs(10), input_rx.recv())
             .await
             .expect("the command should finish")
@@ -7158,7 +7251,10 @@ mod tests {
         // rows above it are empty padding — and index 8 is screen row 8.
         let rows = body_slice_at(80, 10, 0);
         assert_eq!(rows.len(), 10);
-        assert!(rows[..8].iter().all(|r| r.text.is_empty()), "padded at the top");
+        assert!(
+            rows[..8].iter().all(|r| r.text.is_empty()),
+            "padded at the top"
+        );
         assert_eq!(rows[8].text, "first");
         assert_eq!(rows[9].text, "second");
 
@@ -7323,7 +7419,11 @@ mod tests {
     #[test]
     fn spawned_subagent_shows_its_line_with_operating_time() {
         let rows = peer_status_rows(
-            &[("worker".to_string(), std::time::Duration::from_secs(65), None)],
+            &[(
+                "worker".to_string(),
+                std::time::Duration::from_secs(65),
+                None,
+            )],
             80,
         );
         assert_eq!(rows.len(), 1, "one live child, one row: {rows:?}");
@@ -7371,20 +7471,30 @@ mod tests {
         // above the subagent rows) fails the order asserts.
         let plan = zone_beat_plan(23, 2, 1);
         // The clock block sits directly above the span
-        assert_eq!(plan.block_home, 21, "the block's home is span_top − block_n");
+        assert_eq!(
+            plan.block_home, 21,
+            "the block's home is span_top − block_n"
+        );
         // The band above the block; its last row is the block's top neighbour
         assert_eq!(plan.peers_top, 20, "the band is above the block");
         assert_eq!(
-            plan.peers_top + 1, plan.block_home,
+            plan.peers_top + 1,
+            plan.block_home,
             "the band's bottom row is the block's top neighbour"
         );
         // The sweep never enters the span (D-53) and covers all the region
         // above
-        assert_eq!(plan.sweep_to, 23, "the sweep erases every row above the span");
+        assert_eq!(
+            plan.sweep_to, 23,
+            "the sweep erases every row above the span"
+        );
         // No peers: the block still sits directly above the span
         let bare = zone_beat_plan(23, 1, 0);
         assert_eq!(bare.block_home, 22);
-        assert_eq!(bare.peers_top, 22, "the band's plan collapses into the block");
+        assert_eq!(
+            bare.peers_top, 22,
+            "the band's plan collapses into the block"
+        );
     }
 
     #[test]
@@ -7394,7 +7504,10 @@ mod tests {
         // leaves the span's rows out of the beat's sweep (and the plan's
         // saturating arithmetic keeps every row in range).
         let plan = zone_beat_plan(3, 3, 0);
-        assert_eq!(plan.block_home, 0, "the block fills every row above the span");
+        assert_eq!(
+            plan.block_home, 0,
+            "the block fills every row above the span"
+        );
         assert_eq!(plan.sweep_to, 3, "the span's rows are still excluded");
         // Overflowing the screen clamps at row 0 — nothing is negative, no
         // panic, and the span's exclusion is unchanged.
@@ -7487,7 +7600,10 @@ mod tests {
             bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 0, false);
         let pending_both =
             bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 2, false);
-        assert_eq!(pending_clock, 2, "the prompt span and its elapsed row alone");
+        assert_eq!(
+            pending_clock, 2,
+            "the prompt span and its elapsed row alone"
+        );
         assert_eq!(pending_both, 4, "block + two peer rows: additive");
         let prompt = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 2, false);
         let bare = bottom_block_rows(&PromptState::Ready, &InputState::new(), 80, 0, false);
@@ -7504,11 +7620,19 @@ mod tests {
         let bottom = bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 0, false);
         assert_eq!(bottom, 2, "the prompt span plus the elapsed row above it");
         let body = crate::scroll::body_rows(height, bottom + 2);
-        assert_eq!(body, 20, "two peer rows cost two body rows, not the block's");
+        assert_eq!(
+            body, 20,
+            "two peer rows cost two body rows, not the block's"
+        );
         // The overlay bottom block and the live-screen budget agree.
         let peers: Vec<String> = vec!["peer alpha · 1.0s".to_string()];
-        let budget =
-            bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, peers.len(), false);
+        let budget = bottom_block_rows(
+            &PromptState::Pending,
+            &InputState::new(),
+            80,
+            peers.len(),
+            false,
+        );
         assert_eq!(budget, bottom + peers.len() as u16);
     }
 
@@ -7542,11 +7666,9 @@ mod tests {
         // What the redraw paints: the approval prompt while awaiting, the
         // input prompt otherwise (the same pair the shipped redraw used).
         assert_eq!(
-            esc_return_redraw(&PromptState::AwaitingApproval(
-                oneshot::channel::<bool>().0
-            ))
-            .unwrap()
-            .1,
+            esc_return_redraw(&PromptState::AwaitingApproval(oneshot::channel::<bool>().0))
+                .unwrap()
+                .1,
             APPROVAL_PROMPT
         );
         assert_eq!(esc_return_redraw(&PromptState::Ready).unwrap().1, PROMPT);
@@ -7582,7 +7704,11 @@ mod tests {
         // span, so the span still ends the screen and the elapsed row is its
         // top neighbour (FR-40, AS-26's bottom-up order).
         let running = scrolled_block_plan(prompt_rows, 2, true, false);
-        assert_eq!(running.run_row, Some(2), "the elapsed row sits above the span");
+        assert_eq!(
+            running.run_row,
+            Some(2),
+            "the elapsed row sits above the span"
+        );
         assert_eq!(running.run_row.unwrap() + 1, running.prompt_top);
         assert_eq!(running.rows, 4, "two peers + the elapsed row + the span");
     }
@@ -7690,10 +7816,7 @@ mod tests {
         // the span, the elapsed row, the marker and the peers.
         let pending_moved =
             bottom_block_rows(&PromptState::Pending, &InputState::new(), 80, 0, view_moved);
-        assert_eq!(
-            pending_moved, 3,
-            "the span + the elapsed row + the marker"
-        );
+        assert_eq!(pending_moved, 3, "the span + the elapsed row + the marker");
     }
 
     #[test]
@@ -7748,11 +7871,9 @@ mod tests {
     #[test]
     fn a_failed_copy_write_still_reports_and_an_empty_gesture_stays_silent() {
         // An erroring writer: the outcome must be the Failed route, reported.
-        let outcome = crate::clip::copy(
-            "some text",
-            "",
-            |_seq| Err(std::io::Error::other("write refused")),
-        );
+        let outcome = crate::clip::copy("some text", "", |_seq| {
+            Err(std::io::Error::other("write refused"))
+        });
         assert!(
             matches!(outcome, crate::clip::Outcome::Failed { .. }),
             "a failed write is a Failed outcome: {outcome:?}"
@@ -7879,9 +8000,10 @@ mod tests {
         let _max = crate::scroll::with(|t| crate::scroll::max_offset(t, 80, body)).unwrap();
         overlay.wheel(true, 80, body);
         assert!(
-            overlay.view.offset() <= crate::scroll::with(|t| crate::scroll::total_rows(t, 80))
-                .unwrap()
-                .saturating_sub(body),
+            overlay.view.offset()
+                <= crate::scroll::with(|t| crate::scroll::total_rows(t, 80))
+                    .unwrap()
+                    .saturating_sub(body),
             "the wheel cannot push content under the pinned clock"
         );
         crate::scroll::uninstall();
@@ -7903,11 +8025,15 @@ mod tests {
         ind.suspend();
         ind.finish(Mark::Ok);
         let texts: Vec<String> = crate::scroll::with(|t| {
-            t.lines().map(|l| crate::theme::strip_sgr(l).to_string()).collect()
+            t.lines()
+                .map(|l| crate::theme::strip_sgr(l).to_string())
+                .collect()
         })
         .unwrap();
         assert!(
-            texts.iter().any(|t| t.contains("\u{2714}") && t.contains("5.0s")),
+            texts
+                .iter()
+                .any(|t| t.contains("\u{2714}") && t.contains("5.0s")),
             "the outcome row must be recorded even while suspended: {texts:?}"
         );
         assert!(
@@ -8043,14 +8169,17 @@ mod tests {
         // line is never reached.
         let sel = overlay.take_selection();
         let copied_view = overlay.view_active();
-        assert!(!copied_view, "a click's release repaints nothing: gate closed");
+        assert!(
+            !copied_view,
+            "a click's release repaints nothing: gate closed"
+        );
         let sel = sel.expect("the click's selection is taken at release");
         assert!(sel.is_empty(), "press == cursor on a bare click");
-        assert!(crate::select::selected_text(
-            &body_slice_at(80, body, overlay.view.offset()),
-            &sel,
-        )
-        .is_empty(), "a bare click copies nothing");
+        assert!(
+            crate::select::selected_text(&body_slice_at(80, body, overlay.view.offset()), &sel,)
+                .is_empty(),
+            "a bare click copies nothing"
+        );
 
         // After the gesture the overlay is exactly as it was: no active
         // screen, no moved view, no selection, no repaint debt.
@@ -8134,37 +8263,130 @@ mod tests {
         // Whole-line events always leave the cursor at column 0.
         for ev in [
             AgentEvent::Done,
-            AgentEvent::Error { message: "e".into() },
-            AgentEvent::Info { message: "i".into() },
-            AgentEvent::ToolResult { name: "bash".into(), ok: true, output: "o".into() },
-            AgentEvent::ToolCall { name: "bash".into(), args: serde_json::json!({}) },
+            AgentEvent::Error {
+                message: "e".into(),
+            },
+            AgentEvent::Info {
+                message: "i".into(),
+            },
+            AgentEvent::ToolResult {
+                name: "bash".into(),
+                ok: true,
+                output: "o".into(),
+            },
+            AgentEvent::ToolCall {
+                name: "bash".into(),
+                args: serde_json::json!({}),
+            },
         ] {
-            assert!(event_ends_at_line_start(&ev, mode, false, false), "{ev:?}");
+            assert!(
+                event_ends_at_line_start(&ev, mode, false, true, false),
+                "{ev:?}"
+            );
         }
         // Streamed text only when the delta ends with a newline.
-        let mid = AgentEvent::Text { delta: "partial".into() };
-        assert!(!event_ends_at_line_start(&mid, mode, false, true));
-        let ended = AgentEvent::Text { delta: "line\n".into() };
-        assert!(event_ends_at_line_start(&ended, mode, false, false));
+        let mid = AgentEvent::Text {
+            delta: "partial".into(),
+        };
+        assert!(!event_ends_at_line_start(&mid, mode, false, true, true));
+        let ended = AgentEvent::Text {
+            delta: "line\n".into(),
+        };
+        assert!(event_ends_at_line_start(&ended, mode, false, true, false));
         // An empty delta prints nothing, so the previous state stands.
-        let empty = AgentEvent::Text { delta: String::new() };
-        assert!(event_ends_at_line_start(&empty, mode, false, true));
-        assert!(!event_ends_at_line_start(&empty, mode, false, false));
+        let empty = AgentEvent::Text {
+            delta: String::new(),
+        };
+        assert!(event_ends_at_line_start(&empty, mode, false, true, true));
+        assert!(!event_ends_at_line_start(&empty, mode, false, true, false));
+        // With the tool lines suppressed, ToolCall/ToolResult print nothing:
+        // the cursor state the event leaves is whatever preceded it.
+        let call = AgentEvent::ToolCall {
+            name: "bash".into(),
+            args: serde_json::json!({}),
+        };
+        let result = AgentEvent::ToolResult {
+            name: "bash".into(),
+            ok: true,
+            output: "o".into(),
+        };
+        assert!(event_ends_at_line_start(&call, mode, false, false, true));
+        assert!(!event_ends_at_line_start(
+            &result, mode, false, false, false
+        ));
     }
 
     #[test]
     fn event_ends_at_line_start_respects_the_thinking_mode() {
-        let ev = AgentEvent::Thinking { text: "reasoning".into() };
+        let ev = AgentEvent::Thinking {
+            text: "reasoning".into(),
+        };
         // Shown: printed without a trailing newline, so the cursor is mid-row.
-        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Collapsed, false, true));
-        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Expanded, false, true));
+        assert!(!event_ends_at_line_start(
+            &ev,
+            ShowThinkingMode::Collapsed,
+            false,
+            true,
+            true
+        ));
+        assert!(!event_ends_at_line_start(
+            &ev,
+            ShowThinkingMode::Expanded,
+            false,
+            true,
+            true
+        ));
         // Hidden: nothing is printed, so the previous state stands.
-        assert!(event_ends_at_line_start(&ev, ShowThinkingMode::Hidden, false, true));
-        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Hidden, false, false));
+        assert!(event_ends_at_line_start(
+            &ev,
+            ShowThinkingMode::Hidden,
+            false,
+            true,
+            true
+        ));
+        assert!(!event_ends_at_line_start(
+            &ev,
+            ShowThinkingMode::Hidden,
+            false,
+            true,
+            false
+        ));
         // The turn boundary prints nothing either.
         let start = AgentEvent::TurnStart;
-        assert!(event_ends_at_line_start(&start, ShowThinkingMode::Collapsed, false, true));
-        assert!(!event_ends_at_line_start(&start, ShowThinkingMode::Collapsed, false, false));
+        assert!(event_ends_at_line_start(
+            &start,
+            ShowThinkingMode::Collapsed,
+            false,
+            true,
+            true
+        ));
+        assert!(!event_ends_at_line_start(
+            &start,
+            ShowThinkingMode::Collapsed,
+            false,
+            true,
+            false
+        ));
+    }
+
+    /// `[ui] show_tool_results = false` silences the whole tool traffic on
+    /// screen: ToolCall and ToolResult leave the cursor wherever it was.
+    #[test]
+    fn event_ends_at_line_start_treats_suppressed_tool_lines_as_silent() {
+        let call = AgentEvent::ToolCall {
+            name: "bash".into(),
+            args: serde_json::json!({}),
+        };
+        let result = AgentEvent::ToolResult {
+            name: "bash".into(),
+            ok: true,
+            output: "o".into(),
+        };
+        let mode = ShowThinkingMode::Collapsed;
+        assert!(event_ends_at_line_start(&call, mode, false, false, true));
+        assert!(!event_ends_at_line_start(
+            &result, mode, false, false, false
+        ));
     }
 
     #[test]
@@ -8176,7 +8398,10 @@ mod tests {
         let out = sink.taken();
         // One row, no newline: it sits directly under the line describing what
         // is running and is redrawn in place.
-        assert!(!out.contains('\n'), "the row must not break the line: {out:?}");
+        assert!(
+            !out.contains('\n'),
+            "the row must not break the line: {out:?}"
+        );
         assert!(
             out.starts_with(SPINNER_FRAMES[0]),
             "spinner must head the row: {out:?}"
@@ -8207,7 +8432,10 @@ mod tests {
         ind.tick();
         let out = sink.taken();
         // Move back to the block origin, clear it, then draw the next frame.
-        assert!(out.contains("\u{1b}["), "an erase sequence is expected: {out:?}");
+        assert!(
+            out.contains("\u{1b}["),
+            "an erase sequence is expected: {out:?}"
+        );
         assert!(
             out.contains(SPINNER_FRAMES[1]),
             "the spinner must have advanced: {out:?}"
@@ -8414,7 +8642,10 @@ mod tests {
         assert_eq!(sink.taken(), "", "nothing may be drawn while suspended");
         ind.resume();
         ind.paint(true);
-        assert!(!sink.taken().is_empty(), "painting resumes after the prompt");
+        assert!(
+            !sink.taken().is_empty(),
+            "painting resumes after the prompt"
+        );
     }
 
     /// The reported defect, pinned on the block itself: while the live prompt
@@ -8579,7 +8810,10 @@ mod tests {
         ind.start();
         assert!(ind.thinking_rows().is_empty());
         ind.push_thinking("   \n  ");
-        assert!(ind.thinking_rows().is_empty(), "blank reasoning stays hidden");
+        assert!(
+            ind.thinking_rows().is_empty(),
+            "blank reasoning stays hidden"
+        );
     }
 
     #[test]
@@ -8637,7 +8871,10 @@ mod tests {
         let _ = sink.taken();
         ind.finish(Mark::Ok);
         let out = sink.taken();
-        assert!(!out.contains("reasoning line"), "the live view is not kept: {out:?}");
+        assert!(
+            !out.contains("reasoning line"),
+            "the live view is not kept: {out:?}"
+        );
         assert!(out.contains('✔'));
         assert!(ind.thinking_rows().is_empty());
     }
@@ -8666,7 +8903,10 @@ mod tests {
         ind.paint(true);
         let _ = sink.taken();
         ind.finish(Mark::Ok);
-        assert!(sink.taken().contains("1000l"), "capture released at the end");
+        assert!(
+            sink.taken().contains("1000l"),
+            "capture released at the end"
+        );
     }
 
     #[test]
@@ -8725,12 +8965,32 @@ mod tests {
 
     #[test]
     fn captured_thinking_leaves_the_cursor_where_it_was() {
-        let ev = AgentEvent::Thinking { text: "reasoning".into() };
+        let ev = AgentEvent::Thinking {
+            text: "reasoning".into(),
+        };
         // Captured by the indicator: nothing is printed, so the previous state stands.
-        assert!(event_ends_at_line_start(&ev, ShowThinkingMode::Collapsed, true, true));
-        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Collapsed, true, false));
+        assert!(event_ends_at_line_start(
+            &ev,
+            ShowThinkingMode::Collapsed,
+            true,
+            true,
+            true
+        ));
+        assert!(!event_ends_at_line_start(
+            &ev,
+            ShowThinkingMode::Collapsed,
+            true,
+            true,
+            false
+        ));
         // Not captured: printed inline, so the cursor sits mid-row.
-        assert!(!event_ends_at_line_start(&ev, ShowThinkingMode::Collapsed, false, true));
+        assert!(!event_ends_at_line_start(
+            &ev,
+            ShowThinkingMode::Collapsed,
+            false,
+            true,
+            true
+        ));
     }
 
     #[test]
@@ -8739,7 +8999,9 @@ mod tests {
         state.capture_thinking = true;
         // Nothing is printed and no `[thinking]` section is opened.
         display_event(
-            AgentEvent::Thinking { text: "reasoning".into() },
+            AgentEvent::Thinking {
+                text: "reasoning".into(),
+            },
             ShowThinkingMode::Collapsed,
             &mut state,
         );
@@ -8896,7 +9158,10 @@ mod tests {
         let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
 
         let result = handle_repl_command("hello world", &input_tx, &state, false).await;
-        assert!(matches!(result, CommandResult::SubmittedPrompt), "got {result:?}");
+        assert!(
+            matches!(result, CommandResult::SubmittedPrompt),
+            "got {result:?}"
+        );
 
         let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
@@ -8992,7 +9257,10 @@ mod tests {
         let (input_tx, mut input_rx) = mpsc::channel::<AgentInput>(8);
 
         let result = handle_repl_command("show", &input_tx, &state, false).await;
-        assert!(matches!(result, CommandResult::SubmittedPrompt), "got {result:?}");
+        assert!(
+            matches!(result, CommandResult::SubmittedPrompt),
+            "got {result:?}"
+        );
         let msg = input_rx.recv().await.expect("input_rx closed");
         match msg {
             AgentInput::UserPrompt(s) => assert!(s.contains("FILE-DATA"), "{}", s),
@@ -9005,11 +9273,7 @@ mod tests {
         let customs = vec!["hello".to_string(), "ai".to_string()];
         let cands = slash_candidates("", &customs);
         // Built-ins come first; "ai" custom appended after, sorted with other customs.
-        assert!(cands.starts_with(&[
-            "quit".to_string(),
-            "exit".to_string(),
-            "help".to_string(),
-        ]));
+        assert!(cands.starts_with(&["quit".to_string(), "exit".to_string(), "help".to_string(),]));
         assert!(cands.contains(&"commands".to_string()));
         assert!(cands.contains(&"ai".to_string()));
         assert!(cands.contains(&"hello".to_string()));
@@ -9144,13 +9408,21 @@ mod tests {
         // Execute a built-in command: /help
         let _ = handle_repl_command("help", &input_tx, &state, false).await;
         let hist = state.history.read().await;
-        assert!(hist.contains(&"/help".to_string()), "history should contain /help, got {:?}", hist);
+        assert!(
+            hist.contains(&"/help".to_string()),
+            "history should contain /help, got {:?}",
+            hist
+        );
         drop(hist);
 
         // Execute another built-in: /tools
         let _ = handle_repl_command("tools", &input_tx, &state, false).await;
         let hist = state.history.read().await;
-        assert!(hist.contains(&"/tools".to_string()), "history should contain /tools, got {:?}", hist);
+        assert!(
+            hist.contains(&"/tools".to_string()),
+            "history should contain /tools, got {:?}",
+            hist
+        );
     }
 
     #[tokio::test]
@@ -9162,7 +9434,11 @@ mod tests {
 
         let _ = handle_repl_command("hello world", &input_tx, &state, false).await;
         let hist = state.history.read().await;
-        assert!(hist.contains(&"/hello world".to_string()), "history should contain /hello world, got {:?}", hist);
+        assert!(
+            hist.contains(&"/hello world".to_string()),
+            "history should contain /hello world, got {:?}",
+            hist
+        );
     }
 
     #[tokio::test]
@@ -9173,7 +9449,11 @@ mod tests {
 
         let _ = handle_repl_command("quit", &input_tx, &state, false).await;
         let hist = state.history.read().await;
-        assert!(!hist.contains(&"/quit".to_string()), "/quit should not be in history, got {:?}", hist);
+        assert!(
+            !hist.contains(&"/quit".to_string()),
+            "/quit should not be in history, got {:?}",
+            hist
+        );
     }
 
     // --- FR-18: auto-execute single-candidate prefix match ---
@@ -9190,7 +9470,10 @@ mod tests {
 
         // "he" should auto-execute "hello"
         let result = handle_repl_command("he", &input_tx, &state, false).await;
-        assert!(matches!(result, CommandResult::SubmittedPrompt), "got {result:?}");
+        assert!(
+            matches!(result, CommandResult::SubmittedPrompt),
+            "got {result:?}"
+        );
 
         let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
@@ -9203,7 +9486,11 @@ mod tests {
 
         // Verify it was recorded in history with the resolved name
         let hist = state.history.read().await;
-        assert!(hist.contains(&"/hello".to_string()), "auto-executed command should be in history as /hello, got {:?}", hist);
+        assert!(
+            hist.contains(&"/hello".to_string()),
+            "auto-executed command should be in history as /hello, got {:?}",
+            hist
+        );
     }
 
     #[tokio::test]
@@ -9217,7 +9504,10 @@ mod tests {
 
         // "he" matches both "hello" and "helpx" → ambiguous
         let result = handle_repl_command("he", &input_tx, &state, false).await;
-        assert!(matches!(result, CommandResult::Continue), "ambiguous prefix should return Continue, got {result:?}");
+        assert!(
+            matches!(result, CommandResult::Continue),
+            "ambiguous prefix should return Continue, got {result:?}"
+        );
 
         // No UserPrompt should be sent
         let none = tokio::time::timeout(Duration::from_millis(100), input_rx.recv()).await;
@@ -9245,7 +9535,10 @@ mod tests {
 
         // "/he" should match exactly "he", not prefix-match "hello"
         let result = handle_repl_command("he", &input_tx, &state, false).await;
-        assert!(matches!(result, CommandResult::SubmittedPrompt), "got {result:?}");
+        assert!(
+            matches!(result, CommandResult::SubmittedPrompt),
+            "got {result:?}"
+        );
 
         let msg = tokio::time::timeout(Duration::from_secs(2), input_rx.recv())
             .await
@@ -9268,7 +9561,10 @@ mod tests {
 
         // "help" is a built-in command; built-in takes precedence
         let result = handle_repl_command("help", &input_tx, &state, false).await;
-        assert!(matches!(result, CommandResult::Continue), "built-in /help should return Continue, got {result:?}");
+        assert!(
+            matches!(result, CommandResult::Continue),
+            "built-in /help should return Continue, got {result:?}"
+        );
         // No UserPrompt sent
         let none = tokio::time::timeout(Duration::from_millis(100), input_rx.recv()).await;
         assert!(none.is_err(), "built-in /help must not send UserPrompt");
@@ -9284,10 +9580,7 @@ mod tests {
     }
 
     impl CannedSource {
-        fn new(
-            reads: Vec<std::io::Result<CtEvent>>,
-            polls: Vec<std::io::Result<bool>>,
-        ) -> Self {
+        fn new(reads: Vec<std::io::Result<CtEvent>>, polls: Vec<std::io::Result<bool>>) -> Self {
             let mut reads: std::collections::VecDeque<_> = reads.into();
             reads.make_contiguous();
             let mut polls: std::collections::VecDeque<_> = polls.into();
@@ -9305,14 +9598,20 @@ mod tests {
         // in exactly the order its source produced them — the same order the
         // per-iteration drain used to have.
         let reads = vec![
-            Ok(CtEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))),
+            Ok(CtEvent::Key(KeyEvent::new(
+                KeyCode::Char('a'),
+                KeyModifiers::NONE,
+            ))),
             Ok(CtEvent::Mouse(crossterm::event::MouseEvent {
                 kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
                 column: 10,
                 row: 5,
                 modifiers: KeyModifiers::NONE,
             })),
-            Ok(CtEvent::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))),
+            Ok(CtEvent::Key(KeyEvent::new(
+                KeyCode::Char('b'),
+                KeyModifiers::NONE,
+            ))),
         ];
         // First poll: an event is ready. Inside the drain, every read must be
         // preceded by a ready report, so each canned read is followed by an
@@ -9387,7 +9686,14 @@ mod tests {
     async fn input_pump_answers_a_cursor_query_between_its_own_poll_cycles() {
         // Idle source: no events, only not-ready polls, so the query is
         // answered by the check that precedes each poll cycle.
-        let polls = vec![Ok(false), Ok(false), Ok(false), Ok(false), Ok(false), Ok(false)];
+        let polls = vec![
+            Ok(false),
+            Ok(false),
+            Ok(false),
+            Ok(false),
+            Ok(false),
+            Ok(false),
+        ];
         let canned = std::sync::Arc::new(CannedSource::new(vec![], polls));
         let source = canned.clone();
         let read_fn = move || {
@@ -9421,7 +9727,14 @@ mod tests {
 
     #[tokio::test]
     async fn input_pump_reports_a_failing_position_query_as_the_documented_error() {
-        let polls = vec![Ok(false), Ok(false), Ok(false), Ok(false), Ok(false), Ok(false)];
+        let polls = vec![
+            Ok(false),
+            Ok(false),
+            Ok(false),
+            Ok(false),
+            Ok(false),
+            Ok(false),
+        ];
         let canned = std::sync::Arc::new(CannedSource::new(vec![], polls));
         let source = canned.clone();
         let read_fn = move || {
@@ -9499,7 +9812,10 @@ mod tests {
         let err = parse_send_args("worker --verbose ping").unwrap_err();
         let tool = Delivery::resolve(Some("--verbose"), false).unwrap_err();
         assert_eq!(err, tool, "the REPL and the tool must share the error text");
-        assert!(err.contains("unknown delivery"), "the shape is the tool's: {err}");
+        assert!(
+            err.contains("unknown delivery"),
+            "the shape is the tool's: {err}"
+        );
     }
 
     #[test]
@@ -9523,4 +9839,3 @@ mod tests {
         );
     }
 }
-

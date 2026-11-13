@@ -257,10 +257,7 @@ mod tests {
         );
         // Same row, dragged right to left.
         let leftward = drag((2, 9), (2, 3));
-        assert_eq!(
-            leftward.normalised(),
-            (Point::new(2, 3), Point::new(2, 9))
-        );
+        assert_eq!(leftward.normalised(), (Point::new(2, 3), Point::new(2, 9)));
         // Up and to the right still orders by row first.
         let upright = drag((5, 1), (2, 40));
         assert_eq!(upright.normalised(), (Point::new(2, 40), Point::new(5, 1)));
@@ -270,9 +267,17 @@ mod tests {
     fn row_spans_cover_first_middle_and_last_rows() {
         let sel = drag((1, 3), (3, 5));
         assert_eq!(row_span(&sel, 0, 80), None, "above the selection");
-        assert_eq!(row_span(&sel, 1, 80), Some(3..80), "first row from the anchor");
+        assert_eq!(
+            row_span(&sel, 1, 80),
+            Some(3..80),
+            "first row from the anchor"
+        );
         assert_eq!(row_span(&sel, 2, 80), Some(0..80), "middle rows are whole");
-        assert_eq!(row_span(&sel, 3, 80), Some(0..5), "last row up to the cursor");
+        assert_eq!(
+            row_span(&sel, 3, 80),
+            Some(0..5),
+            "last row up to the cursor"
+        );
         assert_eq!(row_span(&sel, 4, 80), None, "below the selection");
     }
 
@@ -308,7 +313,10 @@ mod tests {
         let sel = drag((0, 0), (0, 8));
         let text = selected_text(&[row(&styled)], &sel);
         assert_eq!(text, "coloured");
-        assert!(!text.contains('\u{1b}'), "no escape may reach the clipboard");
+        assert!(
+            !text.contains('\u{1b}'),
+            "no escape may reach the clipboard"
+        );
     }
 
     #[test]

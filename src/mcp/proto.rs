@@ -21,7 +21,13 @@ pub struct McpToolDef {
 pub fn sanitize_token(s: &str) -> String {
     let t: String = s
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if t.is_empty() {
         "_".to_string()
@@ -58,7 +64,9 @@ pub fn jsonrpc_notification(method: &str, params: &Value) -> Value {
 /// and either the `result` value or a formatted `error` message. A line that is
 /// not a reply (e.g. a server-initiated notification with no `id`/`result`)
 /// yields `(id, Ok(Value::Null))` and is ignored by the reader.
-pub fn parse_jsonrpc_reply(line: &str) -> Result<(Option<i64>, std::result::Result<Value, String>)> {
+pub fn parse_jsonrpc_reply(
+    line: &str,
+) -> Result<(Option<i64>, std::result::Result<Value, String>)> {
     let v: Value = serde_json::from_str(line)?;
     Ok(reply_from_value(&v))
 }
@@ -119,7 +127,10 @@ pub fn http_request_headers(
 ) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = vec![
         ("Content-Type".into(), "application/json".into()),
-        ("Accept".into(), "application/json, text/event-stream".into()),
+        (
+            "Accept".into(),
+            "application/json, text/event-stream".into(),
+        ),
     ];
     for (k, v) in static_pairs {
         out.push((k.clone(), v.clone()));
@@ -216,7 +227,10 @@ mod tests {
     #[test]
     fn tool_name_mangling_and_sanitize() {
         assert_eq!(mcp_tool_name("fs", "read_file"), "mcp__fs__read_file");
-        assert_eq!(mcp_tool_name("my server.v2", "do it"), "mcp__my_server_v2__do_it");
+        assert_eq!(
+            mcp_tool_name("my server.v2", "do it"),
+            "mcp__my_server_v2__do_it"
+        );
         assert_eq!(sanitize_token("a.b-c"), "a_b_c");
         assert_eq!(sanitize_token(""), "_");
         assert_eq!(sanitize_token("!!!"), "___");
@@ -243,9 +257,10 @@ mod tests {
         assert_eq!(id, Some(1));
         assert_eq!(payload.unwrap(), json!({"tools":[]}));
 
-        let (id, payload) =
-            parse_jsonrpc_reply(r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"x"}}"#)
-                .unwrap();
+        let (id, payload) = parse_jsonrpc_reply(
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"x"}}"#,
+        )
+        .unwrap();
         assert_eq!(id, Some(2));
         assert_eq!(payload.unwrap_err(), "x (code -32601)");
 
@@ -296,7 +311,10 @@ mod tests {
         let errs = sse_frames_to_messages(&[
             r#"{"jsonrpc":"2.0","id":8,"error":{"code":-32000,"message":"nope"}}"#.to_string(),
         ]);
-        assert_eq!(select_reply_by_id(&errs, 8).unwrap().unwrap_err(), "nope (code -32000)");
+        assert_eq!(
+            select_reply_by_id(&errs, 8).unwrap().unwrap_err(),
+            "nope (code -32000)"
+        );
         assert!(select_reply_by_id(&errs, 999).is_none());
     }
 
@@ -305,7 +323,10 @@ mod tests {
         let statics = vec![("X-Example".to_string(), "1".to_string())];
         let h = http_request_headers(&statics, Some("tok"), Some("sess-1"), Some("2024-11-05"));
         assert!(h.contains(&("Content-Type".into(), "application/json".into())));
-        assert!(h.contains(&("Accept".into(), "application/json, text/event-stream".into())));
+        assert!(h.contains(&(
+            "Accept".into(),
+            "application/json, text/event-stream".into()
+        )));
         assert!(h.contains(&("X-Example".into(), "1".into())));
         assert!(h.contains(&("Authorization".into(), "Bearer tok".into())));
         assert!(h.contains(&("Mcp-Session-Id".into(), "sess-1".into())));

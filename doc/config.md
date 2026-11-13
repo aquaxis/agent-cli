@@ -347,6 +347,7 @@ provider    = "tavily"
 |------|----|------|------|
 | `show_thinking` | string | `"collapsed"` | Thinking display mode: `"collapsed"` (truncated to the first 80 characters + first line) / `"expanded"` (full text) / `"hidden"` (not displayed). See "UI Display Mode" below for details |
 | `show_progress` | bool | `true` | Draw the progress indicator (activity line + spinner and elapsed time) while a turn runs. Only ever drawn when stdin and stderr are both terminals; see "UI Display Mode" below |
+| `show_tool_results` | bool | `true` | Print the `[tool-call]` and `[tool-result]` lines at all. `false` suppresses both lines entirely (they are hidden together, as one choice — not independently), whatever the progress indicator is doing; the model and the conversation log still receive every call and result in full; see "UI Display Mode" below |
 | `color` | string | `"auto"` | Colour the output: `"auto"` (colour a stream only when it is an interactive terminal and `NO_COLOR` is unset), `"always"`, `"never"`. See "UI Display Mode" below |
 | `mouse_scroll` | bool | `true` | Scroll the session log with the mouse wheel, keeping the prompt line pinned. Only active when stdin and stderr are both terminals; see "UI Display Mode" below |
 | `scrollback_lines` | integer | `2000` | Lines of session output kept for scrolling back. `0` keeps none, which also disables the wheel scrollback |
@@ -542,6 +543,7 @@ max_output_kb = 512
 [ui]
 show_thinking    = "collapsed"
 show_progress    = true
+show_tool_results = true
 color            = "auto"
 mouse_scroll     = true
 scrollback_lines = 2000
@@ -606,6 +608,7 @@ provider    = "tavily"
 [ui]
 show_thinking    = "expanded"
 show_progress    = true
+show_tool_results = true
 color            = "auto"
 mouse_scroll     = true
 scrollback_lines = 2000
@@ -743,6 +746,15 @@ Notes:
 |----|------|
 | `true` (default) | The indicator is drawn, the `[tool-call]` line is shortened to a single row and a `[tool-result]` to five rows (`… +N more lines`) so the spinner stays close to them, and reasoning is shown live under the spinner instead of being streamed into the scrollback |
 | `false` | Nothing is drawn; `[tool-call]` lines keep their full arguments and `[tool-result]` its full output |
+
+`ui.show_tool_results` controls whether the `[tool-call]` and `[tool-result]` lines are printed on screen at all:
+
+| Value | Behavior |
+|----|------|
+| `true` (default) | The lines are printed as `ui.show_progress` describes |
+| `false` | Neither line is printed at all, whatever the indicator is doing — the whole `[tool-call]` / `[tool-result]` traffic is silenced |
+
+The two keys are read together: `show_tool_results = false` wins over any `show_progress` value, and with it off a turn keeps its `[answer]` text and the completion mark only. The setting shortens what the screen shows, nothing more: the model still receives every tool result in full, and the conversation log keeps the complete text.
 
 `show_thinking` decides what the live reasoning block contains: with `"hidden"` there is none, otherwise the last 10 rows are shown and a mouse click expands the block to as much as the screen can hold. (Mouse reporting itself is governed by `ui.mouse_scroll` below, which is on by default and enables it for the whole session; only with `mouse_scroll = false` does reporting depend on this setting and on a turn being in progress.) Because the block replaces the inline `[thinking]` output, reasoning is no longer kept in the scrollback while the indicator is on — it is still written to the conversation log.
 

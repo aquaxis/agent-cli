@@ -95,10 +95,7 @@ mod tests {
     async fn read_returns_line_numbered_content() {
         let f = write_tmp("alpha\nbeta\ngamma\n");
         let out = ReadTool
-            .invoke(
-                json!({"file_path": f.path().to_str().unwrap()}),
-                &ctx(),
-            )
+            .invoke(json!({"file_path": f.path().to_str().unwrap()}), &ctx())
             .await
             .unwrap();
         assert!(out.ok);

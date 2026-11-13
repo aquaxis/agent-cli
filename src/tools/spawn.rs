@@ -98,9 +98,7 @@ impl Tool for SpawnTool {
             // true by default) unless the tool call said otherwise — a
             // fire-and-forget spawn that stands by forever would otherwise
             // leak a process per spawn, and a call can still opt out.
-            exit_when_idle: parsed
-                .exit_when_idle
-                .unwrap_or(ctx.spawn_exit_when_idle),
+            exit_when_idle: parsed.exit_when_idle.unwrap_or(ctx.spawn_exit_when_idle),
         };
 
         let mut chain = ctx.ancestors.clone();
@@ -203,8 +201,16 @@ mod tests {
         };
         let out = SpawnTool.invoke(json!({}), &at_child_limit).await.unwrap();
         assert!(!out.ok, "{}", out.content);
-        assert!(out.content.contains("child limit reached"), "{}", out.content);
-        assert!(out.content.contains("2 live child agent(s)"), "{}", out.content);
+        assert!(
+            out.content.contains("child limit reached"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("2 live child agent(s)"),
+            "{}",
+            out.content
+        );
 
         // An agent as deep as the chain is allowed to go.
         let ancestors = vec![AgentId::new(), AgentId::new()];
@@ -216,7 +222,11 @@ mod tests {
         };
         let out = SpawnTool.invoke(json!({}), &at_depth_limit).await.unwrap();
         assert!(!out.ok, "{}", out.content);
-        assert!(out.content.contains("depth limit reached"), "{}", out.content);
+        assert!(
+            out.content.contains("depth limit reached"),
+            "{}",
+            out.content
+        );
 
         // Nothing new was registered by either refusal.
         let live = crate::ipc::registry::list_entries(dir).unwrap();

@@ -135,8 +135,7 @@ impl Ruleset {
             match parse_rule(raw) {
                 Ok(rule) => {
                     if let Some(note) = inert_reason(&rule) {
-                        self.warnings
-                            .push(format!("{list} rule {raw:?} {note}"));
+                        self.warnings.push(format!("{list} rule {raw:?} {note}"));
                     }
                     out.push(rule);
                 }
@@ -245,7 +244,10 @@ fn parse_rule(raw: &str) -> std::result::Result<Rule, String> {
             if !trimmed.ends_with(')') {
                 return Err("has an unclosed '('".to_string());
             }
-            (&trimmed[..open], Some(&trimmed[open + 1..trimmed.len() - 1]))
+            (
+                &trimmed[..open],
+                Some(&trimmed[open + 1..trimmed.len() - 1]),
+            )
         }
         None => {
             if trimmed.ends_with(')') {
@@ -263,8 +265,10 @@ fn parse_rule(raw: &str) -> std::result::Result<Rule, String> {
         Some(p) => {
             let p = p.trim();
             if p.is_empty() {
-                return Err("has an empty pattern; write the bare tool name to match every call"
-                    .to_string());
+                return Err(
+                    "has an empty pattern; write the bare tool name to match every call"
+                        .to_string(),
+                );
             }
             compile_pattern(p)?
         }
@@ -405,14 +409,8 @@ fn inert_reason(rule: &Rule) -> Option<&'static str> {
 /// The host of a URL, lowercased, or the whole string when it does not parse as
 /// one — so a malformed URL is still matchable rather than silently unmatched.
 fn host_of(url: &str) -> String {
-    let rest = url
-        .split_once("://")
-        .map(|(_, r)| r)
-        .unwrap_or(url);
-    let authority = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(rest);
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
     let authority = authority.rsplit('@').next().unwrap_or(authority);
     let host = match authority.rfind(':') {
         // Not a port when the colon belongs to an IPv6 literal.
@@ -545,37 +543,50 @@ mod tests {
     #[test]
     fn a_prefix_rule_matches_leading_words_and_not_a_longer_first_word() {
         let s = set(&["bash(git:*)"], &[], None);
-        assert!(is_deny(&s.decide("bash", &json!({"command": "git status"}))));
-        assert!(is_deny(&s.decide("bash", &json!({"command": "git push --force"}))));
+        assert!(is_deny(
+            &s.decide("bash", &json!({"command": "git status"}))
+        ));
+        assert!(is_deny(
+            &s.decide("bash", &json!({"command": "git push --force"}))
+        ));
         // The whole reason matching is word-by-word rather than a string prefix.
-        assert!(is_ask(&s.decide("bash", &json!({"command": "github-cli x"}))));
+        assert!(is_ask(
+            &s.decide("bash", &json!({"command": "github-cli x"}))
+        ));
         assert!(is_ask(&s.decide("bash", &json!({"command": "gitk"}))));
     }
 
     #[test]
     fn a_multi_word_prefix_rule_needs_every_word() {
         let s = set(&["bash(npm publish:*)"], &[], None);
-        assert!(is_deny(&s.decide("bash", &json!({"command": "npm publish --tag x"}))));
-        assert!(is_ask(&s.decide("bash", &json!({"command": "npm install"}))));
+        assert!(is_deny(
+            &s.decide("bash", &json!({"command": "npm publish --tag x"}))
+        ));
+        assert!(is_ask(
+            &s.decide("bash", &json!({"command": "npm install"}))
+        ));
     }
 
     #[test]
     fn a_domain_rule_matches_the_host_only() {
         let s = set(&["webfetch(domain:github.com)"], &[], None);
-        assert!(is_deny(
-            &s.decide("webfetch", &json!({"url": "https://github.com/a/b?x=1"}))
-        ));
-        assert!(is_ask(
-            &s.decide("webfetch", &json!({"url": "https://example.com/github.com"}))
-        ));
+        assert!(is_deny(&s.decide(
+            "webfetch",
+            &json!({"url": "https://github.com/a/b?x=1"})
+        )));
+        assert!(is_ask(&s.decide(
+            "webfetch",
+            &json!({"url": "https://example.com/github.com"})
+        )));
     }
 
     #[test]
     fn a_domain_wildcard_matches_any_host() {
         let s = set(&[], &["webfetch(domain:*)"], None);
-        assert!(is_allow(
-            &s.decide("webfetch", &json!({"url": "https://anything.example/x"}))
-        ));
+        assert!(is_allow(&s.decide(
+            "webfetch",
+            &json!({"url": "https://anything.example/x"})
+        )));
     }
 
     #[test]
@@ -584,13 +595,17 @@ mod tests {
         assert!(is_deny(
             &s.decide("bash", &json!({"command": "rm -rf ~/Documents"}))
         ));
-        assert!(is_ask(&s.decide("bash", &json!({"command": "rm -rf ./build"}))));
+        assert!(is_ask(
+            &s.decide("bash", &json!({"command": "rm -rf ./build"}))
+        ));
     }
 
     #[test]
     fn a_bare_tool_rule_matches_every_call() {
         let s = set(&["websearch"], &[], None);
-        assert!(is_deny(&s.decide("websearch", &json!({"query": "anything"}))));
+        assert!(is_deny(
+            &s.decide("websearch", &json!({"query": "anything"}))
+        ));
     }
 
     // --- V-10: tool-name spellings ------------------------------------------
@@ -605,7 +620,9 @@ mod tests {
             );
         }
         let s = set(&["WebFetch(domain:x.test)"], &[], None);
-        assert!(is_deny(&s.decide("webfetch", &json!({"url": "http://x.test/"}))));
+        assert!(is_deny(
+            &s.decide("webfetch", &json!({"url": "http://x.test/"}))
+        ));
 
         let s = set(&["SendTo(worker-*)"], &[], None);
         assert!(is_deny(&s.decide("send_to", &json!({"peer": "worker-1"}))));
@@ -693,9 +710,10 @@ mod tests {
     fn a_path_that_does_not_exist_yet_still_matches() {
         // `write` and `edit` create files, so resolution must not need the file.
         let s = set(&["write(**/secrets/**)"], &[], None);
-        assert!(is_deny(
-            &s.decide("write", &json!({"file_path": "./secrets/new/file.txt"}))
-        ));
+        assert!(is_deny(&s.decide(
+            "write",
+            &json!({"file_path": "./secrets/new/file.txt"})
+        )));
     }
 
     // --- V-13: precedence ---------------------------------------------------
@@ -707,7 +725,9 @@ mod tests {
         assert!(is_deny(
             &s.decide("bash", &json!({"command": "git push --force"}))
         ));
-        assert!(is_allow(&s.decide("bash", &json!({"command": "git status"}))));
+        assert!(is_allow(
+            &s.decide("bash", &json!({"command": "git status"}))
+        ));
     }
 
     #[test]
@@ -730,8 +750,14 @@ mod tests {
     fn each_default_mode_is_understood_and_an_absent_one_asks() {
         assert_eq!(set(&[], &[], None).default_mode(), DefaultMode::Ask);
         assert_eq!(set(&[], &[], Some("ask")).default_mode(), DefaultMode::Ask);
-        assert_eq!(set(&[], &[], Some("allow")).default_mode(), DefaultMode::Allow);
-        assert_eq!(set(&[], &[], Some("deny")).default_mode(), DefaultMode::Deny);
+        assert_eq!(
+            set(&[], &[], Some("allow")).default_mode(),
+            DefaultMode::Allow
+        );
+        assert_eq!(
+            set(&[], &[], Some("deny")).default_mode(),
+            DefaultMode::Deny
+        );
     }
 
     #[test]
@@ -792,7 +818,12 @@ mod tests {
                 "Read(.env*)",
                 "Read(tmp/**/*)",
             ],
-            &["Bash(git:*)", "Read(**)", "MultiEdit(**)", "WebFetch(domain:*)"],
+            &[
+                "Bash(git:*)",
+                "Read(**)",
+                "MultiEdit(**)",
+                "WebFetch(domain:*)",
+            ],
             Some("acceptEdits"),
         );
         // The rules that translate, do.
@@ -800,7 +831,9 @@ mod tests {
             &s.decide("bash", &json!({"command": "npm publish"}))
         ));
         assert!(is_deny(&s.decide("read", &json!({"file_path": "./.env"}))));
-        assert!(is_allow(&s.decide("bash", &json!({"command": "git status"}))));
+        assert!(is_allow(
+            &s.decide("bash", &json!({"command": "git status"}))
+        ));
         // The one that does not, is reported rather than dropped.
         assert_eq!(s.default_mode(), DefaultMode::Ask);
         assert!(
@@ -814,10 +847,7 @@ mod tests {
     fn default_mode_accepts_claude_codes_spelling_as_an_alias() {
         let cfg: PermissionsConfig =
             toml::from_str("defaultMode = \"deny\"").expect("alias parses");
-        assert_eq!(
-            Ruleset::from_config(&cfg).default_mode(),
-            DefaultMode::Deny
-        );
+        assert_eq!(Ruleset::from_config(&cfg).default_mode(), DefaultMode::Deny);
     }
 
     // --- host parsing --------------------------------------------------------

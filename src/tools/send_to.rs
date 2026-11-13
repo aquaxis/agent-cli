@@ -109,8 +109,7 @@ impl Tool for SendToTool {
         };
 
         if delivery == Delivery::Report {
-            return match
-                deliver_report(&ctx.self_id, &ctx.registry_dir, &parsed.peer, &parsed.text)
+            return match deliver_report(&ctx.self_id, &ctx.registry_dir, &parsed.peer, &parsed.text)
                 .await
             {
                 Ok(text) => Ok(ToolOutput::ok(text)),
@@ -176,8 +175,7 @@ pub(crate) async fn deliver_report(
     peer_name: &str,
     text: &str,
 ) -> std::result::Result<String, String> {
-    let peer = registry::resolve_peer(registry_dir, peer_name)
-        .map_err(|e| e.to_string())?;
+    let peer = registry::resolve_peer(registry_dir, peer_name).map_err(|e| e.to_string())?;
     let msg = IpcMessage::Context {
         from: from_id.clone(),
         from_name: None,
@@ -254,9 +252,7 @@ impl PeerAsk {
     /// The ask's outcome: the peer's answer on success, the (disambiguated)
     /// failure text on error, or nothing at all when the caller went away
     /// before the background task finished.
-    pub(crate) async fn next(
-        &mut self,
-    ) -> Option<std::result::Result<String, String>> {
+    pub(crate) async fn next(&mut self) -> Option<std::result::Result<String, String>> {
         self.result_rx.recv().await
     }
 }
@@ -267,8 +263,7 @@ async fn ask_peer_once(
     peer_name: &str,
     text: &str,
 ) -> std::result::Result<String, String> {
-    let peer = registry::resolve_peer(registry_dir, peer_name)
-        .map_err(|e| e.to_string())?;
+    let peer = registry::resolve_peer(registry_dir, peer_name).map_err(|e| e.to_string())?;
     let reply_dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
     let reply_socket = reply_dir.path().join("reply.sock");
     let mut reply_server = IpcServer::bind(reply_socket.clone())
@@ -310,10 +305,10 @@ async fn ask_peer_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::id::AgentId;
     use crate::ipc::server::IpcServer;
     use crate::ipc::IpcMessage;
     use crate::tools::ToolCtx;
-    use crate::id::AgentId;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -470,10 +465,22 @@ mod tests {
         // The deprecated flag keeps its meaning for calls written before
         // `delivery` existed.
         assert_eq!(Delivery::resolve(None, true).unwrap(), Delivery::Ask);
-        assert_eq!(Delivery::resolve(Some("prompt"), true).unwrap(), Delivery::Prompt);
-        assert_eq!(Delivery::resolve(Some("report"), false).unwrap(), Delivery::Report);
-        assert_eq!(Delivery::resolve(Some("ask"), false).unwrap(), Delivery::Ask);
-        assert_eq!(Delivery::resolve(Some(" report "), false).unwrap(), Delivery::Report);
+        assert_eq!(
+            Delivery::resolve(Some("prompt"), true).unwrap(),
+            Delivery::Prompt
+        );
+        assert_eq!(
+            Delivery::resolve(Some("report"), false).unwrap(),
+            Delivery::Report
+        );
+        assert_eq!(
+            Delivery::resolve(Some("ask"), false).unwrap(),
+            Delivery::Ask
+        );
+        assert_eq!(
+            Delivery::resolve(Some(" report "), false).unwrap(),
+            Delivery::Report
+        );
         assert_eq!(Delivery::resolve(Some(""), true).unwrap(), Delivery::Ask);
         // Guessing would be wrong: the difference is whether the peer spends a
         // turn, so an unknown value names the three valid ones.
@@ -516,7 +523,10 @@ mod tests {
         write_registry_entry(&dir, &entry);
 
         let out = SendToTool
-            .invoke(json!({"peer": "worker", "text": "do this"}), &build_ctx(&dir))
+            .invoke(
+                json!({"peer": "worker", "text": "do this"}),
+                &build_ctx(&dir),
+            )
             .await
             .unwrap();
         assert!(out.ok, "{}", out.content);
@@ -637,8 +647,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let registry_dir = dir.path().to_path_buf();
         std::fs::create_dir_all(&registry_dir).unwrap();
-        let _entry = setup_mock_peer_with_reply(&registry_dir, "mock-peer", "hello from peer").await;
-        let mut ask = PeerAsk::spawn(&AgentId::new(), registry_dir, "mock-peer".into(), "hi".into());
+        let _entry =
+            setup_mock_peer_with_reply(&registry_dir, "mock-peer", "hello from peer").await;
+        let mut ask = PeerAsk::spawn(
+            &AgentId::new(),
+            registry_dir,
+            "mock-peer".into(),
+            "hi".into(),
+        );
         let result = tokio::time::timeout(Duration::from_secs(10), ask.next())
             .await
             .expect("the runner answers well within the bound")
@@ -664,12 +680,9 @@ mod tests {
             "wait_reply": true
         });
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            tool.invoke(args, &ctx),
-        )
-        .await
-        .expect("invoke timeout");
+        let result = tokio::time::timeout(Duration::from_secs(10), tool.invoke(args, &ctx))
+            .await
+            .expect("invoke timeout");
 
         assert!(result.is_ok(), "invoke should succeed");
         let output = result.unwrap();
@@ -692,12 +705,9 @@ mod tests {
             "text": "fire and forget"
         });
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            tool.invoke(args, &ctx),
-        )
-        .await
-        .expect("invoke timeout");
+        let result = tokio::time::timeout(Duration::from_secs(10), tool.invoke(args, &ctx))
+            .await
+            .expect("invoke timeout");
 
         assert!(result.is_ok(), "invoke should succeed");
         let output = result.unwrap();

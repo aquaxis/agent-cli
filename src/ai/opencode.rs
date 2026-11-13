@@ -453,10 +453,9 @@ impl OpenCodeProvider {
             let text = resp.text().await.unwrap_or_default();
             return Err(self.provider_error(status, &headers, text));
         }
-        let session: Value = resp
-            .json()
-            .await
-            .map_err(|e| AppError::provider("opencode", format!("invalid session response: {e}")))?;
+        let session: Value = resp.json().await.map_err(|e| {
+            AppError::provider("opencode", format!("invalid session response: {e}"))
+        })?;
         session
             .get("id")
             .and_then(|v| v.as_str())
@@ -480,9 +479,8 @@ impl OpenCodeProvider {
         let mut guard = self.session.lock().await;
 
         // Reset rule: no session, history shrank (cleared), or system changed.
-        let needs_new = guard.id.is_none()
-            || messages.len() < guard.sent_count
-            || guard.sys != system;
+        let needs_new =
+            guard.id.is_none() || messages.len() < guard.sent_count || guard.sys != system;
         if needs_new {
             let id = self.create_session(&base).await?;
             *guard = PersistState {
@@ -531,10 +529,9 @@ impl OpenCodeProvider {
             let text = resp.text().await.unwrap_or_default();
             return Err(self.provider_error(status, &headers, text));
         }
-        let reply: Value = resp
-            .json()
-            .await
-            .map_err(|e| AppError::provider("opencode", format!("invalid message response: {e}")))?;
+        let reply: Value = resp.json().await.map_err(|e| {
+            AppError::provider("opencode", format!("invalid message response: {e}"))
+        })?;
 
         guard.sent_count = messages.len();
         drop(guard);
@@ -710,7 +707,10 @@ fn flush_tool(state: &mut OpenCodeParseState) -> Option<ProviderEvent> {
 /// Pure parser for one cloud-mode (OpenAI-compatible) chat-completions SSE
 /// frame. Mirrors the OpenAI streaming shape: text deltas, incrementally
 /// assembled `tool_calls`, and a `[DONE]` terminator.
-pub(crate) fn handle_opencode_frame(frame: &str, state: &mut OpenCodeParseState) -> OpenCodeOutcome {
+pub(crate) fn handle_opencode_frame(
+    frame: &str,
+    state: &mut OpenCodeParseState,
+) -> OpenCodeOutcome {
     let mut events = Vec::new();
     if frame.trim() == "[DONE]" {
         if let Some(ev) = flush_tool(state) {
@@ -923,7 +923,10 @@ model    = "qwen3.8-max"
         let p = cloud_provider(GO_CONFIG);
         let req = p.build_cloud_request(CloudApi::OpenAi, &[user_msg("hi")], &[]);
         assert_eq!(req.url, "https://opencode.ai/zen/go/v1/chat/completions");
-        assert_eq!(req.header("x-opencode-session"), Some(p.session_id.as_str()));
+        assert_eq!(
+            req.header("x-opencode-session"),
+            Some(p.session_id.as_str())
+        );
         assert_eq!(
             req.header("user-agent"),
             Some(format!("agent-cli/{}", env!("CARGO_PKG_VERSION")).as_str())
@@ -942,7 +945,10 @@ model    = "qwen3.8-max"
         let p = cloud_provider(GO_CONFIG);
         let req = p.build_cloud_request(CloudApi::Anthropic, &[user_msg("hi")], &[]);
         assert_eq!(req.url, "https://opencode.ai/zen/go/v1/messages");
-        assert_eq!(req.header("x-opencode-session"), Some(p.session_id.as_str()));
+        assert_eq!(
+            req.header("x-opencode-session"),
+            Some(p.session_id.as_str())
+        );
         assert_eq!(
             req.header("user-agent"),
             Some(format!("agent-cli/{}", env!("CARGO_PKG_VERSION")).as_str())
@@ -959,7 +965,10 @@ model    = "qwen3.8-max"
         let p = cloud_provider(GO_CONFIG);
         let a = p.build_cloud_request(CloudApi::OpenAi, &[user_msg("one")], &[]);
         let b = p.build_cloud_request(CloudApi::Anthropic, &[user_msg("two")], &[]);
-        assert_eq!(a.header("x-opencode-session"), b.header("x-opencode-session"));
+        assert_eq!(
+            a.header("x-opencode-session"),
+            b.header("x-opencode-session")
+        );
 
         let other = cloud_provider(GO_CONFIG);
         assert_ne!(
@@ -1029,7 +1038,10 @@ session_id = "ses_pinned_by_user"
         let _ = p.complete_stream(&[user_msg("hi")], &[]).await;
 
         let raw = captured.join().unwrap().to_ascii_lowercase();
-        assert!(raw.starts_with("post /session"), "unexpected request: {raw}");
+        assert!(
+            raw.starts_with("post /session"),
+            "unexpected request: {raw}"
+        );
         assert!(
             !raw.contains("x-opencode-session"),
             "local mode must not send the gateway session header: {raw}"

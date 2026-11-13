@@ -141,7 +141,11 @@ mod tests {
             .unwrap();
         assert!(!out.ok);
         assert!(out.content.contains("before"), "content: {}", out.content);
-        assert!(out.content.contains("timed out"), "content: {}", out.content);
+        assert!(
+            out.content.contains("timed out"),
+            "content: {}",
+            out.content
+        );
         assert!(
             !out.content.contains("ZZZ_SHOULD_NOT_APPEAR"),
             "content: {}",
