@@ -1,14 +1,13 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
-use crate::ai::stream::SseAccumulator;
+use crate::ai::stream::{sse_events, FrameOutcome};
 use crate::ai::tool_bridge::to_anthropic_tools;
 use crate::ai::{
-    http_error, Capabilities, EventStream, Message, Provider, ProviderContext, ProviderError,
-    ProviderEvent, ToolSpec,
+    Capabilities, EventStream, Message, Provider, ProviderContext, ProviderError, ProviderEvent,
+    ToolSpec,
 };
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
@@ -218,45 +217,14 @@ impl Provider for ClaudeProvider {
             .json(&body)
             .send()
             .await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let headers = resp.headers().clone();
-            let text = resp.text().await.unwrap_or_default();
-            tracing::debug!(target: "agent_cli::ai::claude", status = %status, body = %text, "provider HTTP error");
-            return Err(http_error("claude", status, &headers, text, &self.context));
-        }
-
-        let byte_stream = resp.bytes_stream();
-        let stream = async_stream::stream! {
-            let mut acc = SseAccumulator::new();
-            let mut state = ClaudeParseState::default();
-            let mut byte_stream = Box::pin(byte_stream);
-            while let Some(chunk) = byte_stream.next().await {
-                match chunk {
-                    Ok(bytes) => {
-                        let s = String::from_utf8_lossy(&bytes);
-                        acc.push(&s);
-                        for frame in acc.drain_frames() {
-                            let outcome = handle_frame(&frame, &mut state);
-                            for ev in outcome.events {
-                                yield ev;
-                            }
-                            if outcome.done {
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        yield ProviderEvent::Error {
-                            message: crate::ai::stream_mid_body("claude", &self.model, &e.to_string()),
-                        };
-                        return;
-                    }
-                }
-            }
-            yield ProviderEvent::Done;
-        };
-        Ok(Box::pin(stream))
+        let resp = ensure_success!(resp, "agent_cli::ai::claude", "claude", &self.context)?;
+        let mut state = ClaudeParseState::default();
+        Ok(sse_events(
+            resp.bytes_stream(),
+            "claude",
+            &self.model,
+            move |frame| handle_frame(frame, &mut state),
+        ))
     }
 }
 
@@ -266,17 +234,12 @@ pub(crate) struct ClaudeParseState {
     pub current_tool: Option<(String, String, String)>, // (id, name, partial JSON)
 }
 
-pub(crate) struct ParseOutcome {
-    pub events: Vec<ProviderEvent>,
-    pub done: bool,
-}
-
 /// Interpret a single frame string and return the event sequence and termination flag. Applied to each element after `drain_frames`.
-pub(crate) fn handle_frame(frame: &str, state: &mut ClaudeParseState) -> ParseOutcome {
+pub(crate) fn handle_frame(frame: &str, state: &mut ClaudeParseState) -> FrameOutcome {
     let mut events = Vec::new();
     if frame.trim() == "[DONE]" {
         events.push(ProviderEvent::Done);
-        return ParseOutcome { events, done: true };
+        return FrameOutcome { events, done: true };
     }
     let v: Value = match serde_json::from_str(frame) {
         Ok(v) => v,
@@ -284,7 +247,7 @@ pub(crate) fn handle_frame(frame: &str, state: &mut ClaudeParseState) -> ParseOu
             events.push(ProviderEvent::Error {
                 message: format!("parse error: {e}"),
             });
-            return ParseOutcome {
+            return FrameOutcome {
                 events,
                 done: false,
             };
@@ -347,7 +310,7 @@ pub(crate) fn handle_frame(frame: &str, state: &mut ClaudeParseState) -> ParseOu
         }
         "message_stop" => {
             events.push(ProviderEvent::Done);
-            return ParseOutcome { events, done: true };
+            return FrameOutcome { events, done: true };
         }
         "error" => {
             let msg = v
@@ -360,7 +323,7 @@ pub(crate) fn handle_frame(frame: &str, state: &mut ClaudeParseState) -> ParseOu
         }
         _ => {}
     }
-    ParseOutcome {
+    FrameOutcome {
         events,
         done: false,
     }

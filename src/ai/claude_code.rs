@@ -33,7 +33,7 @@
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -46,9 +46,11 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::ai::claude::{handle_frame, ClaudeParseState};
+use crate::ai::cli_child;
 use crate::ai::opencode::flatten_history;
 use crate::ai::{
-    Capabilities, EventStream, Message, Provider, ProviderContext, ProviderEvent, ToolSpec,
+    join_system, join_user_since, Capabilities, EventStream, Message, Provider, ProviderContext,
+    ProviderEvent, ToolSpec,
 };
 use crate::config::{Config, ConfigSource, ProviderEntry};
 use crate::error::{AppError, Result};
@@ -90,28 +92,6 @@ pub(crate) enum SystemPromptMode {
     Replace,
 }
 
-fn parse_enum<T: Copy>(
-    key: &str,
-    value: Option<&str>,
-    table: &[(&str, T)],
-    default: T,
-) -> Result<T> {
-    let Some(raw) = value else { return Ok(default) };
-    let needle = raw.trim().to_ascii_lowercase();
-    if let Some((_, v)) = table.iter().find(|(name, _)| *name == needle) {
-        return Ok(*v);
-    }
-    let accepted = table
-        .iter()
-        .map(|(name, _)| format!("\"{name}\""))
-        .collect::<Vec<_>>()
-        .join(" | ");
-    Err(AppError::provider(
-        "claude-cli",
-        format!("[provider.claude-cli] {key}: unknown value \"{raw}\" (accepted: {accepted})"),
-    ))
-}
-
 /// Resolved, validated configuration.
 #[derive(Debug, Clone)]
 pub(crate) struct Settings {
@@ -135,13 +115,15 @@ impl Settings {
         Ok(Self {
             bin,
             model: entry.model.clone(),
-            mode: parse_enum(
+            mode: cli_child::parse_enum(
+                "claude-cli",
                 "mode",
                 entry.mode.as_deref(),
                 &[("delegation", Mode::Delegation), ("gateway", Mode::Gateway)],
                 Mode::Delegation,
             )?,
-            transport: parse_enum(
+            transport: cli_child::parse_enum(
+                "claude-cli",
                 "transport",
                 entry.transport.as_deref(),
                 &[
@@ -150,7 +132,8 @@ impl Settings {
                 ],
                 Transport::Stream,
             )?,
-            session: parse_enum(
+            session: cli_child::parse_enum(
+                "claude-cli",
                 "session",
                 entry.session.as_deref(),
                 &[
@@ -167,7 +150,8 @@ impl Settings {
                 entry.turn_timeout_secs.unwrap_or(DEFAULT_TURN_TIMEOUT_SECS),
             ),
             max_budget_usd: entry.max_budget_usd,
-            system_prompt_mode: parse_enum(
+            system_prompt_mode: cli_child::parse_enum(
+                "claude-cli",
                 "system_prompt_mode",
                 entry.system_prompt_mode.as_deref(),
                 &[
@@ -454,36 +438,6 @@ fn blocks(v: &Value) -> &[Value] {
         .unwrap_or(&[])
 }
 
-/// System messages joined into one prompt.
-fn system_prompt(messages: &[Message]) -> Option<String> {
-    let mut out = String::new();
-    for m in messages {
-        if let Message::System { content } = m {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(content);
-        }
-    }
-    (!out.is_empty()).then_some(out)
-}
-
-/// User messages beyond `sent`, joined. Assistant and tool-result entries are
-/// skipped: Claude Code's own session already holds them, and this backend
-/// never emits `ToolUse`, so no `ToolResult` can originate here.
-pub(crate) fn new_user_text(messages: &[Message], sent: usize) -> String {
-    let mut out = String::new();
-    for m in messages.iter().skip(sent) {
-        if let Message::User { content } = m {
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
-            out.push_str(content);
-        }
-    }
-    out
-}
-
 /// A UUID-v4-shaped identifier for `--session-id`, derived from a ULID so no
 /// new dependency is needed.
 fn new_session_uuid() -> String {
@@ -504,45 +458,7 @@ fn new_session_uuid() -> String {
 /// Resolve the configured executable: used as-is when it looks like a path,
 /// otherwise searched on `PATH`.
 pub(crate) fn resolve_bin(raw: &str) -> Result<PathBuf> {
-    let expanded = shellexpand::tilde(raw).to_string();
-    let candidate = Path::new(&expanded);
-    if expanded.contains(std::path::MAIN_SEPARATOR) {
-        return is_executable(candidate)
-            .then(|| candidate.to_path_buf())
-            .ok_or_else(|| not_found(raw));
-    }
-    let paths = std::env::var_os("PATH").ok_or_else(|| not_found(raw))?;
-    std::env::split_paths(&paths)
-        .map(|dir| dir.join(&expanded))
-        .find(|p| is_executable(p))
-        .ok_or_else(|| not_found(raw))
-}
-
-fn not_found(raw: &str) -> AppError {
-    AppError::provider(
-        "claude-cli",
-        format!(
-            "Claude Code executable not found: \"{raw}\".\n  \
-             Install Claude Code, or set [provider.claude-cli] bin to its full path."
-        ),
-    )
-}
-
-fn is_executable(p: &Path) -> bool {
-    if !p.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p)
-            .map(|m| m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    cli_child::resolve_bin(raw, "claude-cli", "Claude Code", "Install Claude Code")
 }
 
 /// The child's piped ends, plus a background drain of stderr.
@@ -660,7 +576,7 @@ impl ClaudeCodeProvider {
     /// The prompt text for a non-resident turn, and how many history entries
     /// it covers.
     async fn plan_for_child(&self, messages: &[Message]) -> Result<TurnPlan> {
-        let system = system_prompt(messages);
+        let system = join_system(messages);
         if self.settings.incremental() {
             // Delegation + oneshot + persistent: Claude Code holds the
             // transcript; carry it across processes with --session-id/--resume.
@@ -822,7 +738,7 @@ impl ClaudeCodeProvider {
 
     /// One resident child for the whole conversation, fed a JSON line per turn.
     async fn resident_turn(&self, messages: &[Message]) -> Result<EventStream<'_>> {
-        let system = system_prompt(messages);
+        let system = join_system(messages);
         let mut guard = self.session.lock().await;
 
         // Respawn when the child never existed, has exited, or the persona
@@ -852,7 +768,7 @@ impl ClaudeCodeProvider {
         }
 
         let session = guard.as_mut().expect("session present");
-        let text = new_user_text(messages, session.sent);
+        let text = join_user_since(messages, session.sent);
         let text = if text.is_empty() {
             last_user(messages).ok_or_else(|| {
                 AppError::provider("claude-cli", "no user message to send".to_string())
@@ -1352,10 +1268,10 @@ mod tests {
                 content: "second".into(),
             },
         ];
-        assert_eq!(new_user_text(&messages, 0), "first\n\nsecond");
+        assert_eq!(join_user_since(&messages, 0), "first\n\nsecond");
         // After the first turn the child has seen entries 0..3.
-        assert_eq!(new_user_text(&messages, 3), "second");
-        assert_eq!(new_user_text(&messages, 4), "");
+        assert_eq!(join_user_since(&messages, 3), "second");
+        assert_eq!(join_user_since(&messages, 4), "");
     }
 
     #[test]

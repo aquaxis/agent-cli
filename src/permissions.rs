@@ -368,7 +368,8 @@ pub fn subject_of(tool: &str, args: &Value) -> Option<String> {
             let url = args.get("url").and_then(Value::as_str)?;
             return Some(host_of(url));
         }
-        "send_to" | "stop_agent" => "peer",
+        "send_to" => "peer",
+        "stop_agent" => "agent",
         _ => return None,
     };
     args.get(field).and_then(Value::as_str).map(str::to_string)
@@ -627,6 +628,15 @@ mod tests {
         let s = set(&["SendTo(worker-*)"], &[], None);
         assert!(is_deny(&s.decide("send_to", &json!({"peer": "worker-1"}))));
         assert!(is_ask(&s.decide("send_to", &json!({"peer": "boss"}))));
+    }
+
+    #[test]
+    fn a_scoped_stop_agent_rule_matches_on_the_agent_argument() {
+        let s = set(&["stop_agent(worker-*)"], &[], None);
+        assert!(is_deny(
+            &s.decide("stop_agent", &json!({"agent": "worker-1"}))
+        ));
+        assert!(is_ask(&s.decide("stop_agent", &json!({"agent": "boss"}))));
     }
 
     // --- the subject table --------------------------------------------------

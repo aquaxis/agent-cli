@@ -286,13 +286,9 @@ pub(crate) fn strip_sgr(s: &str) -> String {
     while let Some(esc) = rest.find('\u{1b}') {
         out.push_str(&rest[..esc]);
         let after = &rest[esc..];
-        let params_and_final = after.strip_prefix("\u{1b}[").and_then(|body| {
-            let end = body.find(|c: char| !c.is_ascii_digit() && c != ';')?;
-            Some((&body[..end], body.as_bytes()[end], end))
-        });
-        match params_and_final {
+        match crate::scroll::sgr_at(after) {
             // A colour/attribute sequence: drop it.
-            Some((_, b'm', end)) => rest = &after[2 + end + 1..],
+            Some((len, _)) => rest = &after[len..],
             // Any other escape (cursor move, erase) is part of the drawing.
             _ => {
                 out.push('\u{1b}');

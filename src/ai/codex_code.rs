@@ -75,7 +75,7 @@
 //! discards a perfectly good thread.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -87,9 +87,11 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use crate::ai::cli_child;
 use crate::ai::opencode::flatten_history;
 use crate::ai::{
-    Capabilities, EventStream, Message, Provider, ProviderContext, ProviderEvent, ToolSpec,
+    join_system, join_user_since, Capabilities, EventStream, Message, Provider, ProviderContext,
+    ProviderEvent, ToolSpec,
 };
 use crate::config::{Config, ConfigSource, ProviderEntry};
 use crate::error::{AppError, Result};
@@ -123,28 +125,6 @@ pub(crate) enum SessionMode {
     Ephemeral,
 }
 
-fn parse_enum<T: Copy>(
-    key: &str,
-    value: Option<&str>,
-    table: &[(&str, T)],
-    default: T,
-) -> Result<T> {
-    let Some(raw) = value else { return Ok(default) };
-    let needle = raw.trim().to_ascii_lowercase();
-    if let Some((_, v)) = table.iter().find(|(name, _)| *name == needle) {
-        return Ok(*v);
-    }
-    let accepted = table
-        .iter()
-        .map(|(name, _)| format!("\"{name}\""))
-        .collect::<Vec<_>>()
-        .join(" | ");
-    Err(AppError::provider(
-        "codex-cli",
-        format!("[provider.codex-cli] {key}: unknown value \"{raw}\" (accepted: {accepted})"),
-    ))
-}
-
 /// Resolved, validated configuration.
 #[derive(Debug, Clone)]
 pub(crate) struct Settings {
@@ -166,13 +146,15 @@ impl Settings {
         Ok(Self {
             bin,
             model: entry.model.clone(),
-            transport: parse_enum(
+            transport: cli_child::parse_enum(
+                "codex-cli",
                 "transport",
                 entry.transport.as_deref(),
                 &[("items", Transport::Items), ("oneshot", Transport::OneShot)],
                 Transport::Items,
             )?,
-            session: parse_enum(
+            session: cli_child::parse_enum(
+                "codex-cli",
                 "session",
                 entry.session.as_deref(),
                 &[
@@ -428,22 +410,6 @@ pub(crate) fn is_resume_not_found(stderr: &str) -> bool {
     stderr.contains("no rollout found for thread id")
 }
 
-/// User messages beyond `sent`, joined. Assistant and tool-result entries are
-/// skipped: codex's own thread already holds them, and this backend never
-/// emits `ToolUse`, so no `ToolResult` can originate here.
-pub(crate) fn new_user_text(messages: &[Message], sent: usize) -> String {
-    let mut out = String::new();
-    for m in messages.iter().skip(sent) {
-        if let Message::User { content } = m {
-            if !out.is_empty() {
-                out.push_str("\n\n");
-            }
-            out.push_str(content);
-        }
-    }
-    out
-}
-
 /// The turn text for a leg where codex holds nothing yet: the persona/system
 /// text (there is no system-prompt flag to carry it) followed by the whole
 /// transcript, flattened.
@@ -456,64 +422,10 @@ pub(crate) fn fresh_prompt(messages: &[Message]) -> String {
     }
 }
 
-/// System messages joined into one string, for change detection (a persona
-/// change re-enters through a fresh conversation, as the claude-cli resident
-/// path respawns).
-fn system_text(messages: &[Message]) -> Option<String> {
-    let mut out = String::new();
-    for m in messages {
-        if let Message::System { content } = m {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(content);
-        }
-    }
-    (!out.is_empty()).then_some(out)
-}
-
 /// Resolve the configured executable: used as-is when it looks like a path,
 /// otherwise searched on `PATH`.
 pub(crate) fn resolve_bin(raw: &str) -> Result<PathBuf> {
-    let expanded = shellexpand::tilde(raw).to_string();
-    let candidate = Path::new(&expanded);
-    if expanded.contains(std::path::MAIN_SEPARATOR) {
-        return is_executable(candidate)
-            .then(|| candidate.to_path_buf())
-            .ok_or_else(|| not_found(raw));
-    }
-    let paths = std::env::var_os("PATH").ok_or_else(|| not_found(raw))?;
-    std::env::split_paths(&paths)
-        .map(|dir| dir.join(&expanded))
-        .find(|p| is_executable(p))
-        .ok_or_else(|| not_found(raw))
-}
-
-fn not_found(raw: &str) -> AppError {
-    AppError::provider(
-        "codex-cli",
-        format!(
-            "Codex CLI executable not found: \"{raw}\".\n  \
-             Install the Codex CLI, or set [provider.codex-cli] bin to its full path."
-        ),
-    )
-}
-
-fn is_executable(p: &Path) -> bool {
-    if !p.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p)
-            .map(|m| m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    cli_child::resolve_bin(raw, "codex-cli", "Codex CLI", "Install the Codex CLI")
 }
 
 /// The child's piped ends, plus a background drain of stderr. Every stderr
@@ -681,7 +593,7 @@ impl CodexCodeProvider {
     /// turn (each conversation stands alone). A persona change re-enters
     /// fresh, as the claude-cli resident path respawns on one.
     async fn plan_for_turn(&self, messages: &[Message]) -> Result<TurnPlan> {
-        let system = system_text(messages);
+        let system = join_system(messages);
         {
             let recorded = self.current_system.lock().await;
             if *recorded != system {
@@ -695,7 +607,7 @@ impl CodexCodeProvider {
         };
         let mut sent = self.sent.lock().await;
         let prompt = match &action {
-            SessionAction::Resume(_) => new_user_text(messages, *sent),
+            SessionAction::Resume(_) => join_user_since(messages, *sent),
             // Fresh and sessionless legs both carry the conversation flat:
             // codex holds nothing of it yet.
             _ => fresh_prompt(messages),
@@ -1188,9 +1100,9 @@ mod tests {
                 content: "second".into(),
             },
         ];
-        assert_eq!(new_user_text(&messages, 0), "first\n\nsecond");
-        assert_eq!(new_user_text(&messages, 2), "second");
-        assert_eq!(new_user_text(&messages, 3), "");
+        assert_eq!(join_user_since(&messages, 0), "first\n\nsecond");
+        assert_eq!(join_user_since(&messages, 2), "second");
+        assert_eq!(join_user_since(&messages, 3), "");
     }
 
     #[test]

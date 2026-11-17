@@ -24,11 +24,11 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
 use crate::ai::claude::{handle_frame, to_anthropic_messages, ClaudeParseState};
-use crate::ai::stream::SseAccumulator;
+use crate::ai::openai_chat::{handle_openai_frame, OpenAiParseState};
+use crate::ai::stream::{sse_events, FrameOutcome};
 use crate::ai::tool_bridge::{to_anthropic_tools, to_openai_tools};
 use crate::ai::{
     http_error, Capabilities, EventStream, Message, Provider, ProviderContext, ProviderEvent,
@@ -182,9 +182,9 @@ impl OpenCodeProvider {
     }
 
     /// Everything about a cloud request that does not need the network: URL,
-    /// headers and JSON body. Extracted from the two `complete_stream_cloud_*`
-    /// methods so the wire — in particular `x-opencode-session` — can be
-    /// asserted by a test instead of read off the code.
+    /// headers and JSON body. Extracted from `complete_stream_cloud` so the
+    /// wire — in particular `x-opencode-session` — can be asserted by a test
+    /// instead of read off the code.
     pub(crate) fn build_cloud_request(
         &self,
         api: CloudApi,
@@ -252,127 +252,43 @@ impl OpenCodeProvider {
         }
     }
 
-    /// Cloud (OpenCode Zen) dispatcher — picks the OpenAI- or
-    /// Anthropic-compatible endpoint per `[provider.opencode] api`.
+    /// Cloud (OpenCode Zen) — picks the OpenAI-compatible
+    /// (`{base}/chat/completions`, `[DONE]`-terminated SSE) or
+    /// Anthropic-compatible (`{base}/messages`, Claude SSE parser) endpoint
+    /// per `[provider.opencode] api`. Auth for the Anthropic style is sent as
+    /// both `Authorization: Bearer` (Zen convention) and `x-api-key` (native
+    /// Anthropic), plus `anthropic-version`, for gateway compatibility.
     async fn complete_stream_cloud(
         &self,
         messages: &[Message],
         tools: &[ToolSpec],
     ) -> Result<EventStream<'_>> {
-        match self.cloud_api {
-            CloudApi::OpenAi => self.complete_stream_cloud_openai(messages, tools).await,
-            CloudApi::Anthropic => self.complete_stream_cloud_anthropic(messages, tools).await,
-        }
-    }
-
-    /// Cloud — OpenAI-compatible streaming chat completions
-    /// (`{base}/chat/completions`, `[DONE]`-terminated SSE).
-    async fn complete_stream_cloud_openai(
-        &self,
-        messages: &[Message],
-        tools: &[ToolSpec],
-    ) -> Result<EventStream<'_>> {
-        let request = self.build_cloud_request(CloudApi::OpenAi, messages, tools);
+        let request = self.build_cloud_request(self.cloud_api, messages, tools);
         let mut req = self.client.post(&request.url).json(&request.body);
         for (name, value) in &request.headers {
             req = req.header(*name, value);
         }
-        let resp = req.send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let headers = resp.headers().clone();
-            let text = resp.text().await.unwrap_or_default();
-            tracing::debug!(target: "agent_cli::ai::opencode", status = %status, body = %text, "provider HTTP error");
-            return Err(self.provider_error(status, &headers, text));
-        }
-
-        let byte_stream = resp.bytes_stream();
-        let stream = async_stream::stream! {
-            let mut acc = SseAccumulator::new();
-            let mut state = OpenCodeParseState::default();
-            let mut byte_stream = Box::pin(byte_stream);
-            while let Some(chunk) = byte_stream.next().await {
-                match chunk {
-                    Ok(bytes) => {
-                        let s = String::from_utf8_lossy(&bytes);
-                        acc.push(&s);
-                        for frame in acc.drain_frames() {
-                            let outcome = handle_opencode_frame(&frame, &mut state);
-                            for ev in outcome.events {
-                                yield ev;
-                            }
-                            if outcome.done {
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        yield ProviderEvent::Error {
-                            message: crate::ai::stream_mid_body("opencode", &self.model, &e.to_string()),
-                        };
-                        return;
-                    }
-                }
+        let resp = ensure_success!(
+            req.send().await?,
+            "agent_cli::ai::opencode",
+            "opencode",
+            &self.context
+        )?;
+        let bytes = resp.bytes_stream();
+        Ok(match self.cloud_api {
+            CloudApi::OpenAi => {
+                let mut state = OpenAiParseState::default();
+                sse_events(bytes, "opencode", &self.model, move |frame| {
+                    handle_opencode_frame(frame, &mut state)
+                })
             }
-            yield ProviderEvent::Done;
-        };
-        Ok(Box::pin(stream))
-    }
-
-    /// Cloud — Anthropic-compatible streaming messages
-    /// (`{base}/messages`). Reuses the Claude request/SSE machinery; auth is
-    /// sent as both `Authorization: Bearer` (Zen convention) and `x-api-key`
-    /// (native Anthropic), plus `anthropic-version`, for gateway compatibility.
-    async fn complete_stream_cloud_anthropic(
-        &self,
-        messages: &[Message],
-        tools: &[ToolSpec],
-    ) -> Result<EventStream<'_>> {
-        let request = self.build_cloud_request(CloudApi::Anthropic, messages, tools);
-        let mut req = self.client.post(&request.url).json(&request.body);
-        for (name, value) in &request.headers {
-            req = req.header(*name, value);
-        }
-        let resp = req.send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let headers = resp.headers().clone();
-            let text = resp.text().await.unwrap_or_default();
-            tracing::debug!(target: "agent_cli::ai::opencode", status = %status, body = %text, "provider HTTP error");
-            return Err(self.provider_error(status, &headers, text));
-        }
-
-        let byte_stream = resp.bytes_stream();
-        let stream = async_stream::stream! {
-            let mut acc = SseAccumulator::new();
-            let mut state = ClaudeParseState::default();
-            let mut byte_stream = Box::pin(byte_stream);
-            while let Some(chunk) = byte_stream.next().await {
-                match chunk {
-                    Ok(bytes) => {
-                        let s = String::from_utf8_lossy(&bytes);
-                        acc.push(&s);
-                        for frame in acc.drain_frames() {
-                            let outcome = handle_frame(&frame, &mut state);
-                            for ev in outcome.events {
-                                yield ev;
-                            }
-                            if outcome.done {
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        yield ProviderEvent::Error {
-                            message: crate::ai::stream_mid_body("opencode", &self.model, &e.to_string()),
-                        };
-                        return;
-                    }
-                }
+            CloudApi::Anthropic => {
+                let mut state = ClaudeParseState::default();
+                sse_events(bytes, "opencode", &self.model, move |frame| {
+                    handle_frame(frame, &mut state)
+                })
             }
-            yield ProviderEvent::Done;
-        };
-        Ok(Box::pin(stream))
+        })
     }
 
     /// Local (`opencode serve`) — create an ephemeral session then post one
@@ -686,120 +602,11 @@ pub(crate) fn flatten_history(messages: &[Message]) -> (Option<String>, String) 
     (system, body.trim_end().to_string())
 }
 
-/// Intermediate state for cloud-mode (OpenAI-compatible) SSE parsing.
-#[derive(Default)]
-pub(crate) struct OpenCodeParseState {
-    /// Currently assembling tool_call: (id, name, partial JSON args).
-    pub current_tool: Option<(String, String, String)>,
-}
-
-pub(crate) struct OpenCodeOutcome {
-    pub events: Vec<ProviderEvent>,
-    pub done: bool,
-}
-
-fn flush_tool(state: &mut OpenCodeParseState) -> Option<ProviderEvent> {
-    let (id, name, args) = state.current_tool.take()?;
-    let v: Value = serde_json::from_str(&args).unwrap_or(Value::Object(Default::default()));
-    Some(ProviderEvent::ToolUse { id, name, args: v })
-}
-
 /// Pure parser for one cloud-mode (OpenAI-compatible) chat-completions SSE
-/// frame. Mirrors the OpenAI streaming shape: text deltas, incrementally
-/// assembled `tool_calls`, and a `[DONE]` terminator.
-pub(crate) fn handle_opencode_frame(
-    frame: &str,
-    state: &mut OpenCodeParseState,
-) -> OpenCodeOutcome {
-    let mut events = Vec::new();
-    if frame.trim() == "[DONE]" {
-        if let Some(ev) = flush_tool(state) {
-            events.push(ev);
-        }
-        events.push(ProviderEvent::Done);
-        return OpenCodeOutcome { events, done: true };
-    }
-    let v: Value = match serde_json::from_str(frame) {
-        Ok(v) => v,
-        Err(_) => {
-            return OpenCodeOutcome {
-                events,
-                done: false,
-            }
-        }
-    };
-    let choice = v
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .cloned()
-        .unwrap_or(Value::Null);
-    let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
-    // DeepSeek thinking mode streams chain-of-thought as
-    // `delta.reasoning_content`. Surface it as a Thinking event so
-    // process_turn can accumulate and echo it back (the endpoint rejects
-    // the next request if the prior assistant turn omits it).
-    if let Some(r) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
-        if !r.is_empty() {
-            events.push(ProviderEvent::Thinking {
-                text: r.to_string(),
-            });
-        }
-    }
-    if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
-        if !text.is_empty() {
-            events.push(ProviderEvent::Text {
-                delta: text.to_string(),
-            });
-        }
-    }
-    if let Some(arr) = delta.get("tool_calls").and_then(|c| c.as_array()) {
-        for tc in arr {
-            let id = tc.get("id").and_then(|s| s.as_str()).map(|s| s.to_string());
-            let func = tc.get("function").cloned().unwrap_or(Value::Null);
-            let name = func
-                .get("name")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string());
-            let args_part = func.get("arguments").and_then(|s| s.as_str()).unwrap_or("");
-            match (id, name) {
-                (Some(id), Some(name)) => {
-                    state.current_tool = Some((id, name, args_part.to_string()));
-                }
-                (None, None) => {
-                    if let Some((_, _, partial)) = state.current_tool.as_mut() {
-                        partial.push_str(args_part);
-                    }
-                }
-                (Some(id), None) => {
-                    if let Some((existing, _, partial)) = state.current_tool.as_mut() {
-                        if existing.is_empty() {
-                            *existing = id;
-                        }
-                        partial.push_str(args_part);
-                    }
-                }
-                (None, Some(name)) => {
-                    if let Some((_, existing_name, partial)) = state.current_tool.as_mut() {
-                        if existing_name.is_empty() {
-                            *existing_name = name;
-                        }
-                        partial.push_str(args_part);
-                    }
-                }
-            }
-        }
-    }
-    if let Some(reason) = choice.get("finish_reason").and_then(|s| s.as_str()) {
-        if reason == "tool_calls" {
-            if let Some(ev) = flush_tool(state) {
-                events.push(ev);
-            }
-        }
-    }
-    OpenCodeOutcome {
-        events,
-        done: false,
-    }
+/// frame: the shared chat-completions parser with DeepSeek's
+/// `delta.reasoning_content` surfaced as `Thinking`.
+pub(crate) fn handle_opencode_frame(frame: &str, state: &mut OpenAiParseState) -> FrameOutcome {
+    handle_openai_frame(frame, state, true)
 }
 
 /// Pure parser for the local session-API synchronous reply's `parts` array.
@@ -1084,7 +891,7 @@ session_id = "ses_pinned_by_user"
     }
 
     fn collect_cloud(frames: &[&str]) -> Vec<ProviderEvent> {
-        let mut state = OpenCodeParseState::default();
+        let mut state = OpenAiParseState::default();
         let mut out = Vec::new();
         for f in frames {
             let outcome = handle_opencode_frame(f, &mut state);
@@ -1139,7 +946,7 @@ session_id = "ses_pinned_by_user"
 
     #[test]
     fn cloud_invalid_json_is_silently_skipped() {
-        let mut state = OpenCodeParseState::default();
+        let mut state = OpenAiParseState::default();
         let outcome = handle_opencode_frame("not-json", &mut state);
         assert!(outcome.events.is_empty());
         assert!(!outcome.done);

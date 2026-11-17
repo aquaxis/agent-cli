@@ -1,3 +1,62 @@
+use futures::stream::{Stream, StreamExt};
+
+use crate::ai::{EventStream, ProviderEvent};
+
+/// Result of interpreting one SSE frame: the events it produced and whether
+/// the stream is finished (no further frames should be read).
+pub(crate) struct FrameOutcome {
+    pub events: Vec<ProviderEvent>,
+    pub done: bool,
+}
+
+/// Turn an HTTP body byte stream into a `ProviderEvent` stream: each chunk is
+/// decoded (lossily) as UTF-8, split into SSE frames by `SseAccumulator`, and
+/// every frame handed to `parse`. Events are yielded in order; a frame whose
+/// outcome is `done` ends the stream immediately. A transport error yields one
+/// `Error` (with `provider`/`model` context) and ends the stream; a body that
+/// ends without a terminating frame yields a final `Done`.
+pub(crate) fn sse_events<'a, S, B, E, F>(
+    bytes: S,
+    provider: &'a str,
+    model: &'a str,
+    mut parse: F,
+) -> EventStream<'a>
+where
+    S: Stream<Item = std::result::Result<B, E>> + Send + 'a,
+    B: AsRef<[u8]> + Send + 'a,
+    E: std::fmt::Display + Send + 'a,
+    F: FnMut(&str) -> FrameOutcome + Send + 'a,
+{
+    Box::pin(async_stream::stream! {
+        let mut acc = SseAccumulator::new();
+        let mut bytes = Box::pin(bytes);
+        while let Some(chunk) = bytes.next().await {
+            match chunk {
+                Ok(chunk) => {
+                    let s = String::from_utf8_lossy(chunk.as_ref());
+                    acc.push(&s);
+                    for frame in acc.drain_frames() {
+                        let outcome = parse(&frame);
+                        for ev in outcome.events {
+                            yield ev;
+                        }
+                        if outcome.done {
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    yield ProviderEvent::Error {
+                        message: crate::ai::stream_mid_body(provider, model, &e.to_string()),
+                    };
+                    return;
+                }
+            }
+        }
+        yield ProviderEvent::Done;
+    })
+}
+
 /// Iterator-style helper that extracts SSE frames.
 /// Accumulates bytes from the server line by line and yields "data: ..." blocks separated by blank lines.
 pub struct SseAccumulator {

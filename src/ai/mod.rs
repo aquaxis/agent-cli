@@ -9,12 +9,36 @@ use serde::{Deserialize, Serialize};
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
 
+/// Pass a successful response through; otherwise read the rejected
+/// response's status, headers and body, log them at debug level under the
+/// calling module's `target`, and evaluate to the provider's diagnostic error
+/// (`http_error`). Evaluates to `Result<reqwest::Response>`. A macro rather
+/// than a function because `tracing` needs the target as a literal.
+macro_rules! ensure_success {
+    ($resp:expr, $target:literal, $provider:expr, $context:expr) => {{
+        let resp: reqwest::Response = $resp;
+        if resp.status().is_success() {
+            Ok(resp)
+        } else {
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let text = resp.text().await.unwrap_or_default();
+            tracing::debug!(target: $target, status = %status, body = %text, "provider HTTP error");
+            Err($crate::ai::http_error(
+                $provider, status, &headers, text, $context,
+            ))
+        }
+    }};
+}
+
 pub mod claude;
 pub mod claude_code;
+pub(crate) mod cli_child;
 pub mod codex;
 pub mod codex_code;
 pub mod llamacpp;
 pub mod ollama;
+pub(crate) mod openai_chat;
 pub mod opencode;
 pub mod stream;
 pub mod tool_bridge;
@@ -166,6 +190,38 @@ pub const SUPPORTED: &[&str] = &[
     "strata",
     "llama.cpp",
 ];
+
+/// System messages joined with `\n` into one prompt; `None` when there are
+/// none (or all are empty).
+pub(crate) fn join_system(messages: &[Message]) -> Option<String> {
+    let mut out = String::new();
+    for m in messages {
+        if let Message::System { content } = m {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(content);
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// User messages at and after index `sent`, joined with a blank line.
+/// Assistant and tool-result entries are skipped: the CLI backends that use
+/// this (`claude-cli`, `codex-cli`) keep their own session holding them, and
+/// never emit `ToolUse`, so no `ToolResult` can originate there.
+pub(crate) fn join_user_since(messages: &[Message], sent: usize) -> String {
+    let mut out = String::new();
+    for m in messages.iter().skip(sent) {
+        if let Message::User { content } = m {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(content);
+        }
+    }
+    out
+}
 
 /// Message for a provider stream that failed mid-body, carrying the
 /// provider/model context the bare reqwest error text lacks. The raw error is

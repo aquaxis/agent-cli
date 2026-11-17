@@ -1,14 +1,13 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
-use crate::ai::stream::SseAccumulator;
+use crate::ai::openai_chat::to_plain_openai_messages;
+use crate::ai::stream::{sse_events, FrameOutcome};
 use crate::ai::tool_bridge::to_openai_tools;
 use crate::ai::{
-    http_error, Capabilities, EventStream, Message, Provider, ProviderContext, ProviderEvent,
-    ToolSpec,
+    Capabilities, EventStream, Message, Provider, ProviderContext, ProviderEvent, ToolSpec,
 };
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
@@ -78,7 +77,7 @@ impl LlamaCppProvider {
         let mut body = json!({
             "model": self.model,
             "stream": true,
-            "messages": to_oai_messages(messages),
+            "messages": to_plain_openai_messages(messages),
         });
         if !tools.is_empty() {
             body["tools"] = Value::Array(to_openai_tools(tools));
@@ -109,37 +108,6 @@ impl LlamaCppProvider {
         }
         body
     }
-}
-
-fn to_oai_messages(messages: &[Message]) -> Vec<Value> {
-    let mut out = Vec::new();
-    for m in messages {
-        match m {
-            Message::System { content } => {
-                out.push(json!({"role": "system", "content": content}));
-            }
-            Message::User { content } => {
-                out.push(json!({"role": "user", "content": content}));
-            }
-            // Not reachable from the shipped `kind="opencode"` config; tool
-            // calls are not serialized here (latent — deferred).
-            Message::Assistant { content, .. } => {
-                out.push(json!({"role": "assistant", "content": content}));
-            }
-            Message::ToolResult {
-                tool_use_id,
-                content,
-                ..
-            } => {
-                out.push(json!({
-                    "role": "tool",
-                    "tool_call_id": tool_use_id,
-                    "content": content,
-                }));
-            }
-        }
-    }
-    out
 }
 
 #[async_trait]
@@ -179,70 +147,32 @@ impl Provider for LlamaCppProvider {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let resp = req.json(&body).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let headers = resp.headers().clone();
-            let text = resp.text().await.unwrap_or_default();
-            tracing::debug!(target: "agent_cli::ai::llamacpp", status = %status, body = %text, "provider HTTP error");
-            return Err(http_error(
-                "llama.cpp",
-                status,
-                &headers,
-                text,
-                &self.context,
-            ));
-        }
-
-        let byte_stream = resp.bytes_stream();
-        let stream = async_stream::stream! {
-            let mut acc = SseAccumulator::new();
-            let mut byte_stream = Box::pin(byte_stream);
-            while let Some(chunk) = byte_stream.next().await {
-                match chunk {
-                    Ok(bytes) => {
-                        let s = String::from_utf8_lossy(&bytes);
-                        acc.push(&s);
-                        for frame in acc.drain_frames() {
-                            let outcome = handle_llamacpp_frame(&frame);
-                            for ev in outcome.events {
-                                yield ev;
-                            }
-                            if outcome.done {
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        yield ProviderEvent::Error {
-                            message: crate::ai::stream_mid_body("llama.cpp", &self.model, &e.to_string()),
-                        };
-                        return;
-                    }
-                }
-            }
-            yield ProviderEvent::Done;
-        };
-        Ok(Box::pin(stream))
+        let resp = ensure_success!(
+            req.json(&body).send().await?,
+            "agent_cli::ai::llamacpp",
+            "llama.cpp",
+            &self.context
+        )?;
+        Ok(sse_events(
+            resp.bytes_stream(),
+            "llama.cpp",
+            &self.model,
+            handle_llamacpp_frame,
+        ))
     }
 }
 
-pub(crate) struct LlamaCppOutcome {
-    pub events: Vec<ProviderEvent>,
-    pub done: bool,
-}
-
 /// Pure function to interpret a single SSE frame from llama.cpp (OpenAI-compatible).
-pub(crate) fn handle_llamacpp_frame(frame: &str) -> LlamaCppOutcome {
+pub(crate) fn handle_llamacpp_frame(frame: &str) -> FrameOutcome {
     let mut events = Vec::new();
     if frame.trim() == "[DONE]" {
         events.push(ProviderEvent::Done);
-        return LlamaCppOutcome { events, done: true };
+        return FrameOutcome { events, done: true };
     }
     let v: Value = match serde_json::from_str(frame) {
         Ok(v) => v,
         Err(_) => {
-            return LlamaCppOutcome {
+            return FrameOutcome {
                 events,
                 done: false,
             }
@@ -261,7 +191,7 @@ pub(crate) fn handle_llamacpp_frame(frame: &str) -> LlamaCppOutcome {
             });
         }
     }
-    LlamaCppOutcome {
+    FrameOutcome {
         events,
         done: false,
     }
@@ -272,29 +202,20 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// Build a bare provider with the given sampling knobs for body tests.
-    #[allow(clippy::too_many_arguments)]
-    fn provider(
-        temperature: Option<f32>,
-        max_tokens: Option<u32>,
-        top_k: Option<u32>,
-        top_p: Option<f32>,
-        min_p: Option<f32>,
-        repeat_penalty: Option<f32>,
-        repeat_last_n: Option<i32>,
-        seed: Option<u64>,
-    ) -> LlamaCppProvider {
-        LlamaCppProvider {
+    /// Build a bare provider (no sampling knobs set), then let `tweak` set
+    /// the ones a body test needs.
+    fn provider(tweak: impl FnOnce(&mut LlamaCppProvider)) -> LlamaCppProvider {
+        let mut p = LlamaCppProvider {
             base_url: "http://127.0.0.1:8080".to_string(),
             model: "default".to_string(),
-            temperature,
-            max_tokens,
-            top_k,
-            top_p,
-            min_p,
-            repeat_penalty,
-            repeat_last_n,
-            seed,
+            temperature: None,
+            max_tokens: None,
+            top_k: None,
+            top_p: None,
+            min_p: None,
+            repeat_penalty: None,
+            repeat_last_n: None,
+            seed: None,
             client: reqwest::Client::new(),
             api_key: None,
             context: ProviderContext {
@@ -302,7 +223,9 @@ mod tests {
                 api_key_env: None,
                 api_key_mask: None,
             },
-        }
+        };
+        tweak(&mut p);
+        p
     }
 
     fn one_user() -> Vec<Message> {
@@ -316,7 +239,7 @@ mod tests {
     /// behavior before these fields existed.
     #[test]
     fn build_body_omits_unset_sampling_fields() {
-        let p = provider(None, None, None, None, None, None, None, None);
+        let p = provider(|_| {});
         let body = p.build_body(&one_user(), &[]);
         let obj = body.as_object().unwrap();
         assert_eq!(obj.get("model").and_then(|v| v.as_str()), Some("default"));
@@ -342,16 +265,16 @@ mod tests {
     /// `--repeat-penalty 1.05`, `--top_k 80` case, plus the rest).
     #[test]
     fn build_body_forwards_set_sampling_fields() {
-        let p = provider(
-            Some(0.2),
-            Some(1024),
-            Some(80),
-            Some(0.95),
-            Some(0.05),
-            Some(1.05),
-            Some(64),
-            Some(7),
-        );
+        let p = provider(|p| {
+            p.temperature = Some(0.2);
+            p.max_tokens = Some(1024);
+            p.top_k = Some(80);
+            p.top_p = Some(0.95);
+            p.min_p = Some(0.05);
+            p.repeat_penalty = Some(1.05);
+            p.repeat_last_n = Some(64);
+            p.seed = Some(7);
+        });
         let body = p.build_body(&one_user(), &[]);
         // Integer fields compare exactly; float fields are compared against the
         // same f32 widening the serializer applies (avoids f32→f64 precision

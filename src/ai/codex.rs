@@ -1,14 +1,13 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
-use crate::ai::stream::SseAccumulator;
+use crate::ai::openai_chat::{handle_openai_frame, to_plain_openai_messages, OpenAiParseState};
+use crate::ai::stream::{sse_events, FrameOutcome};
 use crate::ai::tool_bridge::to_openai_tools;
 use crate::ai::{
-    http_error, Capabilities, EventStream, Message, Provider, ProviderContext, ProviderError,
-    ProviderEvent, ToolSpec,
+    Capabilities, EventStream, Message, Provider, ProviderContext, ProviderError, ToolSpec,
 };
 use crate::config::{Config, ConfigSource};
 use crate::error::{AppError, Result};
@@ -97,38 +96,6 @@ impl CodexProvider {
     }
 }
 
-fn to_openai_messages(messages: &[Message]) -> Vec<Value> {
-    let mut out = Vec::new();
-    for m in messages {
-        match m {
-            Message::System { content } => {
-                out.push(json!({"role": "system", "content": content}));
-            }
-            Message::User { content } => {
-                out.push(json!({"role": "user", "content": content}));
-            }
-            // Not reachable from the shipped `kind="opencode"` config; tool
-            // calls are not serialized here (same latent bug as the opencode
-            // path had — fix deferred to a codex-provider cycle if needed).
-            Message::Assistant { content, .. } => {
-                out.push(json!({"role": "assistant", "content": content}));
-            }
-            Message::ToolResult {
-                tool_use_id,
-                content,
-                ..
-            } => {
-                out.push(json!({
-                    "role": "tool",
-                    "tool_call_id": tool_use_id,
-                    "content": content,
-                }));
-            }
-        }
-    }
-    out
-}
-
 #[async_trait]
 impl Provider for CodexProvider {
     fn name(&self) -> &'static str {
@@ -155,7 +122,7 @@ impl Provider for CodexProvider {
         let mut body = json!({
             "model": self.model,
             "stream": true,
-            "messages": to_openai_messages(messages),
+            "messages": to_plain_openai_messages(messages),
         });
         if !tools.is_empty() {
             body["tools"] = Value::Array(to_openai_tools(tools));
@@ -177,165 +144,35 @@ impl Provider for CodexProvider {
         } else {
             request
         };
-        let resp = request.json(&body).send().await?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let headers = resp.headers().clone();
-            let text = resp.text().await.unwrap_or_default();
-            tracing::debug!(target: "agent_cli::ai::codex", status = %status, body = %text, "provider HTTP error");
-            return Err(http_error(
-                self.kind_label,
-                status,
-                &headers,
-                text,
-                &self.context,
-            ));
-        }
-
-        let byte_stream = resp.bytes_stream();
-        let stream = async_stream::stream! {
-            let mut acc = SseAccumulator::new();
-            let mut state = CodexParseState::default();
-            let mut byte_stream = Box::pin(byte_stream);
-            while let Some(chunk) = byte_stream.next().await {
-                match chunk {
-                    Ok(bytes) => {
-                        let s = String::from_utf8_lossy(&bytes);
-                        acc.push(&s);
-                        for frame in acc.drain_frames() {
-                            let outcome = handle_codex_frame(&frame, &mut state);
-                            for ev in outcome.events {
-                                yield ev;
-                            }
-                            if outcome.done {
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        yield ProviderEvent::Error {
-                            message: crate::ai::stream_mid_body(
-                                self.kind_label,
-                                &self.model,
-                                &e.to_string(),
-                            ),
-                        };
-                        return;
-                    }
-                }
-            }
-            yield ProviderEvent::Done;
-        };
-        Ok(Box::pin(stream))
+        let resp = ensure_success!(
+            request.json(&body).send().await?,
+            "agent_cli::ai::codex",
+            self.kind_label,
+            &self.context
+        )?;
+        let mut state = OpenAiParseState::default();
+        Ok(sse_events(
+            resp.bytes_stream(),
+            self.kind_label,
+            &self.model,
+            move |frame| handle_codex_frame(frame, &mut state),
+        ))
     }
 }
 
-/// Intermediate state for OpenAI Chat Completions stream parsing.
-#[derive(Default)]
-pub(crate) struct CodexParseState {
-    /// Currently assembling tool_call: (id, name, partial JSON)
-    pub current_tool: Option<(String, String, String)>,
-}
-
-pub(crate) struct CodexOutcome {
-    pub events: Vec<ProviderEvent>,
-    pub done: bool,
-}
-
-fn flush_tool(state: &mut CodexParseState) -> Option<ProviderEvent> {
-    let (id, name, args) = state.current_tool.take()?;
-    let v: Value = serde_json::from_str(&args).unwrap_or(Value::Object(Default::default()));
-    Some(ProviderEvent::ToolUse { id, name, args: v })
-}
-
-/// Pure function to interpret a single Chat Completions SSE frame.
-pub(crate) fn handle_codex_frame(frame: &str, state: &mut CodexParseState) -> CodexOutcome {
-    let mut events = Vec::new();
-    if frame.trim() == "[DONE]" {
-        if let Some(ev) = flush_tool(state) {
-            events.push(ev);
-        }
-        events.push(ProviderEvent::Done);
-        return CodexOutcome { events, done: true };
-    }
-    let v: Value = match serde_json::from_str(frame) {
-        Ok(v) => v,
-        Err(_) => {
-            return CodexOutcome {
-                events,
-                done: false,
-            }
-        }
-    };
-    let choice = v
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .cloned()
-        .unwrap_or(Value::Null);
-    let delta = choice.get("delta").cloned().unwrap_or(Value::Null);
-    if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
-        if !text.is_empty() {
-            events.push(ProviderEvent::Text {
-                delta: text.to_string(),
-            });
-        }
-    }
-    if let Some(arr) = delta.get("tool_calls").and_then(|c| c.as_array()) {
-        for tc in arr {
-            let id = tc.get("id").and_then(|s| s.as_str()).map(|s| s.to_string());
-            let func = tc.get("function").cloned().unwrap_or(Value::Null);
-            let name = func
-                .get("name")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_string());
-            let args_part = func.get("arguments").and_then(|s| s.as_str()).unwrap_or("");
-            match (id, name) {
-                (Some(id), Some(name)) => {
-                    state.current_tool = Some((id, name, args_part.to_string()));
-                }
-                (None, None) => {
-                    if let Some((_, _, partial)) = state.current_tool.as_mut() {
-                        partial.push_str(args_part);
-                    }
-                }
-                (Some(id), None) => {
-                    if let Some((existing, _, partial)) = state.current_tool.as_mut() {
-                        if existing.is_empty() {
-                            *existing = id;
-                        }
-                        partial.push_str(args_part);
-                    }
-                }
-                (None, Some(name)) => {
-                    if let Some((_, existing_name, partial)) = state.current_tool.as_mut() {
-                        if existing_name.is_empty() {
-                            *existing_name = name;
-                        }
-                        partial.push_str(args_part);
-                    }
-                }
-            }
-        }
-    }
-    if let Some(reason) = choice.get("finish_reason").and_then(|s| s.as_str()) {
-        if reason == "tool_calls" {
-            if let Some(ev) = flush_tool(state) {
-                events.push(ev);
-            }
-        }
-    }
-    CodexOutcome {
-        events,
-        done: false,
-    }
+/// Pure function to interpret a single Chat Completions SSE frame (no
+/// `reasoning_content` handling on this wire).
+pub(crate) fn handle_codex_frame(frame: &str, state: &mut OpenAiParseState) -> FrameOutcome {
+    handle_openai_frame(frame, state, false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::ProviderEvent;
 
     fn collect(frames: &[&str]) -> Vec<ProviderEvent> {
-        let mut state = CodexParseState::default();
+        let mut state = OpenAiParseState::default();
         let mut out = Vec::new();
         for f in frames {
             let outcome = handle_codex_frame(f, &mut state);
@@ -403,7 +240,7 @@ mod tests {
 
     #[test]
     fn invalid_json_is_silently_skipped() {
-        let mut state = CodexParseState::default();
+        let mut state = OpenAiParseState::default();
         let outcome = handle_codex_frame("not-json", &mut state);
         assert!(outcome.events.is_empty());
         assert!(!outcome.done);
