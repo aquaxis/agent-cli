@@ -484,7 +484,7 @@ Changes require `agent-cli` restart (runtime toggling is not supported). See [`d
 |------|-------------|
 | Type | `AgentEvent::Info` (informational; not an error) |
 | Trigger | The AI cycles through `tool_use → tool result → tool_use → ...` for a single user input and reaches the `[runtime] max_tool_iterations` cap (default 24) |
-| What happens next | The turn ends with `Done`; the next user prompt `> ` is redrawn (FR-03-2) |
+| What happens next | The turn ends with `Done`; the next user prompt `> ` is redrawn |
 | Impact | Not written to error logs or monitoring alerts (`[info]` channel, not `[error]`). Conversation history is preserved |
 
 Meaning: The AI kept calling tools iteratively without reaching a conclusion. This is a guard mechanism (`agent.rs::process_turn` applies `self.config.runtime.max_tool_iterations.max(1)`) to prevent infinite loops.

@@ -44,8 +44,9 @@ agent-cli [--config <path>] <subcommand>
 | `--persona <path>` | Explicit persona file path |
 | `--group <id>` | Group this agent joins; detached children inherit it. Overrides the `[runtime] group` config key. See [Groups](#groups) |
 | `--auto-approve-tools` | Skip y/N approval for tool invocations |
+| `--exit-when-idle` | `serve`/`spawn`: end the session after the last queued input. Spawned peers get it by default (`[spawn] exit_when_idle`) |
 
-`spawn` and `serve` accept the same options as `run` (`--name` / `--group` / `--provider` / `--model` / `--persona` / `--auto-approve-tools`).
+`spawn` and `serve` accept the same options as `run` (`--name` / `--group` / `--provider` / `--model` / `--persona` / `--auto-approve-tools` / `--exit-when-idle`).
 
 ## Detached agents
 
@@ -523,7 +524,7 @@ Claude's `thinking_delta` and Ollama's `message.thinking` (e.g. `glm-5.3-flash:c
 | `"collapsed"` (default) | Truncate each delta to a single line: "first 80 chars + `...`" |
 | `"expanded"` | Print the full thinking text verbatim |
 
-Unknown values (e.g. `"verbose"`) fall back to `"collapsed"`. Changes take effect on next `agent-cli` restart; runtime toggling is not supported. See [`doc/config.md`](config.md) "UI display modes" for details.
+Unknown values (e.g. `"verbose"`) fall back to `"collapsed"`. Changes take effect on next `agent-cli` restart; runtime toggling is not supported. See [`doc/config.md` §8](config.md#8-ui-display-mode) for details.
 
 ### `[info]` Messages in the REPL
 
@@ -537,7 +538,7 @@ The REPL renders `Info` variants of `AgentEvent` with an `[info]` prefix. `Info`
 | `[info] history persisted (N entries)` | History save trigger (e.g. `/history`) | Flush to input history file complete |
 | `[info] system prompt updated` | `/reload-persona` replaced the system prompt at the head of history | Subsequent responses use the new system prompt |
 | `[info] history cleared (N message(s) removed)` | `/clear` / `/reset` cleared conversation history | System prompt (persona) kept; User / Assistant / ToolResult all removed |
-| `[info] max tool-use iterations reached` | tool_use iteration count reached `[runtime] max_tool_iterations` (default 24) (FR-04-3 / design doc 4.3B) | The turn ends with `Done`; the next user input prompt is redrawn |
+| `[info] max tool-use iterations reached` | tool_use iteration count reached `[runtime] max_tool_iterations` (default 24) | The turn ends with `Done`; the next user input prompt is redrawn |
 
 `[info] max tool-use iterations reached` is a guard mechanism that activates when the AI keeps cycling through `tool_use → tool result → tool_use → ...` without reaching a conclusion (`agent.rs::process_turn` applies `self.config.runtime.max_tool_iterations.max(1)`). The cap is configurable (default 24, min 1, max `u32::MAX`). For meaning and workarounds, see `doc/troubleshooting.md` "When `[info] max tool-use iterations reached` appears"; for tuning the value, see `doc/config.md` section `[runtime]`.
 

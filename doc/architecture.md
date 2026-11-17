@@ -44,7 +44,7 @@ src/
 ├── shell.rs             ... `!<command>`: line classification / ShellRun (spawn, stream, timeout, cancel) / context message
 ├── custom_commands.rs   ... `.md` custom slash command discovery / `@file` + `$ARGUMENTS` expansion
 ├── agent.rs             ... single agent conversation loop / ApprovalRequest / request_approval
-├── commands.rs          ... list/send/ask/providers/doctor/selftest/config/mcp_list
+├── commands.rs          ... spawn/stop/list/groups/send/ask/providers/doctor/selftest/config/mcp_list
 ├── update.rs            ... `update` self-update (GitHub lookup + cargo install)
 ├── config.rs            ... config file loading / resolution order
 ├── id.rs                ... AgentId
@@ -57,6 +57,7 @@ src/
 │   ├── claude.rs        ... Anthropic Messages (SSE, thinking, tool_use)
 │   ├── claude_code.rs   ... Claude Code CLI as a child process (stream-json / --print JSON)
 │   ├── codex.rs         ... OpenAI Chat Completions (SSE, function calling; keyless capable)
+│   ├── codex_code.rs    ... Codex CLI as a child process (codex exec --json / oneshot, resume)
 │   ├── strata alias     ... kind = "strata" → codex provider with Strata defaults (config.rs apply_strata_defaults)
 │   ├── ollama.rs        ... Ollama /api/chat (NDJSON, tool_calls)
 │   ├── opencode.rs      ... OpenCode local session API / Zen cloud (OpenAI- or Anthropic-compatible via `api`)
@@ -79,7 +80,7 @@ src/
 │   ├── webfetch.rs      ... URL fetch + HTML-to-text
 │   └── send_to.rs       ... peer prompt delivery
 ├── ipc/
-│   ├── mod.rs           ... IpcMessage (Prompt / PromptReply / Ack / Error / Ping / Pong / Shutdown)
+│   ├── mod.rs           ... IpcMessage (Prompt / PromptReply / Ack / Error / Ping / Pong / Context / Shutdown)
 │   ├── server.rs        ... UnixListener (0600) / Drop performs accept abort + socket deletion
 │   ├── client.rs        ... UnixStream
 │   └── registry.rs      ... <agent-id>.{sock,json} scan / Drop performs automatic cleanup
@@ -134,7 +135,7 @@ stdin -> run_input_loop -> mpsc -> Agent loop -> Provider -> ProviderEvent strea
 - **Layered configuration**: `ConfigSource` carries an ordered chain of files rather than one path — `~/.config/agent-cli/config.toml` as the base and `./.agent-cli/config.toml` as the overlay, or the files given by a repeatable `--config`, which replaces the chain entirely. `config::merge` combines them as `toml::Value` *before* `Config` is deserialized, so every section is layered without its own merge code: tables merge recursively, scalars and arrays are replaced, and `permissions.deny` / `permissions.allow` union — the one exception, because otherwise a project file could delete a machine-wide deny rule by redefining the list. `DEFAULT_CONFIG` is generated only when no layer exists at all, so a project file never conjures a user-level one. `spawn_detached` passes **every** layer to the child, one `--config` each: handing it only the top layer would drop the base and with it any machine-wide `deny`, leaving a detached agent running under weaker rules than its parent with nothing on screen to say so.
 
 - **Mouse selection of the log**: because reporting is on for the whole session, a drag never reaches the terminal — so `select.rs` provides the one agent-cli makes itself. It is pure: a `Selection` is two `Point`s in viewport coordinates, `row_span` says which columns of a given row the range covers, `highlight` re-emits a styled row with that span in reverse video while preserving the row's own SGR state, and `selected_text` reduces the covered rows to plain text, dropping every SGR sequence and **undoing the wrap** (a row that continues the line above it is concatenated rather than newline-joined), so a line pastes as the line it was. `app.rs` owns only the gesture and the screen: `Down(Left)` on the body begins a drag — entering the alternate screen even at offset 0, since the live screen cannot be repainted with a highlight on it — `Drag` extends it and sets the same dirty flag a wheel burst uses (one repaint per drain), `Up` extracts the text and hands it to `clip.rs`. The selection lives on `ScrollOverlay` beside the view offset, which is what lets `draw_scroll_overlay` paint it without a signature change, and it is dropped when the view moves, since a range made at one offset does not describe the rows at another. `body_slice_at` produces the padded slice both the drawing and the copy read, so the highlight and the clipboard can never disagree about which row is which. `clip.rs` delivers: OSC 52 by default (a ~20-line base64, wrapped in tmux's passthrough when `TMUX` is set) so the text lands on the clipboard of whoever is looking at the session — over SSH included — or piped to `[ui] copy_command` when one is configured. OSC 52 is fire-and-forget, so an over-sized selection is refused with its limit named rather than truncated into a silent half-copy, and the reported line says which route was used.
-- At startup, `display_task` resolves `ShowThinkingMode { Hidden, Collapsed, Expanded }` from `config.ui.show_thinking_mode()` and branches `AgentEvent::Thinking` rendering across 3 modes (FR-03-1-2 / Design doc 4.3C). `Hidden` skips rendering, `Collapsed` truncates to "first 80 chars + line 1" via `collapse_thinking_text()`, and `Expanded` shows full text. Setting changes take effect on restart; there is no runtime toggle.
+- At startup, `display_task` resolves `ShowThinkingMode { Hidden, Collapsed, Expanded }` from `config.ui.show_thinking_mode()` and branches `AgentEvent::Thinking` rendering across 3 modes. `Hidden` skips rendering, `Collapsed` truncates to "first 80 chars + line 1" via `collapse_thinking_text()`, and `Expanded` shows full text. Setting changes take effect on restart; there is no runtime toggle.
 
 ### 3.2 Inter-Peer Messaging
 

@@ -70,6 +70,7 @@ It is the tool-level equivalent of the `agent-cli spawn` subcommand /
 | `persona` | string | No | Persona file path |
 | `group` | string | No | Group id for the new agent; omit to inherit this agent's group (see [`usage.md`](usage.md) "Groups") |
 | `prompt` | string | No | Initial prompt delivered to the new agent (fire-and-forget); use `send_to` for a reply |
+| `exit_when_idle` | boolean | No | Whether the new agent ends its session once its work is done; omit for `[spawn] exit_when_idle` (default `true`) |
 
 ### Return
 

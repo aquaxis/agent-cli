@@ -119,9 +119,9 @@ thinking    = true
 [runtime]
 auto_approve_tools = false                # skip y/N approval for every tool call
 log_dir            = "~/.local/share/agent-cli/logs"
-registry_dir       = ""                   # empty => per-user default (/run/user/<uid>/agent-cli)
+registry_dir       = ""                   # empty => $XDG_RUNTIME_DIR/agent-cli, else /tmp/agent-cli
 agents_dir         = "~/.config/agent-cli/agents"
-persona_file       = ""                   # empty => built-in default persona
+persona_file       = ""                   # empty => <agents_dir>/<name>.md, then .agent-cli/persona.md, then built-in
 # Max tool-use iterations per turn (one iteration = LLM call -> tool calls + results).
 # Default 24; raise for design-then-debug orchestrators that iterate on lint feedback.
 max_tool_iterations = 24
@@ -218,6 +218,7 @@ copy_command     = ""
 [spawn]
 max_children = 4          # live direct children per agent (0 disables spawning)
 max_depth    = 2          # depth of the spawn chain (0 disables spawning)
+exit_when_idle = true     # spawned peers end their session once idle (all spawn paths)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Permissions: per-call rules for tools the model asks to run.

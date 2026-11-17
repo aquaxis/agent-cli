@@ -332,7 +332,7 @@ instead of results, and every other tool is unaffected.
 |------|----|------|------|
 | `api_key_env` | string | unset | Name of the environment variable holding the search API key (not the key itself) |
 | `endpoint` | string | unset | Search endpoint URL (provider-specific) |
-| `provider` | string | `"tavily"` | Search provider identifier, e.g. `"tavily"` / `"brave"` |
+| `provider` | string | `"tavily"` | Search provider identifier. `"tavily"` is the only supported provider; any other value is rejected |
 
 ```toml
 [tools.websearch]
@@ -383,11 +383,13 @@ How far an agent may go in creating agents of its own with the `spawn` tool (see
 |------|----|------|------|
 | `max_children` | integer | `4` | Live direct children one agent may have. A child that has exited frees its slot. `0` disables autonomous spawning |
 | `max_depth` | integer | `2` | Generations of tool-spawned agents: with `2`, a root spawns a child and that child spawns a grandchild, which may not spawn further. `0` disables autonomous spawning |
+| `exit_when_idle` | bool | `true` | Peers launched by `agent-cli spawn`, `/spawn` or the `spawn` tool end their own session once their queue is quiet (`--exit-when-idle`). Unlike the two keys above this applies to every spawn path, not only the tool; the tool's `exit_when_idle` argument overrides it per launch |
 
 ```toml
 [spawn]
-max_children = 4
-max_depth    = 2
+max_children   = 4
+max_depth      = 2
+exit_when_idle = true
 ```
 
 When either limit is reached the `spawn` tool returns an error naming the limit and the current count; no process is created. An agent frees a slot with `stop_agent`.
@@ -555,8 +557,9 @@ max_output_kb = 256
 context       = true
 
 [spawn]
-max_children = 4
-max_depth    = 2
+max_children   = 4
+max_depth      = 2
+exit_when_idle = true
 ```
 
 ### 4.3 Full-featured Configuration
@@ -620,8 +623,9 @@ max_output_kb = 256
 context       = true
 
 [spawn]
-max_children = 4
-max_depth    = 2
+max_children   = 4
+max_depth      = 2
+exit_when_idle = true
 
 [history]
 enabled            = true
@@ -943,7 +947,8 @@ Each tool has exactly one argument a pattern is matched against:
 | `read`, `write`, `edit` | `file_path` |
 | `glob`, `grep` | `path` (absent means `.`) |
 | `webfetch` | the host of `url` |
-| `send_to`, `stop_agent` | `peer` |
+| `send_to` | `peer` |
+| `stop_agent` | `agent` |
 | `websearch`, `list_agents`, `spawn`, `mcp__*` | none — only the bare `tool` form applies |
 
 `glob` and `grep` are gated on `path` and **never** on their `pattern`, which is

@@ -389,6 +389,7 @@ REPL commands inside `agent-cli run`:
 | `/clear`, `/reset` | Clear conversation history (persona / system prompt are kept) |
 | `/cancel` | Stop the in-flight AI response or tool call (same signal as `Esc` during a turn) |
 | `/auto [on\|off\|status]` | Toggle tool-approval skip at runtime |
+| `/permissions` | Show the `[permissions]` rules in force, which config layer each came from, the effective `default_mode`, and any warnings |
 | `/commands` | List custom slash commands (name, first line, file path) |
 | `/reload-commands` | Re-scan the custom commands directory |
 | `/help` | Show help |

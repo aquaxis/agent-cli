@@ -56,7 +56,7 @@ api_key_env = "STRATA_API_KEY"
 
 The configured-unset variable keeps the usual codex-provider construction error (`env var STRATA_API_KEY not set`) — a typo must not become a silent unauthenticated request.
 
-## Keyless codex in general (FR-15)
+## Keyless codex in general
 
 The keyless form is a property of the codex provider now, not of the alias: `[provider.codex]` **without `api_key_env`** connects keyless the same way — useful for any OpenAI-compatible server that requires no authentication. A codex config that names an `api_key_env` behaves exactly as before.
 
