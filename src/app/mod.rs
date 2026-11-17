@@ -557,14 +557,16 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
         tokio::spawn(async move {
             run_input_loop(
                 tokio::io::stdin(),
-                input_tx_for_stdin,
                 state_for_stdin,
-                shutdown_tx,
-                shutdown_rx,
-                agent_idle_rx,
-                approval_rx,
+                InputLoopChannels {
+                    input_tx: input_tx_for_stdin,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx,
+                    approval_rx,
+                    turn_in_flight_rx: Some(turn_rx_for_stdin),
+                },
                 true,
-                Some(turn_rx_for_stdin),
             )
             .await;
         })
@@ -578,19 +580,19 @@ pub async fn run(mut config: Config, source: ConfigSource, args: RunArgs) -> Res
     let display_turn_flag = turn_in_flight.clone();
     let display_turn_tx = turn_in_flight_tx.clone();
     let display_indicator = indicator.clone();
-    let display_task = tokio::spawn(run_display_task(
+    let display_task = tokio::spawn(run_display_task(DisplayTaskArgs {
         event_rx,
         agent_idle_tx,
         display_indicator,
         display_suppress,
         display_turn_flag,
-        display_turn_tx,
+        turn_in_flight_tx: display_turn_tx,
         show_thinking,
         theme,
         progress_enabled,
         show_tool_results,
-        stdin_is_tty(),
-    ));
+        has_tty: stdin_is_tty(),
+    }));
 
     // Block until shutdown notification (convergence point for multiple routes)
     {
@@ -1511,6 +1513,23 @@ fn is_cancel_key(key_event: &KeyEvent) -> bool {
             && matches!(key_event.code, KeyCode::Char('c')))
 }
 
+/// What `run_display_task` runs on: the agent's event stream, the idle
+/// notification back to the input loop, the shared indicator / suppression /
+/// turn-flag state, and the display settings.
+struct DisplayTaskArgs {
+    event_rx: mpsc::Receiver<AgentEvent>,
+    agent_idle_tx: mpsc::Sender<()>,
+    display_indicator: Arc<std::sync::Mutex<StatusIndicator>>,
+    display_suppress: Arc<AtomicUsize>,
+    display_turn_flag: Arc<AtomicBool>,
+    turn_in_flight_tx: watch::Sender<bool>,
+    show_thinking: ShowThinkingMode,
+    theme: Theme,
+    progress_enabled: bool,
+    show_tool_results: bool,
+    has_tty: bool,
+}
+
 /// The interactive display loop, extracted from `run` (testable): consumes
 /// agent events, paints them, and on an unsuppressed terminal — `Done` or
 /// `Error`, the same "idle" set that treats a Provider failure without a
@@ -1529,20 +1548,20 @@ fn is_cancel_key(key_event: &KeyEvent) -> bool {
 /// a full channel already holds eight unwatched terminals, so no Pending
 /// waiter can be waiting on it, and the submit-time drains clear the stale
 /// ones.
-#[allow(clippy::too_many_arguments)]
-async fn run_display_task(
-    mut event_rx: mpsc::Receiver<AgentEvent>,
-    agent_idle_tx: mpsc::Sender<()>,
-    display_indicator: Arc<std::sync::Mutex<StatusIndicator>>,
-    display_suppress: Arc<AtomicUsize>,
-    display_turn_flag: Arc<AtomicBool>,
-    turn_in_flight_tx: watch::Sender<bool>,
-    show_thinking: ShowThinkingMode,
-    theme: Theme,
-    progress_enabled: bool,
-    show_tool_results: bool,
-    has_tty: bool,
-) {
+async fn run_display_task(args: DisplayTaskArgs) {
+    let DisplayTaskArgs {
+        mut event_rx,
+        agent_idle_tx,
+        display_indicator,
+        display_suppress,
+        display_turn_flag,
+        turn_in_flight_tx,
+        show_thinking,
+        theme,
+        progress_enabled,
+        show_tool_results,
+        has_tty,
+    } = args;
     let mut display_state = DisplayState::new(has_tty);
     // With the indicator drawing right beneath it, a tool call is described
     // on a single row instead of dumping its raw arguments.
@@ -1858,23 +1877,29 @@ fn stdin_is_tty() -> bool {
     std::io::stdin().is_terminal()
 }
 
+/// The channels the input loop talks over: prompts out to the agent, the
+/// shutdown pair, the agent's idle notifications, tool-approval requests and
+/// (when a display task runs) the turn-in-flight watch.
+pub(crate) struct InputLoopChannels {
+    pub(crate) input_tx: mpsc::Sender<AgentInput>,
+    pub(crate) shutdown_tx: watch::Sender<bool>,
+    pub(crate) shutdown_rx: watch::Receiver<bool>,
+    pub(crate) agent_idle_rx: mpsc::Receiver<()>,
+    pub(crate) approval_rx: mpsc::Receiver<ApprovalRequest>,
+    pub(crate) turn_in_flight_rx: Option<watch::Receiver<bool>>,
+}
+
 /// Main loop that converts line input from stdin (or any `AsyncRead`) into `AgentInput`.
 ///
 /// When `interactive` is `true` and stdin is a TTY, uses crossterm raw-mode input
 /// with history navigation (up/down arrows) and line editing. When `interactive`
 /// is `false` (tests, piped input), falls back to line-oriented
 /// `BufReader::lines()` reading (original behaviour).
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_input_loop<R>(
     reader: R,
-    input_tx: mpsc::Sender<AgentInput>,
     state: Arc<ReplState>,
-    shutdown_tx: watch::Sender<bool>,
-    shutdown_rx: watch::Receiver<bool>,
-    agent_idle_rx: mpsc::Receiver<()>,
-    approval_rx: mpsc::Receiver<ApprovalRequest>,
+    channels: InputLoopChannels,
     interactive: bool,
-    turn_in_flight_rx: Option<watch::Receiver<bool>>,
 ) where
     R: AsyncRead + Unpin,
 {
@@ -1882,6 +1907,14 @@ pub(crate) async fn run_input_loop<R>(
     let use_raw_mode = interactive && stdin_is_tty();
 
     if use_raw_mode {
+        let InputLoopChannels {
+            input_tx,
+            shutdown_tx,
+            shutdown_rx,
+            agent_idle_rx,
+            approval_rx,
+            turn_in_flight_rx,
+        } = channels;
         run_input_loop_raw(
             input_tx,
             state,
@@ -1893,17 +1926,7 @@ pub(crate) async fn run_input_loop<R>(
         )
         .await;
     } else {
-        run_input_loop_line(
-            reader,
-            input_tx,
-            state,
-            shutdown_tx,
-            shutdown_rx,
-            agent_idle_rx,
-            approval_rx,
-            interactive,
-        )
-        .await;
+        run_input_loop_line(reader, state, channels, interactive).await;
     }
 }
 
@@ -2035,12 +2058,15 @@ async fn run_input_loop_raw(
             let stdin = tokio::io::stdin();
             run_input_loop_line(
                 stdin,
-                input_tx,
                 state,
-                shutdown_tx,
-                shutdown_rx,
-                agent_idle_rx,
-                approval_rx,
+                InputLoopChannels {
+                    input_tx,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx,
+                    approval_rx,
+                    turn_in_flight_rx,
+                },
                 true,
             )
             .await;
@@ -3051,19 +3077,22 @@ async fn run_input_loop_raw(
 }
 
 /// Line-oriented input loop (original behaviour, used for non-interactive / test mode).
-#[allow(clippy::too_many_arguments)]
 async fn run_input_loop_line<R>(
     reader: R,
-    input_tx: mpsc::Sender<AgentInput>,
     state: Arc<ReplState>,
-    shutdown_tx: watch::Sender<bool>,
-    mut shutdown_rx: watch::Receiver<bool>,
-    mut agent_idle_rx: mpsc::Receiver<()>,
-    approval_rx: mpsc::Receiver<ApprovalRequest>,
+    channels: InputLoopChannels,
     interactive: bool,
 ) where
     R: AsyncRead + Unpin,
 {
+    let InputLoopChannels {
+        input_tx,
+        shutdown_tx,
+        mut shutdown_rx,
+        mut agent_idle_rx,
+        approval_rx,
+        turn_in_flight_rx: _,
+    } = channels;
     let buffered = BufReader::new(reader);
     let mut lines = buffered.lines();
     let mut prompt_state = PromptState::Ready;
@@ -3532,19 +3561,19 @@ mod tests {
     async fn a_display_task_survives_more_unwatched_terminals_than_the_idle_channel_holds() {
         let (event_tx, event_rx) = mpsc::channel::<AgentEvent>(64);
         let (agent_idle_tx, mut agent_idle_rx) = mpsc::channel::<()>(8);
-        let handle = tokio::spawn(run_display_task(
+        let handle = tokio::spawn(run_display_task(DisplayTaskArgs {
             event_rx,
             agent_idle_tx,
-            Arc::new(std::sync::Mutex::new(StatusIndicator::disabled())),
-            Arc::new(AtomicUsize::new(0)),
-            Arc::new(AtomicBool::new(false)),
-            watch::channel(false).0,
-            ShowThinkingMode::Hidden,
-            Theme::plain(),
-            false,
-            true,
-            false,
-        ));
+            display_indicator: Arc::new(std::sync::Mutex::new(StatusIndicator::disabled())),
+            display_suppress: Arc::new(AtomicUsize::new(0)),
+            display_turn_flag: Arc::new(AtomicBool::new(false)),
+            turn_in_flight_tx: watch::channel(false).0,
+            show_thinking: ShowThinkingMode::Hidden,
+            theme: Theme::plain(),
+            progress_enabled: false,
+            show_tool_results: true,
+            has_tty: false,
+        }));
         // Twelve terminals, no Pending consumer ever armed.
         for _ in 0..12 {
             event_tx.send(AgentEvent::Done).await.unwrap();
@@ -3806,14 +3835,16 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_input_loop(
                 reader,
-                input_tx,
                 state,
-                shutdown_tx,
-                shutdown_rx,
-                idle_rx,
-                dummy_approval_rx(),
+                InputLoopChannels {
+                    input_tx,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx: idle_rx,
+                    approval_rx: dummy_approval_rx(),
+                    turn_in_flight_rx: None,
+                },
                 false,
-                None,
             )
             .await;
         });
@@ -3887,14 +3918,16 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_input_loop(
                 reader,
-                input_tx,
                 state,
-                shutdown_tx,
-                shutdown_rx,
-                idle_rx,
-                dummy_approval_rx(),
+                InputLoopChannels {
+                    input_tx,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx: idle_rx,
+                    approval_rx: dummy_approval_rx(),
+                    turn_in_flight_rx: None,
+                },
                 false,
-                None,
             )
             .await;
         });
@@ -3935,14 +3968,16 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_input_loop(
                 reader,
-                input_tx,
                 state,
-                shutdown_tx,
-                shutdown_rx,
-                idle_rx,
-                dummy_approval_rx(),
+                InputLoopChannels {
+                    input_tx,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx: idle_rx,
+                    approval_rx: dummy_approval_rx(),
+                    turn_in_flight_rx: None,
+                },
                 false,
-                None,
             )
             .await;
         });
@@ -3970,14 +4005,16 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_input_loop(
                 reader,
-                input_tx,
                 state,
-                shutdown_tx,
-                shutdown_rx,
-                idle_rx,
-                dummy_approval_rx(),
+                InputLoopChannels {
+                    input_tx,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx: idle_rx,
+                    approval_rx: dummy_approval_rx(),
+                    turn_in_flight_rx: None,
+                },
                 false,
-                None,
             )
             .await;
         });
@@ -4004,14 +4041,16 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_input_loop(
                 reader,
-                input_tx,
                 state,
-                shutdown_tx,
-                shutdown_rx,
-                idle_rx,
-                dummy_approval_rx(),
+                InputLoopChannels {
+                    input_tx,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx: idle_rx,
+                    approval_rx: dummy_approval_rx(),
+                    turn_in_flight_rx: None,
+                },
                 false,
-                None,
             )
             .await;
         });
@@ -4042,14 +4081,16 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_input_loop(
                 reader,
-                input_tx,
                 state,
-                shutdown_tx,
-                shutdown_rx,
-                idle_rx,
-                dummy_approval_rx(),
+                InputLoopChannels {
+                    input_tx,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx: idle_rx,
+                    approval_rx: dummy_approval_rx(),
+                    turn_in_flight_rx: None,
+                },
                 false,
-                None,
             )
             .await;
         });
@@ -4078,14 +4119,16 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_input_loop(
                 reader,
-                input_tx,
                 state,
-                shutdown_tx,
-                shutdown_rx,
-                idle_rx,
-                approval_rx,
+                InputLoopChannels {
+                    input_tx,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx: idle_rx,
+                    approval_rx,
+                    turn_in_flight_rx: None,
+                },
                 false,
-                None,
             )
             .await;
         });
@@ -4163,14 +4206,16 @@ mod tests {
         let handle = tokio::spawn(async move {
             run_input_loop(
                 reader,
-                input_tx,
                 state,
-                shutdown_tx,
-                shutdown_rx,
-                idle_rx,
-                approval_rx,
+                InputLoopChannels {
+                    input_tx,
+                    shutdown_tx,
+                    shutdown_rx,
+                    agent_idle_rx: idle_rx,
+                    approval_rx,
+                    turn_in_flight_rx: None,
+                },
                 false,
-                None,
             )
             .await;
         });
