@@ -4,6 +4,17 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.53.2]
+
+### Fixed
+
+- **A permission rule scoped to `stop_agent` now matches.** `stop_agent(<pattern>)` looked for a `peer` argument the tool does not have, so a scoped rule such as `deny = ["stop_agent(worker-*)"]` never applied; the rule's subject is now the tool's `agent` argument, as `doc/config.md` documents.
+
+### Changed
+
+- **The source is reorganised without changing behaviour.** The 9,900-line `src/app.rs` is now `src/app/` with the slash-command glue, the turn indicator, the turn zone and the scroll overlay in their own submodules; the HTTP back-ends share one SSE stream loop, one error-response check and one OpenAI chat frame parser, and the Claude Code / Codex CLI back-ends share their binary lookup and prompt assembly; long parameter lists became small structs; and comments no longer cite internal planning ids, so each explains itself.
+- **The docs match the code again.** `[spawn] exit_when_idle`, the `--exit-when-idle` flag and the spawn tool's `exit_when_idle` argument are documented; the websearch `provider` row lists only `tavily`, the one value the tool accepts; the example config's `persona_file` and `registry_dir` comments describe the real defaults; the architecture map lists `codex_code.rs`, the IPC `Context` message and the new `src/app/` layout; and both READMEs list `/permissions` (the Japanese one also `one-shot`).
+
 ## [0.53.1]
 
 ### Fixed
