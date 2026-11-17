@@ -476,7 +476,7 @@ Workaround: change `[ui] show_thinking` in `~/.config/agent-cli/config.toml` and
 | `"collapsed"` (default) | Truncate each delta to "first 80 chars + `...`" on one line | You want to see that thinking happened but don't need details |
 | `"expanded"` | Full text (previous behavior) | Debugging or you want the full reasoning trace |
 
-Changes require `agent-cli` restart (runtime toggling is not supported). See [`doc/config.md`](config.md) "UI display modes" for implementation details, and `src/app.rs::display_event` / `src/config.rs::ShowThinkingMode` for the code.
+Changes require `agent-cli` restart (runtime toggling is not supported). See [`doc/config.md` §8](config.md#8-ui-display-mode) for implementation details, and `src/app/indicator.rs::display_event` / `src/config.rs::ShowThinkingMode` for the code.
 
 ### When `[info] max tool-use iterations reached` appears
 
