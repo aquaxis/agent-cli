@@ -4,6 +4,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.53.1]
+
+### Fixed
+
+- **The first wheel notch moves the log by the same three rows as every other notch.** Leaving the live view adds the `Message below` marker row to the pinned block, and the scrolled body used to shrink by that row from the top, so the first notch moved the log by only two rows and hid the three newest rows instead of one notch's worth; every later notch moved by three. The scrolled body is now sliced so the marker covers the body's last row (`slice_offset`), keeping every row exactly one notch away from where the live screen had it, and the wheel's clamp reads the live screen's body, so the first notch clamps like the rest and the furthest notch still shows the log's first line at the top. The drag-to-copy slice follows the same arithmetic, so the highlight and the clipboard still agree.
+
 ## [0.53.0]
 
 ### Added

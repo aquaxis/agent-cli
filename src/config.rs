@@ -1889,10 +1889,7 @@ show_progress = false
     fn show_tool_results_defaults_to_enabled() {
         assert!(UiConfig::default().show_tool_results);
         let cfg: Config = toml::from_str(tests_default_config()).unwrap();
-        assert!(
-            cfg.ui.show_tool_results,
-            "absent key must default to true"
-        );
+        assert!(cfg.ui.show_tool_results, "absent key must default to true");
         let off: Config = toml::from_str(
             r#"
 [provider]

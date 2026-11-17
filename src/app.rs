@@ -2441,6 +2441,19 @@ fn live_peer_lines(registry_dir: &Path, self_id: &crate::id::AgentId, width: usi
     peer_status_rows(&live_children_states(registry_dir, self_id), width)
 }
 
+/// The transcript offset the scrolled body is sliced at, given the view's
+/// `offset` and the marker rows the pinned block carries.
+///
+/// The view's offset counts rows from the live screen, whose body has no
+/// marker row. The marker takes the body's last row, so the slice ends that
+/// many rows further up: the rows above the marker stay exactly where the live
+/// screen had them, moved by the notch and nothing else. Without this the
+/// first notch off the live view moved the log by `STEP` minus the marker
+/// rows while every later notch moved it by `STEP`.
+fn slice_offset(offset: usize, marker_rows: usize) -> usize {
+    offset + marker_rows
+}
+
 /// The body rows a screen of `body` rows shows at `offset`, padded at the top
 /// so that index *i* is screen row *i*.
 ///
@@ -2491,7 +2504,12 @@ fn draw_scroll_overlay(
         bottom.marker_row().is_some(),
     );
     let body = crate::scroll::body_rows(height, bottom_rows);
-    let rows = body_slice_at(width, body, overlay.view.offset());
+    let marker_rows = usize::from(bottom.marker_row().is_some());
+    let rows = body_slice_at(
+        width,
+        body,
+        slice_offset(overlay.view.offset(), marker_rows),
+    );
     // A drag made on a different offset describes rows that are no longer
     // there, so it is not drawn over the ones that are.
     let selection = overlay
@@ -3484,22 +3502,23 @@ async fn run_input_loop_raw(
                             let width = PromptRenderer::terminal_width();
                             let peer_lines =
                                 live_peer_lines(&state.registry_dir, &state.id, width).len();
-                            // The marker row joins the budget whenever the view
-                            // is off the bottom (the pin composes the prompt
-                            // span in every state; FR-39, FR-40). The drawer
-                            // recomputes the exact count at the draw, so a
-                            // first notch taken at a live view only risks a
-                            // notch-shallower clamp before the next pass. The
-                            // arm runs only at rest (FR-50a bars it while a
-                            // turn is in flight), so the budget here reads an
-                            // at-rest screen.
-                            let view_moved = overlay.view_active();
+                            // The view's offset counts rows from the live
+                            // screen, so the clamp reads the live screen's body:
+                            // no marker row, whichever side of the bottom the
+                            // view is on. The drawer slices the marker's row
+                            // off the bottom of the body (`slice_offset`), so
+                            // the furthest offset still shows the log's first
+                            // row at the top, and the first notch clamps
+                            // exactly like every later one. The arm runs only
+                            // at rest (FR-50a bars it while a turn is in
+                            // flight), so the budget here reads an at-rest
+                            // screen.
                             let bottom_rows = bottom_block_rows(
                                 &prompt_state,
                                 &input_state,
                                 width,
                                 peer_lines,
-                                view_moved,
+                                false,
                             );
                             let body = crate::scroll::body_rows(terminal_height(), bottom_rows);
                             if overlay.wheel(up, width, body) {
@@ -3638,7 +3657,10 @@ async fn run_input_loop_raw(
                                         // release — not the range anchored to
                                         // where the press happened.
                                         if !sel.is_empty() {
-                                            let offset = overlay.view.offset();
+                                            let offset = slice_offset(
+                                                overlay.view.offset(),
+                                                usize::from(view_moved),
+                                            );
                                             let rows = body_slice_at(width, body, offset);
                                             let text = crate::select::selected_text(&rows, &sel);
                                             let outcome = crate::clip::copy(
@@ -8007,6 +8029,77 @@ mod tests {
             "the wheel cannot push content under the pinned clock"
         );
         crate::scroll::uninstall();
+    }
+
+    /// The screen row `text` is drawn on in `rows`, the slice's index.
+    fn screen_row_of(rows: &[crate::scroll::Row], text: &str) -> usize {
+        rows.iter()
+            .position(|r| r.text == text)
+            .unwrap_or_else(|| panic!("{text} is not on screen"))
+    }
+
+    #[test]
+    fn the_first_notch_moves_the_log_by_one_step_like_every_other_notch() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(500);
+        for i in 0..100 {
+            crate::scroll::record_line(&format!("log line {i}"));
+        }
+        // A 40-row screen with a one-row prompt: the live screen's body is 39
+        // rows; off the bottom the marker takes one more.
+        let live_body = crate::scroll::body_rows(40, 1);
+        let scrolled_body = crate::scroll::body_rows(40, 2);
+        let live = body_slice_at(80, live_body, 0);
+        let mut overlay = ScrollOverlay::new();
+
+        assert!(overlay.wheel(true, 80, live_body));
+        let first = body_slice_at(80, scrolled_body, slice_offset(overlay.view.offset(), 1));
+        assert_eq!(first.len(), scrolled_body);
+        assert_eq!(
+            screen_row_of(&first, "log line 70"),
+            screen_row_of(&live, "log line 70") + crate::scroll::STEP,
+            "the first notch moves the log by exactly one step"
+        );
+
+        assert!(overlay.wheel(true, 80, live_body));
+        let second = body_slice_at(80, scrolled_body, slice_offset(overlay.view.offset(), 1));
+        assert_eq!(
+            screen_row_of(&second, "log line 70"),
+            screen_row_of(&first, "log line 70") + crate::scroll::STEP,
+            "and the second by one step more"
+        );
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn the_furthest_notch_shows_the_first_line_above_the_marker() {
+        let _guard = crate::scroll::test_lock();
+        crate::scroll::install(500);
+        for i in 0..50 {
+            crate::scroll::record_line(&format!("log line {i}"));
+        }
+        let live_body = crate::scroll::body_rows(40, 1);
+        let scrolled_body = crate::scroll::body_rows(40, 2);
+        let mut overlay = ScrollOverlay::new();
+        while overlay.wheel(true, 80, live_body) {}
+        assert_eq!(overlay.view.offset(), 50 - live_body);
+        let rows = body_slice_at(80, scrolled_body, slice_offset(overlay.view.offset(), 1));
+        assert_eq!(
+            rows[0].text, "log line 0",
+            "the top of the log is reachable"
+        );
+        assert!(
+            rows.iter().all(|r| !r.text.is_empty()),
+            "no padding at the top"
+        );
+        crate::scroll::uninstall();
+    }
+
+    #[test]
+    fn the_slice_offset_adds_only_the_marker_rows() {
+        assert_eq!(slice_offset(0, 0), 0);
+        assert_eq!(slice_offset(3, 1), 4);
+        assert_eq!(slice_offset(6, 0), 6);
     }
 
     #[test]
