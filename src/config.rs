@@ -490,7 +490,7 @@ pub struct RuntimeConfig {
     pub max_tool_iterations: u32,
     /// Directory of user-defined custom slash commands (`*.md` files), resolved
     /// relative to the working directory unless absolute / `~`-expanded. Empty
-    /// string falls back to the default (`.agent-cli/commands`). See FR-14.
+    /// string falls back to the default (`.agent-cli/commands`).
     #[serde(default = "default_commands_dir")]
     pub commands_dir: String,
     /// Default group id for agents this config launches. Empty / unset means no
@@ -828,11 +828,11 @@ pub struct SpawnConfig {
     /// 0 also disables autonomous spawning.
     #[serde(default = "default_max_depth")]
     pub max_depth: u32,
-    /// FR-32: whether the peers this configuration's `spawn` paths launch end
-    /// their own session when their work is done (`--exit-when-idle`). The
-    /// default is `true` — a fire-and-forget spawn that stands by forever
-    /// would leak a process per spawn — and the explicit tool argument and
-    /// CLI flag can still override it per launch.
+    /// Whether the peers this configuration's `spawn` paths launch end their
+    /// own session when their work is done (`--exit-when-idle`). The default
+    /// is `true` — a fire-and-forget spawn that stands by forever would leak
+    /// a process per spawn — and the explicit tool argument and CLI flag can
+    /// still override it per launch.
     #[serde(default = "default_spawn_exit_when_idle")]
     pub exit_when_idle: bool,
 }
@@ -894,7 +894,7 @@ fn default_keep_recent_turns() -> usize {
     6
 }
 
-/// Display mode for `[ui] show_thinking` (FR-03-1-2 / design doc 4.3C).
+/// Display mode for `[ui] show_thinking`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShowThinkingMode {
     /// Do not show thinking at all.
@@ -1217,7 +1217,7 @@ pub fn expand_path(p: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(expanded.into_owned()))
 }
 
-/// Format an API key value for masked display (FR-09-3).
+/// Format an API key value for masked display.
 ///
 /// Keys of 8 or more characters are shown as "first 4 chars + `...` + last 4 chars".
 /// Shorter keys return `***` to avoid leaking the value length.
@@ -1436,10 +1436,10 @@ mod tests {
         assert_eq!(local_path_in(dir.path()), Some(cfg));
     }
 
-    /// V-7: the project-local persona candidate is `.agent-cli/persona.md`
-    /// under the given directory — the path alone, with existence tested where
-    /// it is used (see `persona::resolve`), so a session can hold the candidate
-    /// across its lifetime.
+    /// The project-local persona candidate is `.agent-cli/persona.md` under the
+    /// given directory — the path alone, with existence tested where it is used
+    /// (see `persona::resolve`), so a session can hold the candidate across its
+    /// lifetime.
     #[test]
     fn local_persona_candidate_is_the_project_local_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -1500,7 +1500,7 @@ mod tests {
         assert!(!src.chain().is_empty());
     }
 
-    // --- V-3 / V-4: how two layers combine ----------------------------------
+    // --- how two layers combine ---------------------------------------------
 
     fn merged(base: &str, overlay: &str) -> Config {
         let b: toml::Value = toml::from_str(base).unwrap();
@@ -1619,7 +1619,7 @@ allow = ["read(**)"]
         assert_eq!(cfg.permissions.default_mode.as_deref(), Some("deny"));
     }
 
-    // --- V-6: nothing is generated that nobody asked for ---------------------
+    // --- nothing is generated that nobody asked for --------------------------
 
     #[test]
     fn a_project_file_alone_does_not_create_a_user_file() {
@@ -1814,10 +1814,10 @@ kind = "claude"
         assert_eq!(cfg.runtime.commands_dir, ".agent-cli/commands");
     }
 
-    /// FR-04-3 boundary (upper limit): TOML with `max_tool_iterations` set to `u32::MAX`
-    /// parses successfully and the value is preserved. We don't actually loop 4 billion
-    /// times (parse success alone guarantees that true unlimited is disallowed but
-    /// practically unlimited is achievable).
+    /// Iteration-cap boundary (upper limit): TOML with `max_tool_iterations` set to
+    /// `u32::MAX` parses successfully and the value is preserved. We don't actually loop
+    /// 4 billion times (parse success alone guarantees that true unlimited is disallowed
+    /// but practically unlimited is achievable).
     #[test]
     fn max_tool_iterations_accepts_u32_max() {
         let toml_src = r#"
@@ -1832,8 +1832,8 @@ max_tool_iterations = 4294967295
         assert_eq!(cfg.runtime.max_tool_iterations, u32::MAX);
     }
 
-    /// FR-03-1-2 / design doc 4.3C: `[ui] show_thinking` string parsing.
-    /// Verify the 3 known values (`hidden`/`collapsed`/`expanded`) and unknown-value fallback.
+    /// `[ui] show_thinking` string parsing. Verify the 3 known values
+    /// (`hidden`/`collapsed`/`expanded`) and unknown-value fallback.
     #[test]
     fn show_thinking_mode_parses_known_values() {
         for (raw, expected) in [
@@ -2126,8 +2126,8 @@ api_key_env = "ANTHROPIC_API_KEY"
         assert_eq!(entry.temperature, Some(0.4));
     }
 
-    /// Documentation consistency check (T-602-10):
-    /// Verify that the 3 complete sample configs from `doc/config.md` parse as `Config`.
+    /// Documentation consistency check: verify that the 3 complete sample configs from
+    /// `doc/config.md` parse as `Config`.
     #[test]
     fn doc_config_md_full_samples_parse() {
         let minimal = r#"

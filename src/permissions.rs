@@ -527,7 +527,7 @@ mod tests {
         matches!(d, Decision::Ask)
     }
 
-    // --- V-16: nothing configured leaves the previous behaviour alone --------
+    // --- nothing configured leaves the previous behaviour alone --------------
 
     #[test]
     fn no_rules_at_all_asks_for_everything() {
@@ -538,7 +538,7 @@ mod tests {
         assert!(s.warnings().is_empty());
     }
 
-    // --- V-9: the three pattern shapes --------------------------------------
+    // --- the three pattern shapes -------------------------------------------
 
     #[test]
     fn a_prefix_rule_matches_leading_words_and_not_a_longer_first_word() {
@@ -608,7 +608,7 @@ mod tests {
         ));
     }
 
-    // --- V-10: tool-name spellings ------------------------------------------
+    // --- tool-name spellings ------------------------------------------------
 
     #[test]
     fn tool_names_resolve_across_the_three_spellings() {
@@ -629,7 +629,7 @@ mod tests {
         assert!(is_ask(&s.decide("send_to", &json!({"peer": "boss"}))));
     }
 
-    // --- V-11: the subject table --------------------------------------------
+    // --- the subject table --------------------------------------------------
 
     #[test]
     fn every_tool_gates_on_the_argument_it_should() {
@@ -686,7 +686,7 @@ mod tests {
         }
     }
 
-    // --- V-12: paths are matched as written and resolved --------------------
+    // --- paths are matched as written and resolved --------------------------
 
     #[test]
     fn a_path_rule_is_not_defeated_by_a_leading_dot_slash() {
@@ -716,7 +716,7 @@ mod tests {
         )));
     }
 
-    // --- V-13: precedence ---------------------------------------------------
+    // --- precedence ---------------------------------------------------------
 
     #[test]
     fn deny_beats_an_allow_that_also_matches() {
@@ -744,7 +744,7 @@ mod tests {
         assert!(is_deny(&s.decide("bash", &json!({"command": "curl x"}))));
     }
 
-    // --- V-14: default_mode -------------------------------------------------
+    // --- default_mode -------------------------------------------------------
 
     #[test]
     fn each_default_mode_is_understood_and_an_absent_one_asks() {
@@ -770,7 +770,7 @@ mod tests {
         assert!(s.warnings()[0].contains("acceptedits") || s.warnings()[0].contains("acceptEdits"));
     }
 
-    // --- V-15: every warning path -------------------------------------------
+    // --- every warning path -------------------------------------------------
 
     #[test]
     fn a_rule_naming_an_unknown_tool_is_inert_and_not_fatal() {
@@ -805,7 +805,7 @@ mod tests {
         assert_eq!(s.warnings().len(), 1);
     }
 
-    // --- V-11 / AC-06: the file this cycle deletes, transcribed --------------
+    // --- the deleted Claude Code rule set, transcribed ----------------------
 
     #[test]
     fn the_deleted_claude_code_rule_set_loads_with_everything_reported() {

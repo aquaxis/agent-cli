@@ -21,10 +21,10 @@ pub struct SpawnLimits {
     /// not spawn, so 0 also forbids it.
     pub max_depth: u32,
     /// Whether the peers the spawn paths launch end their own session when
-    /// their work is done (`--exit-when-idle`, FR-32). The shipped default is
-    /// `true`: a fire-and-forget spawn that stands by forever would leak a
-    /// process per spawn; an explicit tool argument or CLI flag overrides it
-    /// per launch, and `[spawn] exit_when_idle` governs the configuration.
+    /// their work is done (`--exit-when-idle`). The default is `true`: a
+    /// fire-and-forget spawn that stands by forever would leak a process per
+    /// spawn; an explicit tool argument or CLI flag overrides it per launch,
+    /// and `[spawn] exit_when_idle` governs the configuration.
     pub exit_when_idle: bool,
 }
 

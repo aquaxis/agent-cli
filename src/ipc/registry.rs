@@ -35,12 +35,12 @@ pub struct RegistryEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ancestors: Vec<AgentId>,
     /// The agent's own turn state, written by the agent task at coarse turn
-    /// boundaries (FR-37b's measured transport, D-58): a one-line description
-    /// of what the peer is working on (`thinking`, `tool <name>`,
-    /// `answering`), absent when idle. `#[serde(default)]` keeps registry
-    /// files written before the field (and older versions) loadable; the
-    /// absence is the degrade rule — the parent's peer row falls back to the
-    /// shipped name-and-operating-time face.
+    /// boundaries (the registry is the transport for the parent's peer rows):
+    /// a one-line description of what the peer is working on (`thinking`,
+    /// `tool <name>`, `answering`), absent when idle. `#[serde(default)]`
+    /// keeps registry files written before the field (and older versions)
+    /// loadable; the absence is the degrade rule — the parent's peer row
+    /// falls back to the name-and-operating-time face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<String>,
 }
@@ -134,7 +134,7 @@ impl RegistryHandle {
 }
 
 impl Drop for RegistryHandle {
-    /// As a guarantee of FR-13 "App termination", ensures registry metadata and
+    /// As a guarantee of clean app termination, ensures registry metadata and
     /// socket are removed regardless of how `run` completes (normal exit or panic).
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.meta_path);
@@ -205,9 +205,10 @@ pub fn descendants_of(dir: &Path, id: &AgentId) -> Result<Vec<(RegistryEntry, u3
 }
 
 /// Update the peer's own registry file in place: read the entry, set or clear
-/// its processing-content field (FR-37b, D-58's measured transport), and write
-/// it back. Errors are swallowed — a failed status write degrades the parent's
-/// peer row to the name-and-elapsed face rather than failing the turn.
+/// its processing-content field (the parent reads it for its peer rows), and
+/// write it back. Errors are swallowed — a failed status write degrades the
+/// parent's peer row to the name-and-elapsed face rather than failing the
+/// turn.
 pub async fn set_turn_state(dir: &Path, id: &AgentId, state: Option<&str>) {
     let meta_path = dir.join(format!("{}.json", id.as_str()));
     let Ok(raw) = tokio::fs::read_to_string(&meta_path).await else {
@@ -301,13 +302,13 @@ mod tests {
         assert!(entry.ancestors.is_empty());
         assert_eq!(entry.depth(), 0);
         assert!(entry.parent().is_none());
-        // D-58's degrade rule: absence in the file is absence in the entry, so
-        // the parent's row falls back to the shipped face (TFR-37b).
+        // The degrade rule: absence in the file is absence in the entry, so
+        // the parent's row falls back to the name-and-operating-time face.
         assert!(entry.turn.is_none());
     }
 
-    /// D-58's pin: the turn state survives the same file round trip every
-    /// other transport shares, and an idle entry omits the key (TFR-37b).
+    /// The turn state survives the same file round trip every other
+    /// transport shares, and an idle entry omits the key.
     #[test]
     fn the_turn_state_survives_the_registry_round_trip() {
         let mut busy = sample(None);

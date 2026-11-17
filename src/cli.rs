@@ -162,10 +162,10 @@ pub struct RunArgs {
     pub auto_approve_tools: bool,
 
     /// Serve mode: end the session when the work is done — after the last
-    /// processed input, when no further input is queued (FR-32). `agent-cli
-    /// spawn` and the `spawn` tool set this for the peers they launch by
-    /// default; without it a headless agent keeps waiting for the next prompt
-    /// exactly as before.
+    /// processed input, when no further input is queued. `agent-cli spawn`
+    /// and the `spawn` tool set this for the peers they launch by default;
+    /// without it a headless agent keeps waiting for the next prompt exactly
+    /// as before.
     #[arg(long, global = true)]
     pub exit_when_idle: bool,
 }
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(cli.run_args.model.as_deref(), Some("glm-5.1:cloud"));
         assert!(cli.run_args.auto_approve_tools);
 
-        // Subcommand omitted (FR-01 equivalence)
+        // Subcommand omitted (equivalent to `run`)
         let cli = Cli::try_parse_from([
             "agent-cli",
             "--name",

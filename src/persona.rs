@@ -283,8 +283,8 @@ mod tests {
         path
     }
 
-    /// V-3: with the three earlier steps missing, `.agent-cli/persona.md` is
-    /// the role the agent runs as — the directory states it.
+    /// With the three earlier steps missing, `.agent-cli/persona.md` is the
+    /// role the agent runs as — the directory states it.
     #[test]
     fn project_persona_is_used_when_nothing_else_matches() {
         let project = TempDir::new().unwrap();
@@ -304,7 +304,7 @@ mod tests {
             .contains("Project instructions."));
     }
 
-    /// V-4: every mechanism that resolves a persona today keeps winning — the
+    /// Every mechanism that resolves a persona today keeps winning — the
     /// project file is additive, not a new top priority.
     #[test]
     fn explicit_and_named_personas_outrank_the_project_persona() {
@@ -346,7 +346,7 @@ mod tests {
         assert!(!r.project_used);
     }
 
-    /// V-5: absent is not an error — a missing `persona.md`, and a bare
+    /// Absent is not an error — a missing `persona.md`, and a bare
     /// `.agent-cli` directory, both fall through to the built-in default.
     #[test]
     fn absent_project_persona_falls_through_to_builtin() {
@@ -371,8 +371,8 @@ mod tests {
         assert!(r.builtin_used);
     }
 
-    /// V-6: present but malformed is an error naming the file — a wrong role
-    /// must not be presented as an intended one.
+    /// Present but malformed is an error naming the file — a wrong role must
+    /// not be presented as an intended one.
     #[test]
     fn malformed_project_persona_errors_instead_of_falling_back() {
         let agents = TempDir::new().unwrap();
@@ -402,9 +402,9 @@ mod tests {
         }
     }
 
-    /// V-3 / D-4: the candidate is a path, not a snapshot of existence — a
-    /// `persona.md` written after the candidate was resolved is picked up by
-    /// the next resolution, which is what makes `/reload-persona` work.
+    /// The candidate is a path, not a snapshot of existence — a `persona.md`
+    /// written after the candidate was resolved is picked up by the next
+    /// resolution, which is what makes `/reload-persona` work.
     #[test]
     fn a_persona_written_after_startup_is_picked_up_on_the_next_resolution() {
         let project = TempDir::new().unwrap();
@@ -421,8 +421,8 @@ mod tests {
         assert_eq!(r.persona.frontmatter.role, "Arrived later");
     }
 
-    /// Document consistency check (T-602-10):
-    /// All bundled sample personas must be loadable via `Persona::load`.
+    /// Document consistency check: all bundled sample personas must be
+    /// loadable via `Persona::load`.
     #[test]
     fn bundled_example_personas_parse() {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

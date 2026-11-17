@@ -21,8 +21,8 @@ pub struct CustomCommand {
 /// Scan `dir` for `*.md` files and return them sorted by name.
 ///
 /// A missing or unreadable directory yields an empty vec (no error) so the
-/// REPL keeps working with only built-in commands (FR-03). Unreadable files
-/// are skipped (NFR-04).
+/// REPL keeps working with only built-in commands. Unreadable files are
+/// skipped.
 pub fn discover(dir: &Path) -> Vec<CustomCommand> {
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(dir) {

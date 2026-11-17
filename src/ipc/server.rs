@@ -86,9 +86,9 @@ impl IpcServer {
 }
 
 impl Drop for IpcServer {
-    /// Stop the accept loop and delete the Unix socket file.
-    /// As a guarantee of FR-13 "App termination", ensures the socket file
-    /// is removed regardless of how `run` completes (normal exit or panic).
+    /// Stop the accept loop and delete the Unix socket file. As a guarantee
+    /// of clean app termination, ensures the socket file is removed
+    /// regardless of how `run` completes (normal exit or panic).
     fn drop(&mut self) {
         self.task.abort();
         let _ = std::fs::remove_file(&self.socket_path);

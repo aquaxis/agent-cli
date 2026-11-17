@@ -573,9 +573,9 @@ mod tests {
         assert!(s.history_index.is_none());
     }
 
-    // Task 4: Tests for consecutive-duplicate dedup during navigation
-    // These tests verify that navigate_up/navigate_down work correctly with
-    // deduplicated history snapshots (as constructed by app.rs's dedup_consecutive).
+    // Tests for consecutive-duplicate dedup during navigation These tests verify
+    // that navigate_up/navigate_down work correctly with deduplicated history
+    // snapshots (as constructed by app.rs's dedup_consecutive).
 
     #[test]
     fn navigate_up_skips_consecutive_duplicates() {

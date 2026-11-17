@@ -19,7 +19,7 @@ pub struct OllamaProvider {
     pub base_url: String,
     pub model: String,
     pub temperature: Option<f32>,
-    /// How many times to retry a transient error before surfacing it (FR-13).
+    /// How many times to retry a transient error before surfacing it.
     pub max_retries: u32,
     pub client: reqwest::Client,
     pub context: ProviderContext,
@@ -70,8 +70,8 @@ impl OllamaProvider {
 }
 
 /// Build the `/api/chat` request body. Pure so the request shape (notably the
-/// `model` name, which must keep any `:cloud` tag verbatim — FR-12) is testable
-/// without a network call.
+/// `model` name, which must keep any `:cloud` tag verbatim) is testable without
+/// a network call.
 fn build_chat_body(
     model: &str,
     messages: &[Message],
@@ -95,7 +95,7 @@ fn build_chat_body(
 /// Classify an Ollama HTTP failure as transient (worth retrying). Transient =
 /// HTTP 503/429/500/502/504, or a body indicating the model is temporarily
 /// unavailable ("overloaded" / "temporarily" / "please retry" / "try again").
-/// Non-transient failures (e.g. 400/404 model-not-found) are not retried (FR-13).
+/// Non-transient failures (e.g. 400/404 model-not-found) are not retried.
 fn is_transient(status: u16, body: &str) -> bool {
     if matches!(status, 503 | 429 | 500 | 502 | 504) {
         return true;
@@ -108,7 +108,7 @@ fn is_transient(status: u16, body: &str) -> bool {
 }
 
 /// Exponential backoff in milliseconds for retry `attempt` (0-based): ~1s, 2s,
-/// 4s, … capped at 8s. Pure and deterministic so it is unit-testable (NFR-05).
+/// 4s, … capped at 8s. Pure and deterministic so it is unit-testable.
 fn backoff_delay_ms(attempt: u32) -> u64 {
     let ms = 1000u64.saturating_mul(1u64 << attempt.min(3));
     ms.min(8000)
@@ -155,9 +155,9 @@ impl Provider for OllamaProvider {
         Capabilities {
             streaming: true,
             tool_use: true,
-            // FR-03-1-2 / design doc 4.3C: Thinking-capable models (e.g. glm-5.1:cloud)
-            // return `message.thinking`, so this is true. Non-capable models simply
-            // emit nothing from parse_ndjson_line, which is harmless (policy A).
+            // Thinking-capable models (e.g. glm-5.1:cloud) return `message.thinking`,
+            // so this is true. Non-capable models simply emit nothing from
+            // parse_ndjson_line, which is harmless (policy A).
             thinking: true,
         }
     }
@@ -174,10 +174,10 @@ impl Provider for OllamaProvider {
         let body = build_chat_body(&self.model, messages, tools, self.temperature);
         let url = format!("{}/api/chat", self.base_url.trim_end_matches('/'));
 
-        // Establish the request, retrying transient errors (e.g. cloud cold-start
-        // / "temporarily overloaded" 503s) with bounded exponential backoff before
-        // surfacing the error. `ollama run` tolerates these; we mirror that (FR-13).
-        // Only the initial request/status is retried — not a stream already begun.
+        // Establish the request, retrying transient errors (e.g. cloud cold-start /
+        // "temporarily overloaded" 503s) with bounded exponential backoff before
+        // surfacing the error. `ollama run` tolerates these; we mirror that. Only
+        // the initial request/status is retried — not a stream already begun.
         let mut attempt: u32 = 0;
         let resp = loop {
             let send_result = self
@@ -292,7 +292,7 @@ pub(crate) fn parse_ndjson_line(line: &str) -> OllamaLineOutcome {
     };
     let mut events = Vec::new();
     if let Some(msg) = v.get("message") {
-        // FR-03-1-2 / design doc 4.3C: Emission order is Thinking -> Text -> ToolUse (consistent with Anthropic spec).
+        // Emission order is Thinking -> Text -> ToolUse (consistent with Anthropic spec).
         if let Some(thinking) = msg.get("thinking").and_then(|t| t.as_str()) {
             if !thinking.is_empty() {
                 events.push(ProviderEvent::Thinking {
@@ -403,8 +403,8 @@ mod tests {
         assert!(!outcome.done);
     }
 
-    /// FR-03-1-2 / design doc 4.3C: Emit `message.thinking` as `ProviderEvent::Thinking`.
-    /// When both thinking and content exist in the same frame, emit in Thinking -> Text order.
+    /// Emit `message.thinking` as `ProviderEvent::Thinking`. When both thinking and content
+    /// exist in the same frame, emit in Thinking -> Text order.
     #[test]
     fn parses_thinking_field_emits_thinking_event() {
         let line = r#"{"message":{"role":"assistant","thinking":"reason about the prompt","content":"hello"},"done":false}"#;
@@ -462,7 +462,7 @@ mod tests {
         ));
     }
 
-    // --- Request body: model name preserved verbatim (FR-12 / Task 10) ---
+    // --- Request body: model name preserved verbatim ---
 
     #[test]
     fn build_chat_body_preserves_cloud_tag() {
@@ -491,7 +491,7 @@ mod tests {
         assert!(body.get("options").is_some());
     }
 
-    // --- Transient-error classification (FR-13 / Task 12) ---
+    // --- Transient-error classification ---
 
     #[test]
     fn is_transient_503_overloaded_is_true() {
@@ -527,7 +527,7 @@ mod tests {
         assert!(!is_transient(400, "permanent configuration error"));
     }
 
-    // --- Backoff schedule is bounded (NFR-05 / Task 12) ---
+    // --- Backoff schedule is bounded ---
 
     #[test]
     fn backoff_delay_is_exponential_and_capped() {

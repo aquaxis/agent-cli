@@ -12,7 +12,7 @@ use crate::ipc::{client, registry, IpcMessage};
 
 /// Launch a detached, headless agent-cli process that does not depend on this
 /// one. Prints the child's registry identity and returns; the child keeps
-/// running in its own session (FR-04 – FR-07).
+/// running in its own session.
 pub async fn spawn(cfg: &Config, source: &ConfigSource, args: RunArgs) -> Result<()> {
     // A human started this one, so it is the root of its own tree.
     let entry = spawn_detached(source.chain(), &cfg.registry_dir()?, &args, &[]).await?;
@@ -85,8 +85,8 @@ pub async fn spawn_detached(
     if args.auto_approve_tools {
         cmd.arg("--auto-approve-tools");
     }
-    // FR-32: the quiet-exit flag rides the child's own argument vector — a
-    // peer launched to finish its work and leave must be told so at launch.
+    // The quiet-exit flag rides the child's own argument vector — a peer
+    // launched to finish its work and leave must be told so at launch.
     if args.exit_when_idle {
         cmd.arg("--exit-when-idle");
     }
@@ -153,7 +153,7 @@ pub async fn spawn_detached(
     }
 }
 
-/// Stop a running peer by id or name (FR-10).
+/// Stop a running peer by id or name.
 pub async fn stop(cfg: &Config, peer: &str) -> Result<()> {
     stop_peer(&cfg.registry_dir()?, peer).await
 }
@@ -277,7 +277,7 @@ pub struct GroupSummary {
 /// (`list_entries` already reaps dead pids / missing sockets, so a group appears
 /// iff at least one member process is alive). Grouped buckets come first, sorted
 /// by group id; the ungrouped (`None`) bucket, if any, is last — a deterministic
-/// order so callers and tests are stable (FR-14, FR-15).
+/// order so callers and tests are stable.
 pub fn group_summary(registry_dir: &Path) -> Result<Vec<GroupSummary>> {
     Ok(aggregate_groups(registry::list_entries(registry_dir)?))
 }
@@ -750,8 +750,8 @@ pub async fn doctor(cfg: &mut Config, source: &ConfigSource) -> Result<()> {
     finish(all_ok)
 }
 
-/// Print multi-line details of `AppError::Provider` to stdout with indentation (FR-09-3).
-/// Since `ProviderError::Display` returns a string containing newlines, each line gets a prefix.
+/// Print multi-line details of `AppError::Provider` to stdout with indentation. Since
+/// `ProviderError::Display` returns a string containing newlines, each line gets a prefix.
 fn print_provider_error(indent: &str, e: &AppError) {
     let s = e.to_string();
     let mut iter = s.lines();
@@ -1023,7 +1023,7 @@ enabled = []
     .await;
 
     // Child termination: closing stdin causes EOF, which breaks the REPL loop.
-    // Regression test for FR-13 "App termination": verify the child exits on its own.
+    // Regression test for app termination: verify the child exits on its own.
     drop(child.stdin.take());
     let exited_naturally = tokio::time::timeout(Duration::from_secs(3), child.wait())
         .await
@@ -1048,7 +1048,7 @@ enabled = []
     }
     if !exited_naturally {
         return Err(AppError::Other(
-            "child agent did not exit on stdin EOF within 3s (FR-13)".into(),
+            "child agent did not exit on stdin EOF within 3s".into(),
         ));
     }
     // Verify socket and registry meta are cleaned up after exit

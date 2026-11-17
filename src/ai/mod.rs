@@ -202,7 +202,7 @@ pub(crate) fn http_error(
         .into_app_error()
 }
 
-/// Diagnostic information for provider HTTP errors (FR-09-3 / design doc 5.1).
+/// Diagnostic information for provider HTTP errors.
 ///
 /// When a 4xx/5xx response is received, this formats all context known to the
 /// provider (resolved config file path, `api_key_env` name, masked API key,

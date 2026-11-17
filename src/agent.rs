@@ -14,7 +14,7 @@ use crate::log::{ConversationLog, LogEvent};
 use crate::persona::Persona;
 use crate::tools::{ToolCtx, ToolRegistry};
 
-/// Tool execution approval request sent to the REPL input loop (FR-04-1 / design doc 4.3A).
+/// Tool execution approval request sent to the REPL input loop.
 ///
 /// The `agent` task waits for the user's y/N response via `response` oneshot::Sender.
 pub struct ApprovalRequest {
@@ -183,7 +183,7 @@ pub struct Agent {
     /// limit can be applied.
     pub ancestors: Vec<crate::id::AgentId>,
     pub log: Option<ConversationLog>,
-    /// Shared via `Arc<AtomicBool>` for runtime toggle via `/auto` REPL command (FR-04-2).
+    /// Shared via `Arc<AtomicBool>` for runtime toggle via `/auto` REPL command.
     pub auto_approve: Arc<AtomicBool>,
     /// `[permissions]`, compiled once. A `deny` here outranks `auto_approve`:
     /// a deny list that `/auto on` can switch off is not a deny list.
@@ -201,15 +201,15 @@ pub struct Agent {
     /// cancelled turn cannot strand the queue behind a state only a manually
     /// typed prompt would clear.
     pub stopping: Arc<AtomicBool>,
-    /// FR-32: `--exit-when-idle` (headless). After a turn completes, an agent
-    /// with this set checks its input channel; when no input is queued
-    /// (`try_recv` finds the channel empty), the work is done — the loop ends
-    /// instead of waiting forever for the next prompt, and the owner's join
-    /// (or the peer's own process exit) follows. The shipped shutdown path
-    /// (stopping gate, drain, `finish_cancelled`) stays the only exit path:
-    /// nothing here raises a cancellation or skips a queued prompt.
+    /// `--exit-when-idle` (headless). After a turn completes, an agent with
+    /// this set checks its input channel; when no input is queued (`try_recv`
+    /// finds the channel empty), the work is done — the loop ends instead of
+    /// waiting forever for the next prompt, and the owner's join (or the
+    /// peer's own process exit) follows. The shipped shutdown path (stopping
+    /// gate, drain, `finish_cancelled`) stays the only exit path: nothing
+    /// here raises a cancellation or skips a queued prompt.
     pub exit_when_idle: bool,
-    /// Channel to send approval requests to the input loop. `None` means approval is not possible, so deny (FR-04-1).
+    /// Channel to send approval requests to the input loop. `None` means approval is not possible, so deny.
     pub approval_tx: Option<mpsc::Sender<ApprovalRequest>>,
     pub history: Vec<Message>,
 }
@@ -419,8 +419,8 @@ impl Agent {
                         .await;
                 }
             }
-            // FR-32: `--exit-when-idle`. After the input is processed, an agent
-            // so flagged ends its loop when the input channel is empty and the
+            // `--exit-when-idle`. After the input is processed, an agent so
+            // flagged ends its loop when the input channel is empty and the
             // sender side is gone: the work is done — this was the last input.
             // The channel closes (this was the only receiver), the agent task
             // ends, and the owner's join/watch follows the shipped paths.
@@ -438,11 +438,11 @@ impl Agent {
         Ok(())
     }
 
-    /// FR-32: the quiet-check of `--exit-when-idle`. Returns `true` when the
-    /// input channel holds **no** queued input and the sender side is gone or
-    /// idle — the work is done and no other prompt is waiting, so the loop may
-    /// end. A queued input at this instant keeps the loop alive (the input
-    /// stays queued; the next `recv` delivers it).
+    /// The quiet-check of `--exit-when-idle`. Returns `true` when the input
+    /// channel holds **no** queued input and the sender side is gone or idle —
+    /// the work is done and no other prompt is waiting, so the loop may end. A
+    /// queued input at this instant keeps the loop alive (the input stays
+    /// queued; the next `recv` delivers it).
     fn input_quiet(rx: &mpsc::Receiver<AgentInput>) -> bool {
         rx.is_empty() && rx.is_closed()
     }
@@ -460,14 +460,14 @@ impl Agent {
         // before anything else of this turn (including compaction), so the
         // elapsed time it shows covers the whole turn.
         let _ = event_tx.send(AgentEvent::TurnStart).await;
-        // The peer's situation face (FR-37b, D-58): the registry entry's turn
-        // field is the parent's read at its beat — coarse boundaries only
-        // (never per delta, the stream's rate would make the writes churn).
-        // Turn start (FR-37b): announce "working" in the registry, so the
-        // parent's peer row grows the processing content. D-58's measured
-        // transport is the registry seam, not an IPC message: the parent
-        // already re-reads the registry every beat for `live_children_states`,
-        // and the entry is what survives a peer that dies mid-turn.
+        // The peer's situation face: the registry entry's turn field is the
+        // parent's read at its beat — coarse boundaries only (never per delta,
+        // the stream's rate would make the writes churn). Turn start: announce
+        // "working" in the registry, so the parent's peer row grows the
+        // processing content. The transport is the registry seam, not an IPC
+        // message: the parent already re-reads the registry every beat for
+        // `live_children_states`, and the entry is what survives a peer that
+        // dies mid-turn.
         crate::ipc::registry::set_turn_state(&self.registry_dir, &self.id, Some("working")).await;
 
         // Hybrid history-window management (opt-in `[history]`). Runs before
@@ -498,8 +498,8 @@ impl Agent {
                             message: message.clone(),
                         })
                         .await;
-                    // FR-03-2: Always emit a `Done` even on error, so the REPL input
-                    // loop does not get stuck in Pending state.
+                    // Always emit a `Done` even on error, so the REPL input loop
+                    // does not get stuck in Pending state.
                     crate::ipc::registry::clear_turn_state(&self.registry_dir, &self.id).await;
                     let _ = event_tx.send(AgentEvent::Done).await;
                     return Ok(());
@@ -635,8 +635,8 @@ impl Agent {
                 }
                 let (id, name, args) = pending_tools[next_tool].clone();
                 next_tool += 1;
-                // The row says which call is running (FR-37b): the name joins
-                // the elapsed time the parent composes at its beat.
+                // The row says which call is running: the name joins the
+                // elapsed time the parent composes at its beat.
                 crate::ipc::registry::set_turn_state(
                     &self.registry_dir,
                     &self.id,
@@ -920,9 +920,9 @@ impl Agent {
                 .await;
         }
 
-        // Last resort (FR-34): the kept tail itself over the budget — a single
-        // huge ToolResult (a full debug log one tool call returned) can exceed
-        // the provider's whole context window on its own, and neither the
+        // Last resort: the kept tail itself over the budget — a single huge
+        // ToolResult (a full debug log one tool call returned) can exceed the
+        // provider's whole context window on its own, and neither the
         // summarize nor the drop above may touch the tail (the
         // keep_recent_turns contract). Truncate that one message's content to
         // fit the remainder of the budget: the turn then fits, the tool result
@@ -951,7 +951,7 @@ impl Agent {
     }
 }
 
-/// Send an approval request to the REPL input loop and wait for a response (FR-04-1 / design doc 4.3A).
+/// Send an approval request to the REPL input loop and wait for a response.
 ///
 /// - `approval_tx` is `None` (tests or no approval handler connected): return `false` for safety.
 /// - Send fails (input loop already terminated): `false`.
@@ -1316,11 +1316,11 @@ mod tests {
         (agent, cancel)
     }
 
-    /// FR-32's pin (the quiet exit): a flagged agent whose input channel goes
-    /// quiet after the last processed turn ends its loop by itself — the task
-    /// finishes with `Ok(())`, which is what a headless owner's wait (or the
-    /// serve loop's quiet-exit arm) needs. Fold-verified by the companion
-    /// test below: without the flag the same input leaves the agent waiting.
+    /// The quiet exit: a flagged agent whose input channel goes quiet after
+    /// the last processed turn ends its loop by itself — the task finishes
+    /// with `Ok(())`, which is what a headless owner's wait (or the serve
+    /// loop's quiet-exit arm) needs. Fold-verified by the companion test
+    /// below: without the flag the same input leaves the agent waiting.
     #[tokio::test]
     async fn exit_when_idle_ends_the_loop_once_the_work_is_done() {
         let history = Agent::build_initial_history(&Persona::builtin_default());
@@ -1360,13 +1360,12 @@ mod tests {
         assert!(saw_done, "the last turn's Done must still be emitted");
     }
 
-    /// FR-32's third pin (the quiet-exit must not fire early): with the flag
-    /// on and **another input already queued**, the agent must not end its
-    /// loop after the first turn — the queued prompt is still owed its turn,
-    /// so the quiet-check that fires the exit must see the channel non-empty
-    /// and keep waiting. Fold-verified against the first pin: the only
-    /// difference in inputs is the queued second prompt, and only that changes
-    /// the outcome.
+    /// The quiet exit must not fire early: with the flag on and **another
+    /// input already queued**, the agent must not end its loop after the first
+    /// turn — the queued prompt is still owed its turn, so the quiet-check
+    /// that fires the exit must see the channel non-empty and keep waiting.
+    /// Fold-verified against the first pin: the only difference in inputs is
+    /// the queued second prompt, and only that changes the outcome.
     #[tokio::test]
     async fn a_queued_prompt_keeps_a_flagged_agent_alive() {
         let history = Agent::build_initial_history(&Persona::builtin_default());
@@ -1425,9 +1424,9 @@ mod tests {
         );
     }
 
-    /// FR-32's companion pin: without the flag the shipped behaviour stands —
-    /// a headless agent keeps waiting for the next input after its work, so a
-    /// peer persists afterwards (the measured default this cycle replaces).
+    /// Companion to the quiet-exit pin: without the flag a headless agent
+    /// keeps waiting for the next input after its work, so the peer persists
+    /// afterwards.
     #[tokio::test]
     async fn without_the_flag_the_agent_keeps_waiting_after_its_work() {
         let history = Agent::build_initial_history(&Persona::builtin_default());
@@ -1578,10 +1577,10 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-3 / design doc 4.3B: Verify that when the tool_use loop reaches `max_tool_iterations`,
-    /// `AgentEvent::Info { message: "max tool-use iterations reached" }` and
-    /// `AgentEvent::Done` are emitted in that order, and `AgentEvent::Error` is not emitted.
-    /// Default (24) is too slow, so override to `max_tool_iterations = 4` for this test.
+    /// Verify that when the tool_use loop reaches `max_tool_iterations`, `AgentEvent::Info {
+    /// message: "max tool-use iterations reached" }` and `AgentEvent::Done` are emitted in that
+    /// order, and `AgentEvent::Error` is not emitted. Default (24) is too slow, so override to
+    /// `max_tool_iterations = 4` for this test.
     #[tokio::test]
     async fn agent_emits_max_tool_iterations_info_when_loop_caps() {
         // Prepare 5 scripts, but process_turn caps at 4 iterations (5th is never called).
@@ -1645,8 +1644,9 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-3 boundary (lower limit): `max_tool_iterations = 0` is clamped to 1 iteration by `.max(1)`.
-    /// With 1 iteration, emitting a tool_use means the loop cannot continue, so Info + Done fire immediately.
+    /// Iteration-cap boundary (lower limit): `max_tool_iterations = 0` is clamped to 1 iteration by
+    /// `.max(1)`. With 1 iteration, emitting a tool_use means the loop cannot continue, so Info + Done fire
+    /// immediately.
     #[tokio::test]
     async fn agent_clamps_zero_max_tool_iterations_to_one() {
         let scripts = vec![
@@ -1906,7 +1906,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-1: When approval `true` is returned via approval_tx, the tool is executed and its result is reflected.
+    /// When approval `true` is returned via approval_tx, the tool is executed and its result is reflected.
     #[tokio::test]
     async fn approval_channel_grants_tool_execution() {
         let scripts = vec![
@@ -1978,7 +1978,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-1: When approval `false` is returned, the tool is not executed and "user denied tool execution" is returned.
+    /// When approval `false` is returned, the tool is not executed and "user denied tool execution" is returned.
     #[tokio::test]
     async fn approval_channel_denial_skips_tool() {
         let scripts = vec![
@@ -2149,7 +2149,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-04-2: When `auto_approve = true`, execution proceeds immediately without going through approval_tx.
+    /// When `auto_approve = true`, execution proceeds immediately without going through approval_tx.
     #[tokio::test]
     async fn auto_approve_atomic_skips_approval_channel() {
         let scripts = vec![
@@ -2250,7 +2250,7 @@ mod tests {
         (result, approval_rx)
     }
 
-    /// FR-16 / AC-10: a `deny` rule outranks `auto_approve`.
+    /// A `deny` rule outranks `auto_approve`.
     ///
     /// This is the single most important behaviour in the permissions feature.
     /// A deny list that `/auto on`, `--auto-approve-tools` or
@@ -2283,8 +2283,8 @@ mod tests {
         );
     }
 
-    /// FR-15 / AC-11: an `allow` rule runs the call without an approval prompt
-    /// while approval is otherwise on.
+    /// An `allow` rule runs the call without an approval prompt while approval
+    /// is otherwise on.
     #[tokio::test]
     async fn an_allow_rule_runs_the_call_without_asking() {
         let history = Agent::build_initial_history(&Persona::builtin_default());
@@ -2361,8 +2361,8 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// FR-12: the reported field shape — a cancel raised while the agent was
-    /// IDLE left the token set (nothing unwinds, so the unwind-end clear never
+    /// The reported field shape — a cancel raised while the agent was IDLE
+    /// left the token set (nothing unwinds, so the unwind-end clear never
     /// runs). The dequeued peer prompt must still process: the skip branch
     /// consults the session's stopping flag, never the per-turn token — a
     /// manually typed prompt may not be the only way back.
@@ -2477,7 +2477,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// Task 3: Agent does not send a reply when reply_to is None.
+    /// Agent does not send a reply when reply_to is None.
     #[tokio::test]
     async fn agent_does_not_send_reply_for_peer_prompt_without_reply_to() {
         use crate::ipc::server::IpcServer;
@@ -2531,7 +2531,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// Task 3: Agent reply includes all assistant text from multi-iteration turns.
+    /// Agent reply includes all assistant text from multi-iteration turns.
     #[tokio::test]
     async fn agent_reply_includes_all_assistant_text() {
         use crate::ipc::server::IpcServer;
@@ -2602,7 +2602,7 @@ mod tests {
         let _ = handle.await;
     }
 
-    /// Task 3: Agent reply for empty response is "(no text response)".
+    /// Agent reply for empty response is "(no text response)".
     #[tokio::test]
     async fn agent_reply_for_empty_response() {
         use crate::ipc::server::IpcServer;

@@ -725,7 +725,8 @@ impl ClaudeCodeProvider {
                 let stdout = String::from_utf8_lossy(&out.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).to_string();
                 if !out.status.success() {
-                    // V-09b shape: non-zero exit, empty stdout, message on stderr.
+                    // Failure shape: non-zero exit, empty stdout, message on
+                    // stderr.
                     vec![
                         ProviderEvent::Error {
                             message: self.error(

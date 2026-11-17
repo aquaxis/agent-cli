@@ -93,7 +93,7 @@ impl Tool for SpawnTool {
             model: parsed.model,
             persona: parsed.persona.map(std::path::PathBuf::from),
             auto_approve_tools: false,
-            // FR-32: the peer's exit-when-idle follows the configuration
+            // The peer's exit-when-idle follows the configuration
             // (`[spawn] exit_when_idle`, carried in this agent's ToolCtx;
             // true by default) unless the tool call said otherwise — a
             // fire-and-forget spawn that stands by forever would otherwise
