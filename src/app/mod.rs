@@ -2971,7 +2971,6 @@ pub(crate) async fn run_input_loop<R>(
             agent_idle_rx,
             approval_rx,
             interactive,
-            turn_in_flight_rx,
         )
         .await;
     }
@@ -3083,7 +3082,6 @@ async fn cursor_position_via_pump(
 /// cursor-position queries from the same thread, so concurrent users of
 /// the single global reader that starve each other cannot exist by
 /// construction.
-#[allow(clippy::too_many_arguments)]
 async fn run_input_loop_raw(
     input_tx: mpsc::Sender<AgentInput>,
     state: Arc<ReplState>,
@@ -3113,7 +3111,6 @@ async fn run_input_loop_raw(
                 agent_idle_rx,
                 approval_rx,
                 true,
-                turn_in_flight_rx,
             )
             .await;
             return;
@@ -4133,7 +4130,6 @@ async fn run_input_loop_line<R>(
     mut agent_idle_rx: mpsc::Receiver<()>,
     approval_rx: mpsc::Receiver<ApprovalRequest>,
     interactive: bool,
-    _turn_in_flight_rx: Option<watch::Receiver<bool>>,
 ) where
     R: AsyncRead + Unpin,
 {
