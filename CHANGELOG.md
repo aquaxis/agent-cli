@@ -4,6 +4,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.53.3]
+
+### Fixed
+
+- **A peer's turn that starts with history compaction still sends its reply.** The reply to an `ask` (or any prompt with a reply socket) was cut from the history at the index the prompt had before the turn; with `[history] enabled = true`, compaction at the turn's start removes older messages, so that index could lie past the end of the shrunk history. The slice then panicked, the agent loop ended without a word — the reply never left, and every later prompt was acknowledged and never processed, while the process and its socket stayed up. The reply is now taken from the messages that follow the turn's own prompt, found after compaction.
+
 ## [0.53.2]
 
 ### Fixed
