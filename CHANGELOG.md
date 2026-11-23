@@ -4,6 +4,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.53.4]
+
+### Fixed
+
+- **A character split across network chunks is no longer turned into U+FFFD.** The ollama NDJSON stream and the shared SSE stream decoded each chunk on its own, so a multi-byte character (every CJK character is three bytes) that straddled a chunk boundary became two replacement characters — in the model's text and in the files an agent wrote from it. The decoder now holds an incomplete trailing sequence until the next chunk completes it (`Utf8Carry`); only bytes that can never form a character are replaced.
+
 ## [0.53.3]
 
 ### Fixed
