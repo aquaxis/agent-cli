@@ -236,11 +236,12 @@ impl Provider for OllamaProvider {
         let byte_stream = resp.bytes_stream();
         let stream = async_stream::stream! {
             let mut buffer = String::new();
+            let mut utf8 = crate::ai::stream::Utf8Carry::default();
             let mut byte_stream = Box::pin(byte_stream);
             while let Some(chunk) = byte_stream.next().await {
                 match chunk {
                     Ok(bytes) => {
-                        let s = String::from_utf8_lossy(&bytes);
+                        let s = utf8.push(&bytes);
                         buffer.push_str(&s);
                         while let Some(idx) = buffer.find('\n') {
                             let line: String = buffer.drain(..=idx).collect();

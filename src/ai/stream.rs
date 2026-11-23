@@ -29,11 +29,12 @@ where
 {
     Box::pin(async_stream::stream! {
         let mut acc = SseAccumulator::new();
+        let mut utf8 = Utf8Carry::default();
         let mut bytes = Box::pin(bytes);
         while let Some(chunk) = bytes.next().await {
             match chunk {
                 Ok(chunk) => {
-                    let s = String::from_utf8_lossy(chunk.as_ref());
+                    let s = utf8.push(chunk.as_ref());
                     acc.push(&s);
                     for frame in acc.drain_frames() {
                         let outcome = parse(&frame);
@@ -55,6 +56,50 @@ where
         }
         yield ProviderEvent::Done;
     })
+}
+
+/// Decodes a byte stream as UTF-8 across chunk boundaries. A network chunk can end in the
+/// middle of a multi-byte character (any CJK character is three bytes); decoding each
+/// chunk on its own turned both halves into U+FFFD, and the replacement characters landed
+/// in the model's text and in the files an agent wrote from it. The incomplete tail is
+/// held back and completed by the next chunk; only bytes that can never form a character
+/// become U+FFFD.
+#[derive(Debug, Default)]
+pub(crate) struct Utf8Carry {
+    pending: Vec<u8>,
+}
+
+impl Utf8Carry {
+    /// The text the bytes received so far complete.
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> String {
+        self.pending.extend_from_slice(chunk);
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    out.push_str(text);
+                    self.pending.clear();
+                    return out;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    out.push_str(std::str::from_utf8(&self.pending[..valid]).unwrap_or_default());
+                    match error.error_len() {
+                        // An incomplete sequence at the end: wait for the next chunk.
+                        None => {
+                            self.pending.drain(..valid);
+                            return out;
+                        }
+                        // Bytes that can never be a character: replace them, go on.
+                        Some(bad) => {
+                            out.push(char::REPLACEMENT_CHARACTER);
+                            self.pending.drain(..valid + bad);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Iterator-style helper that extracts SSE frames.
@@ -98,6 +143,22 @@ impl SseAccumulator {
 
 #[cfg(test)]
 mod tests {
+    /// A character split across two chunks is decoded whole, never as U+FFFD.
+    #[test]
+    fn a_character_split_across_chunks_is_decoded_whole() {
+        let text = "節末の演習";
+        let bytes = text.as_bytes();
+        let mut carry = super::Utf8Carry::default();
+        let mut out = String::new();
+        for chunk in bytes.chunks(2) {
+            out.push_str(&carry.push(chunk));
+        }
+        assert_eq!(out, text);
+        // Bytes that can never form a character still become one U+FFFD each.
+        let mut carry = super::Utf8Carry::default();
+        assert_eq!(carry.push(&[b'a', 0xFF, b'b']), "a\u{FFFD}b");
+    }
+
     use super::*;
 
     #[test]
