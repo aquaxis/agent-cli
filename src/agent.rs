@@ -295,8 +295,9 @@ impl Agent {
                         continue;
                     }
                     let combined = format!("{header}\n{text}");
-                    let history_len_before = self.history.len();
-                    self.history.push(Message::User { content: combined });
+                    self.history.push(Message::User {
+                        content: combined.clone(),
+                    });
                     let _ = event_tx
                         .send(AgentEvent::Info {
                             message: format!("peer prompt received from {}", from.as_str()),
@@ -305,7 +306,19 @@ impl Agent {
                     self.process_turn(&event_tx, log.as_ref()).await?;
 
                     if let Some(reply_socket) = reply_to {
-                        let response_text: String = self.history[history_len_before..]
+                        // The turn's own messages follow its prompt. History
+                        // compaction at the turn's start removes older
+                        // messages, so the prompt's index before the turn is
+                        // no index into the history after it: find the prompt
+                        // itself (compaction keeps the recent turns verbatim).
+                        let turn_from = self
+                            .history
+                            .iter()
+                            .rposition(
+                                |m| matches!(m, Message::User { content } if *content == combined),
+                            )
+                            .map_or(self.history.len(), |at| at + 1);
+                        let response_text: String = self.history[turn_from..]
                             .iter()
                             .filter_map(|m| match m {
                                 Message::Assistant { content, .. } if !content.is_empty() => {
@@ -1281,6 +1294,74 @@ mod tests {
 
         drop(in_tx);
         let _ = handle.await;
+    }
+
+    /// History compaction at the start of a peer's turn shrinks the history
+    /// below the prompt's former index. The reply must still be the turn's own
+    /// answer — before, the reply slice panicked, the agent loop ended without
+    /// a word, and every later prompt was acknowledged and never processed.
+    #[tokio::test]
+    async fn a_turn_whose_history_was_compacted_still_replies() {
+        let mut history = Agent::build_initial_history(&Persona::builtin_default());
+        for i in 0..20 {
+            history.push(Message::User {
+                content: format!("question {i} {}", "x".repeat(2000)),
+            });
+            history.push(Message::Assistant {
+                content: format!("answer {i} {}", "y".repeat(2000)),
+                tool_calls: vec![],
+                reasoning_content: Default::default(),
+            });
+        }
+        let mut agent = build_test_agent(
+            vec![
+                vec![
+                    ProviderEvent::Text {
+                        delta: "a summary".into(),
+                    },
+                    ProviderEvent::Done,
+                ],
+                vec![
+                    ProviderEvent::Text {
+                        delta: "the reply".into(),
+                    },
+                    ProviderEvent::Done,
+                ],
+            ],
+            history,
+        );
+        agent.config.history.enabled = true;
+        agent.config.history.max_context_tokens = 1000;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("reply.sock");
+        let mut server = crate::ipc::server::IpcServer::bind(socket.clone())
+            .await
+            .unwrap();
+        let mut replies = server.take_rx().unwrap();
+        let (in_tx, in_rx) = mpsc::channel::<AgentInput>(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(256);
+        tokio::spawn(async move { while ev_rx.recv().await.is_some() {} });
+        let handle = tokio::spawn(async move { agent.run(in_rx, ev_tx).await });
+        in_tx
+            .send(AgentInput::PeerPrompt {
+                from: AgentId::new(),
+                from_name: None,
+                text: "go".into(),
+                reply_to: Some(socket),
+            })
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .expect("a reply arrives");
+        match reply {
+            Some(crate::ipc::IpcMessage::PromptReply { text, .. }) => {
+                assert_eq!(text, "the reply")
+            }
+            other => panic!("unexpected reply: {other:?}"),
+        }
+        drop(in_tx);
+        handle.await.expect("the agent loop did not panic").unwrap();
     }
 
     fn build_test_agent(scripts: Vec<Vec<ProviderEvent>>, history: Vec<Message>) -> Agent {
