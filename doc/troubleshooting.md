@@ -784,7 +784,8 @@ These are all default-OFF; see [`doc/config.md`](config.md) §11.
 - Not an error. With `[history] enabled = true`, when the estimated context
   exceeds `max_context_tokens` the oldest turns are summarized (and/or
   dropped). The system/persona prefix and the most recent `keep_recent_turns`
-  are always kept. Raise `max_context_tokens` / `keep_recent_turns`, or set
+  are always kept; earlier summaries are folded again or dropped like any old
+  turn. Raise `max_context_tokens` / `keep_recent_turns`, or set
   `enabled = false`, to change this.
 
 ### Older details seem lost after a long session

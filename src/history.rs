@@ -87,14 +87,29 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
     chars / 4
 }
 
+/// Lead of the `System` message an earlier compaction left in place of the
+/// span it summarized.
+pub const SUMMARY_LEAD: &str = "[Summary of ";
+
+/// Whether `m` is a summary an earlier compaction spliced in.
+fn is_summary(m: &Message) -> bool {
+    matches!(m, Message::System { content } if content.starts_with(SUMMARY_LEAD))
+}
+
 /// Index range `[start, end)` of messages eligible for compaction: everything
-/// after the leading `System` prefix and before the last `keep_recent_turns`
-/// messages. `None` when nothing qualifies (too short / all system / all
-/// recent).
+/// after the leading `System` prefix (the persona and its instructions) and
+/// before the last `keep_recent_turns` messages. `None` when nothing qualifies
+/// (too short / all system / all recent).
+///
+/// A summary an earlier compaction spliced in is a `System` message too, but
+/// it is history, not the persona: it is eligible again. Were it held as part
+/// of the protected prefix, every compaction would add one more summary that
+/// no later compaction could fold or drop, and a long session's prefix would
+/// grow until the request no longer fits the provider's context window.
 pub fn old_span(messages: &[Message], keep_recent_turns: usize) -> Option<std::ops::Range<usize>> {
     let start = messages
         .iter()
-        .position(|m| !matches!(m, Message::System { .. }))
+        .position(|m| !matches!(m, Message::System { .. }) || is_summary(m))
         .unwrap_or(messages.len());
     let total = messages.len();
     if total <= start {
@@ -386,5 +401,32 @@ mod tests {
             }
             other => panic!("expected the tool result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn earlier_summaries_are_eligible_again() {
+        let msgs = vec![
+            sys("persona"),
+            sys("[Summary of 4 earlier message(s)]\nfirst"),
+            sys("[Summary of 3 earlier message(s)]\nsecond"),
+            user("u1"),
+            asst("a1"),
+            user("u2"),
+        ];
+        // The persona stays; both summaries and u1 are the old span.
+        let span = old_span(&msgs, 2).expect("span");
+        assert_eq!(span, 1..4);
+    }
+
+    #[test]
+    fn summaries_alone_can_be_folded() {
+        let msgs = vec![
+            sys("persona"),
+            sys("[Summary of 4 earlier message(s)]\nfirst"),
+            sys("[Summary of 3 earlier message(s)]\nsecond"),
+            user("u1"),
+        ];
+        let span = old_span(&msgs, 1).expect("span");
+        assert_eq!(span, 1..3);
     }
 }

@@ -4,6 +4,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.53.5]
+
+### Fixed
+
+- **A long session's history no longer outgrows the provider's context window.** Each compaction spliced its summary in as a `System` message, and the next compaction counted every leading `System` message as the protected persona prefix — so no summary could ever be folded or dropped again. A session that compacted on every turn (an ATHENA Core Agent relayed hundreds of prompts over hours) piled up one summary per compaction until the request exceeded the model's window and every turn failed with "prompt too long". Only the persona prefix is protected now; earlier summaries (`[Summary of …]`) are history, eligible to be summarized again or dropped.
+
 ## [0.53.4]
 
 ### Fixed

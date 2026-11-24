@@ -883,7 +883,10 @@ Before each turn, if the estimated context (≈ chars/4) exceeds
    one at a time until under budget.
 
 The system/persona prefix and the most recent `keep_recent_turns` messages are
-never summarized or dropped. Summarization is best-effort: a failed
+never summarized or dropped. A summary an earlier compaction left behind
+(`[Summary of N earlier message(s)]`) is not part of that prefix: it belongs to
+the old span, so a later compaction folds it into the new summary or drops it,
+and a long session's history stays within the budget. Summarization is best-effort: a failed
 summarization call degrades to drop-only and never fails the turn. The REPL
 prints an `[info]` line reporting what was compacted. Works with any provider.
 

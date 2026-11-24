@@ -903,7 +903,10 @@ impl Agent {
 
         if !summary.is_empty() {
             let replacement = Message::System {
-                content: format!("[Summary of {n_old} earlier message(s)]\n{summary}"),
+                content: format!(
+                    "{}{n_old} earlier message(s)]\n{summary}",
+                    crate::history::SUMMARY_LEAD
+                ),
             };
             self.history
                 .splice(span.clone(), std::iter::once(replacement));
@@ -1362,6 +1365,45 @@ mod tests {
         }
         drop(in_tx);
         handle.await.expect("the agent loop did not panic").unwrap();
+    }
+
+    /// A long session compacts many times. The summaries earlier compactions
+    /// left behind are history, not the persona: a later compaction folds or
+    /// drops them, so the history comes back under the budget instead of
+    /// growing one summary per compaction past the provider's window.
+    #[tokio::test]
+    async fn earlier_summaries_do_not_pin_the_history_over_budget() {
+        let mut history = vec![Message::System {
+            content: "persona".into(),
+        }];
+        for i in 0..40 {
+            history.push(Message::System {
+                content: format!(
+                    "{}{} earlier message(s)]\n{}",
+                    crate::history::SUMMARY_LEAD,
+                    i + 1,
+                    "x".repeat(400)
+                ),
+            });
+        }
+        for i in 0..6 {
+            history.push(Message::User {
+                content: format!("u{i}"),
+            });
+        }
+        // The summarizer answers nothing: the drop pass alone must suffice.
+        let mut agent = build_test_agent(vec![vec![ProviderEvent::Done]], history);
+        agent.config.history.enabled = true;
+        agent.config.history.max_context_tokens = 1000;
+        assert!(crate::history::estimate_tokens(&agent.history) > 1000);
+        let (ev_tx, mut ev_rx) = mpsc::channel::<AgentEvent>(64);
+        tokio::spawn(async move { while ev_rx.recv().await.is_some() {} });
+        agent.maybe_compact_history(&ev_tx).await;
+        assert!(crate::history::estimate_tokens(&agent.history) <= 1000);
+        assert!(matches!(
+            &agent.history[0],
+            Message::System { content } if content == "persona"
+        ));
     }
 
     fn build_test_agent(scripts: Vec<Vec<ProviderEvent>>, history: Vec<Message>) -> Agent {
