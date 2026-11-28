@@ -292,22 +292,44 @@ pub(super) fn bottom_block_rows(
 /// children list, so the pins compose rows without a registry. The content's
 /// absence degrades to the name-and-operating-time face.
 ///
+/// `glyph`, when the caller resolves one, is the Terminal Spinner the face
+/// leads with while the child runs (`<spinner> peer <name> · <elapsed>[ ·
+/// <turn>]`). The caller resolves it from the same spinner clock the status
+/// row rides (the run's frame when a turn runs, the beat-advanced
+/// display-only clock when idle), so every spinner row on the screen animates
+/// in phase; `None` composes the row without the leading glyph.
+///
 /// The whole list rides on one terminal row when every row fits; `width` is the
 /// budget the truncation shares.
 pub(super) fn peer_status_rows(
     children: &[(String, std::time::Duration, Option<String>)],
     width: usize,
+    glyph: Option<char>,
 ) -> Vec<String> {
     children
         .iter()
         .map(|(name, age, turn)| {
             let face = match turn.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-                Some(t) => format!("peer {name} · {} · {t}", format_elapsed(*age)),
-                None => format!("peer {name} · {}", format_elapsed(*age)),
+                Some(t) => format!(
+                    "{}peer {name} · {} · {t}",
+                    glyph_prefix(glyph),
+                    format_elapsed(*age)
+                ),
+                None => format!(
+                    "{}peer {name} · {}",
+                    glyph_prefix(glyph),
+                    format_elapsed(*age)
+                ),
             };
             crate::editor::truncate_display(&face, width.saturating_sub(1))
         })
         .collect()
+}
+
+/// The face's leading spinner: the caller's glyph and a separating space, or
+/// nothing when the composer runs without a phase.
+fn glyph_prefix(glyph: Option<char>) -> String {
+    glyph.map_or(String::new(), |g| format!("{g} "))
 }
 
 /// The live direct children of this session: the display name/id and the
@@ -341,14 +363,21 @@ pub(super) fn peer_display_name(e: &crate::ipc::registry::RegistryEntry) -> Stri
     e.name.clone().unwrap_or_else(|| e.id.to_string())
 }
 
-/// The peer lines the live screen's bottom block carries now, as painted text:
-/// the registry read and the composition in one call.
+/// The peer lines the live screen's bottom band carries now, as painted text:
+/// the registry read and the composition in one call. `glyph` is the Terminal
+/// Spinner the running rows carry (R3.1); `SPINNER_FRAMES[0]` keeps the pure
+/// faces the pins assert byte-for-byte equal to the shipped ones.
 pub(super) fn live_peer_lines(
     registry_dir: &Path,
     self_id: &crate::id::AgentId,
     width: usize,
+    glyph: char,
 ) -> Vec<String> {
-    peer_status_rows(&live_children_states(registry_dir, self_id), width)
+    peer_status_rows(
+        &live_children_states(registry_dir, self_id),
+        width,
+        Some(glyph),
+    )
 }
 
 /// The transcript offset the scrolled body is sliced at, given the view's

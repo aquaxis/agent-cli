@@ -110,6 +110,11 @@ pub(super) struct ZoneSession {
     registry_dir: std::path::PathBuf,
     self_id: crate::id::AgentId,
     theme: Theme,
+    /// This session's progress indicator. The beat reads the peers' band's
+    /// spinner phase from it: the frame the run holds while a turn runs, else
+    /// the display-only clock the beat advances. Read-only use — the indicator
+    /// is the shared one, so every band face stays in phase.
+    indicator: Arc<std::sync::Mutex<StatusIndicator>>,
 }
 
 /// Erase the row at an absolute 0-based position: a CUP to the row's column 0
@@ -162,6 +167,7 @@ pub(super) fn zone_arm(state: &Arc<ReplState>) {
         registry_dir: state.registry_dir.clone(),
         self_id: state.id.clone(),
         theme: state.theme,
+        indicator: state.indicator.clone(),
     };
     // The armed zone is the rows' only writer, so the live prompt block no
     // longer owns them: its cursor-relative block stays silent and the beat
@@ -354,7 +360,14 @@ pub(super) fn zone_beat(block_rows: &[String]) {
         return;
     }
     let block_n = block_rows.len() as u16;
-    let peers = live_peer_lines(&session.registry_dir, &session.self_id, width)
+    // The band's glyph: the phase rides this session's run (the beat already
+    // advanced it), or the display-only idle clock when no run holds a phase.
+    let glyph = {
+        let mut ind = lock_indicator(&session.indicator);
+        ind.peer_clock_advance();
+        ind.peer_spinner_glyph()
+    };
+    let peers = live_peer_lines(&session.registry_dir, &session.self_id, width, glyph)
         .into_iter()
         .map(|l| session.theme.err(Role::Peer, &l).into_owned())
         .collect::<Vec<_>>();

@@ -4,6 +4,20 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.54.0]
+
+### Fixed
+
+- **The text typed while an agent runs stays on the line.** The mid-turn prompt (added in v0.53.x's instruction cycle) let Enter reach the same shared editor dispatch the at-rest flow uses, and its Enter arm consumed the buffer (`submit()` takes the line) before the mid-turn refusing arm dropped it — so pressing Enter mid-turn wiped the characters being typed, from the buffer and the screen alike. Enter (like Tab) is now dropped before the dispatch by a pure gate, so the buffer and caret stand exactly as they stood and the line survives to the prompt's return; the tool-approval takeover stows the typed buffer instead of replacing it, so the mid-turn text also survives an approval's y/N interruption.
+
+### Added
+
+- **The sub-agent status rows animate their spinner in phase with the run.** The `peer <name> · <elapsed>` rows now lead with the Terminal Spinner: in phase with the running turn's frame while a turn runs, on a display-only one-beat-per-tick clock when the prompt is idle. A spawned peer's status row animates even when this session sits at rest.
+
+### Changed
+
+- **The prompt stays interactive while an agent runs.** The prompt line (with the editing buffer and its caret) stays visible and editable during a turn — the running display (spinner, peers' band) composes above it — and the log's mouse operations keep working mid-turn: the wheel scrolls and a drag selects and copies exactly as they do at rest, while the turn keeps streaming into the record beneath (the pinned status row's elapsed time keeps counting live under a scrolled view). Submitting with Enter remains barred until the turn ends; the mid-turn text is never wiped.
+
 ## [0.53.5]
 
 ### Fixed

@@ -1208,6 +1208,19 @@ struct PromptRenderer {
     /// and a finished subagent's row vanishes at the next render rather than
     /// leaving a stale line on the live screen.
     peer_rows: u16,
+    /// Transient rows the last render placed above the prompt span but below
+    /// the peer rows: the running turn's elapsed row, the scroll marker and
+    /// the candidate hint. Unlike `peer_rows` and `cursor_row` this counter
+    /// never drives the erase; it feeds the shrink anchor below.
+    hint_rows: u16,
+    /// Blank rows the renderer owns between the log tail and the prompt block.
+    /// A block that shrinks (the candidate hint's row disappearing) keeps the
+    /// freed row instead of painting one row higher — the prompt line never
+    /// moves up — and records the blank here; a block that grows back reuses
+    /// these rows before sinking lower. `clear_block` erases them too whenever
+    /// the caller surrenders the region, so nothing stray survives a notice
+    /// print or a submit.
+    spare_rows: u16,
 }
 
 impl PromptRenderer {
@@ -1215,6 +1228,8 @@ impl PromptRenderer {
         Self {
             cursor_row: 0,
             peer_rows: 0,
+            hint_rows: 0,
+            spare_rows: 0,
         }
     }
 
@@ -1224,6 +1239,8 @@ impl PromptRenderer {
     fn reset(&mut self) {
         self.cursor_row = 0;
         self.peer_rows = 0;
+        self.hint_rows = 0;
+        self.spare_rows = 0;
     }
 
     fn terminal_width() -> usize {
@@ -1236,7 +1253,13 @@ impl PromptRenderer {
     /// Move to the top-left of the previously rendered block and clear it
     /// (including any wrapped rows below). Leaves the cursor at column 0 and
     /// resets the tracked row to 0.
-    fn clear_block(&mut self, stdout: &mut std::io::Stdout) {
+    ///
+    /// `keep_spare` decides what happens to the owned blank rows between the
+    /// log tail and the block: the render path keeps them (the hint's slot
+    /// survives the erase and the prompt line holds its row), while callers
+    /// that surrender the region — a notice print, a submit echo, the
+    /// shutdown — absorb them, so the next print lands directly below the log.
+    fn clear_block(&mut self, stdout: &mut std::io::Stdout, keep_spare: bool) {
         use crossterm::cursor::{MoveToColumn, MoveUp};
         // The armed zone: the beat owns the rows above the span and the
         // shared cursor is parked on the pinned prompt's caret — the
@@ -1246,12 +1269,18 @@ impl PromptRenderer {
         if zone_armed() {
             self.cursor_row = 0;
             self.peer_rows = 0;
+            self.hint_rows = 0;
+            self.spare_rows = 0;
             return;
         }
-        // The whole tracked region: the peer rows, the block's rows above the
-        // cursor, and the rows between. `Clear(FromCursorDown)` from the region
-        // top erases the rest.
-        let rows = self.peer_rows + self.cursor_row;
+        // The whole tracked region — plus the owned blank rows above it when
+        // the caller surrenders them — climbed from the cursor. The erase
+        // (`Clear(FromCursorDown)` from the region top) covers the rest.
+        let rows = if keep_spare {
+            self.peer_rows + self.cursor_row
+        } else {
+            self.peer_rows + self.cursor_row + self.spare_rows
+        };
         if rows > 0 {
             let _ = stdout.execute(MoveUp(rows));
         }
@@ -1259,6 +1288,8 @@ impl PromptRenderer {
         let _ = stdout.execute(terminal::Clear(ClearType::FromCursorDown));
         self.cursor_row = 0;
         self.peer_rows = 0;
+        self.hint_rows = 0;
+        self.spare_rows = 0;
         let _ = stdout.flush();
     }
 
@@ -1279,14 +1310,16 @@ impl PromptRenderer {
         // surfaces it — writing here would cut into or scroll the standing
         // shape the zone owns.
         if zone_armed() {
-            self.clear_block(stdout);
+            self.clear_block(stdout, false);
             let styled_prompt = theme.out(prompt_role, prompt);
             let styled_line = theme.out(Role::InputText, line);
             crate::scroll::record_line(&format!("{styled_prompt}{styled_line}"));
             return;
         }
         // Remove the interactive render (cursor may be mid-line) before echoing.
-        self.clear_block(stdout);
+        // The region is surrendered here: the spare rows are absorbed, so the
+        // echo lands directly below the log.
+        self.clear_block(stdout, false);
         let styled_prompt = theme.out(prompt_role, prompt);
         let styled_line = theme.out(Role::InputText, line);
         // The echo is what stays on screen — the block being edited is not.
@@ -1331,8 +1364,40 @@ impl PromptRenderer {
 
         let width = Self::terminal_width();
 
+        // Measure the coming block before touching the screen: the render is
+        // bottom-anchored against shrinkage, so the rows the block will place
+        // above the prompt span must be known before the previous block is
+        // erased. Pure arithmetic — no terminal queries beyond the width —
+        // so the measurement cannot observe or disturb what follows.
+        let above_rows = u16::from(run_row.is_some()) + u16::from(marker.is_some());
+        let sug_rows = suggestion_rows(suggestion, width);
+        let new_above = peer_lines.len() as u16 + above_rows + sug_rows;
+
         // 1. Clear the previous block (handles multi-row renders + suggestion).
-        self.clear_block(stdout);
+        // The erase covers the tracked region only — the spare rows above it
+        // survive this step, because a growing block reuses them instead of
+        // painting over the log.
+        let old_above = self.peer_rows + self.hint_rows;
+        self.clear_block(stdout, true);
+        // Anchor against the block's shrinkage: the rows above the span
+        // (peers, elapsed row, marker, hint) decide where the span's bottom
+        // row lands. Fewer rows than the last render painted means the block
+        // would sit one row higher — the prompt line would climb — so the
+        // paint starts lower instead: the span keeps its row and the freed
+        // rows become the renderer's own blank rows (`spare_rows`). More rows
+        // means the block grows downward; it reuses the spare rows first,
+        // before sinking into fresh space below the block. Pure arithmetic,
+        // decided by the helper below so the pins can bind it without a
+        // terminal.
+        let (move_down, move_up) = hint_anchor(old_above, new_above, self.spare_rows);
+        if move_down > 0 {
+            let _ = stdout.execute(MoveDown(move_down));
+        }
+        if move_up > 0 {
+            let _ = stdout.execute(MoveUp(move_up));
+        }
+        self.spare_rows = spare_after_anchor(old_above, new_above, self.spare_rows);
+        self.hint_rows = above_rows + sug_rows;
 
         // 2. Print the subagent status rows above the block's rows, oldest
         //    first (the painter works downward), so the newest stands on the
@@ -1431,6 +1496,41 @@ fn suggestion_rows(suggestion: Option<&str>, width: usize) -> u16 {
     }
 }
 
+/// The shrink anchor's pure half: the rows to move before the block paints.
+///
+/// When the block's rows above the prompt span shrink (the candidate hint's row
+/// disappears, a subagent's status row vanishes) the shipped top-anchored paint
+/// would draw the span one row higher — the prompt line climbs. The fix moves
+/// the writer down by the shrink amount first, so the span's bottom row keeps
+/// its absolute place and the freed rows become the renderer's own blank rows.
+/// When the block grows back (the hint reappears), the move goes up but only
+/// over the blank rows the renderer itself owns (`spare`), never over the log.
+///
+/// Returns `(move_down, move_up)`; both are never positive at once, and the
+/// up-move is clamped to `spare`. Pure so the pins bind the arithmetic without
+/// a terminal.
+fn hint_anchor(old_above: u16, new_above: u16, spare: u16) -> (u16, u16) {
+    if new_above < old_above {
+        (old_above - new_above, 0)
+    } else {
+        let grow = new_above - old_above;
+        (0, grow.min(spare))
+    }
+}
+
+/// The shrink anchor's bookkeeping half: how many blank rows the renderer owns
+/// after the anchor moved. A shrink frees rows into the ownership (they are
+/// blank between the log and the newly anchored block); a grow that reused some
+/// of them gives them back to the log's side. Pure, paired with
+/// [`hint_anchor`].
+fn spare_after_anchor(old_above: u16, new_above: u16, spare: u16) -> u16 {
+    if new_above < old_above {
+        spare.saturating_add(old_above - new_above)
+    } else {
+        spare - (new_above - old_above).min(spare)
+    }
+}
+
 /// Whether a click at absolute row `row` lands on the progress indicator's
 /// block, and not on the elapsed display's own row. While a turn runs the
 /// indicator is the last writer, so the cursor stands on the block's final row
@@ -1447,20 +1547,6 @@ fn click_hits_indicator(painted_rows: u16, cursor_row: u16, row: u16) -> bool {
     }
     let top = cursor_row.saturating_sub(painted_rows - 1);
     row > top && row <= cursor_row
-}
-
-/// Whether agent-cli's own mouse handling is barred at this moment: when a
-/// turn is in flight, the mouse operations the input loop would otherwise
-/// handle mid-turn are prohibited: the loop's three mouse gates read this
-/// helper **negated** (`!the_mouse_operation_is_prohibited(...)`) and stay
-/// mute for the whole turn, so the wheel moves no view, the click toggles
-/// nothing and the drag selects/copies nothing while the agent runs. At rest
-/// (no turn in flight) the helper is false, the negation passes, and every
-/// gate opens. Pure, so the pin can verify the prohibition without a
-/// terminal, and the gate reads stay grep-able: the negation lives at the
-/// three use sites.
-fn the_mouse_operation_is_prohibited(turn_in_flight: bool) -> bool {
-    turn_in_flight
 }
 
 /// The REPL's input prompt, and the prompt that asks for a tool approval.
@@ -1511,6 +1597,17 @@ fn is_cancel_key(key_event: &KeyEvent) -> bool {
     matches!(key_event.code, KeyCode::Esc)
         || (key_event.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key_event.code, KeyCode::Char('c')))
+}
+
+/// Whether the mid-turn (Pending) editing arm serves the key through the
+/// shared editor dispatch: any press except `Tab` — the completion the arm
+/// above serves — and `Enter`. Enter is dropped here rather than passed on:
+/// the dispatch's Enter arm consumes the buffer (`submit()` takes the line),
+/// and a refusal after that would drop the text the user keeps through the
+/// turn (R7.3, R7.5). Pure, so the gate is unit-testable without a TTY.
+fn pending_edit_dispatch_key(key_event: &KeyEvent) -> bool {
+    key_event.kind != crossterm::event::KeyEventKind::Release
+        && !matches!(key_event.code, KeyCode::Tab | KeyCode::Enter)
 }
 
 /// What `run_display_task` runs on: the agent's event stream, the idle
@@ -2083,6 +2180,10 @@ async fn run_input_loop_raw(
     // A `/send --ask` waiting for its peer's answer on a background task; its
     // arm below prints the outcome (answer or the disambiguated failure).
     let mut ask_run: Option<crate::tools::send_to::PeerAsk> = None;
+    // The typed prompt's buffer stowed while a tool-approval prompt owns the
+    // input line (R7.6): the mid-turn text the user typed is never dropped —
+    // it is stowed here and unstowed when the approval is answered.
+    let mut stowed_input: Option<InputState> = None;
     let mut approval_rx: Option<mpsc::Receiver<ApprovalRequest>> = Some(approval_rx);
     let mut stdout = std::io::stdout();
     let mut shutdown_rx = shutdown_rx;
@@ -2277,7 +2378,7 @@ async fn run_input_loop_raw(
                         // suspended for as long as the approval prompt owns the
                         // bottom of the screen.
                         lock_indicator(&state.indicator).suspend();
-                        renderer.clear_block(&mut stdout);
+                        renderer.clear_block(&mut stdout, false);
                         raw_println(
                             true,
                             &state.theme.out(
@@ -2286,8 +2387,12 @@ async fn run_input_loop_raw(
                             ),
                         );
                         renderer.reset();
-                        // Reset input state for the approval prompt
-                        input_state = InputState::new();
+                        // The typed prompt's buffer is not ours to drop (R7.6):
+                        // stow it before the y/N prompt takes the input line —
+                        // the approval renders the y/N answer on a fresh line —
+                        // and the stowed buffer comes back the moment the
+                        // approval is answered, whatever the answer was.
+                        stowed_input = Some(std::mem::take(&mut input_state));
                         prompt_state = PromptState::AwaitingApproval(req.response);
                         render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::Confirm, APPROVAL_PROMPT, &state, &input_state).await;
                     }
@@ -2426,17 +2531,13 @@ async fn run_input_loop_raw(
                         // The wheel scrolls the session log behind the prompt,
                         // which stays where it is. The keyboard is untouched:
                         // the arrows still move within the line and through the
-                        // history. While a turn is in flight the wheel's
-                        // scrollback is barred: the session log is the turn's
-                        // own output surface mid-turn, and the prohibition asks
-                        // agent-cli to perform no mouse operation while the
-                        // agent runs. The view stays on the live face; the
-                        // scrolled view a user opened at rest keeps its markers
-                        // and its return paths.
+                        // history. The wheel is a log operation, so it runs
+                        // while a turn is in flight too (R6.1): the alternate
+                        // screen takes over from the beat for as long as the
+                        // view is off the bottom (the zone hides its writes,
+                        // `overlay.enter` → `zone_hide`), and the turn keeps
+                        // streaming into the record underneath.
                         if state.scroll
-                            && !the_mouse_operation_is_prohibited(
-                                state.turn_in_flight.load(Ordering::SeqCst),
-                            )
                             && matches!(
                                 mouse_event.kind,
                                 crossterm::event::MouseEventKind::ScrollUp
@@ -2448,8 +2549,17 @@ async fn run_input_loop_raw(
                                 crossterm::event::MouseEventKind::ScrollUp
                             );
                             let width = PromptRenderer::terminal_width();
-                            let peer_lines =
-                                live_peer_lines(&state.registry_dir, &state.id, width).len();
+                            let peer_lines = live_peer_lines(
+                                &state.registry_dir,
+                                &state.id,
+                                width,
+                                {
+                                    let mut ind = lock_indicator(&state.indicator);
+                                    ind.peer_clock_advance();
+                                    ind.peer_spinner_glyph()
+                                },
+                            )
+                            .len();
                             // The view's offset counts rows from the live
                             // screen, so the clamp reads the live screen's body:
                             // no marker row, whichever side of the bottom the
@@ -2457,10 +2567,10 @@ async fn run_input_loop_raw(
                             // the bottom of the body (`slice_offset`), so the
                             // furthest offset still shows the log's first row at
                             // the top, and the first notch clamps exactly like
-                            // every later one. The arm runs only at rest (the
-                            // mouse prohibition bars it while a turn is in
-                            // flight), so the budget here reads an at-rest
-                            // screen.
+                            // every later one. The budget reads the screen's
+                            // state live: a running turn (or an approval
+                            // prompt) makes the block taller, so the wheel
+                            // clamps against the body the turn actually keeps.
                             let bottom_rows = bottom_block_rows(
                                 &prompt_state,
                                 &input_state,
@@ -2478,16 +2588,12 @@ async fn run_input_loop_raw(
                         // its block switches the live `thinking` view between
                         // the last few rows and everything the terminal can
                         // hold. While the view is scrolled the block is not on
-                        // screen, so there is nothing to click. The toggle's
-                        // gate opens only while a turn runs (`is_pending()`),
-                        // and the running turn is exactly what this
-                        // prohibition bars: the mouse stays mute while the
-                        // agent operates, so the expand/collapse is not
-                        // reachable by click mid-turn.
+                        // screen, so there is nothing to click. The gate opens
+                        // only while a turn runs (`is_pending()`) — the toggle
+                        // targets the running display — and the block rules
+                        // keep the spinner-and-elapsed row out of the hit
+                        // range, so a click on the log never toggles anything.
                         if prompt_state.is_pending()
-                            && !the_mouse_operation_is_prohibited(
-                                state.turn_in_flight.load(Ordering::SeqCst),
-                            )
                             && !overlay.is_active()
                             && matches!(
                                 mouse_event.kind,
@@ -2531,16 +2637,14 @@ async fn run_input_loop_raw(
                         // copies on release. `Shift` is left to the terminal:
                         // its own selection is the override users already know,
                         // and a terminal that reports a shifted drag must not
-                        // have it taken away here. While a turn is in flight
-                        // the drag is barred: the select-and-copy is the mouse
-                        // operation the prohibition bars mid-turn, so the drag
-                        // arm starts no selection and copies nothing while the
-                        // agent runs.
+                        // have it taken away here. The drag runs mid-turn too
+                        // (R6.2): a press, a drag and its release resolve
+                        // against the rows the screen actually draws while the
+                        // agent operates — the running display's rows live
+                        // below the log's own rows, so the selection covers
+                        // exactly the log rows the screen shows.
                         if state.scroll
                             && state.mouse_select
-                            && !the_mouse_operation_is_prohibited(
-                                state.turn_in_flight.load(Ordering::SeqCst),
-                            )
                             && !mouse_event
                                 .modifiers
                                 .contains(KeyModifiers::SHIFT)
@@ -2559,7 +2663,17 @@ async fn run_input_loop_raw(
                                 &prompt_state,
                                 &input_state,
                                 width,
-                                live_peer_lines(&state.registry_dir, &state.id, width).len(),
+                                live_peer_lines(
+                                    &state.registry_dir,
+                                    &state.id,
+                                    width,
+                                    {
+                                        let mut ind = lock_indicator(&state.indicator);
+                                        ind.peer_clock_advance();
+                                        ind.peer_spinner_glyph()
+                                    },
+                                )
+                                .len(),
                                 view_moved,
                             );
                             let body =
@@ -2702,9 +2816,15 @@ async fn run_input_loop_raw(
                             }
                             continue;
                         }
-                        // During Pending, only ESC and Ctrl-C are honoured (cancel).
-                        // Other key events are ignored to avoid corrupting the edit
-                        // buffer while the agent is processing.
+                        // During Pending the editing buffer keeps working
+                        // (R7.2): characters, pastes, backspaces and the rest
+                        // edit the line and its caret live, and the prompt
+                        // span repaints per edit. Submitting stays barred
+                        // (R7.3): Enter and the rest run nothing — the
+                        // `KeyAction::Submit` arm below refuses to submit
+                        // while the turn is in flight, and the buffer survives
+                        // for submission at the prompt's return (R7.5). ESC
+                        // and Ctrl-C keep their cancel meaning.
                         if prompt_state.is_pending() {
                             if is_cancel_key(&key_event) {
                                 // Forced return: raise the cancellation and take the
@@ -2731,7 +2851,50 @@ async fn run_input_loop_raw(
                                 renderer.reset();
                                 render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                             }
-                            // All other keys during Pending are ignored.
+                            // The editing keys: handled below by the shared
+                            // `handle_key` dispatch. Everything else (the
+                            // mouse already served above) falls through with
+                            // `continue` after the shared dispatch repaints
+                            // the span. Enter never reaches it mid-turn: the
+                            // dispatch's Enter arm consumes the buffer
+                            // (`submit()` takes the line), and a refusal after
+                            // that would drop the text the user must keep
+                            // through the turn (R7.3, R7.5) — the key is
+                            // dropped here instead, so the line and its caret
+                            // stand exactly as they were.
+                            else if pending_edit_dispatch_key(&key_event) {
+                                if let Some(action) =
+                                    handle_key(key_event, &mut input_state, &history_snapshot)
+                                {
+                                    match action {
+                                        // The submit is barred mid-turn before
+                                        // the dispatch: Enter never reaches
+                                        // `handle_key` here, so its consuming
+                                        // `submit()` never runs. The remaining
+                                        // actions repaint the span as the
+                                        // shipped flow does.
+                                        KeyAction::ClearLine | KeyAction::Continue => {
+                                            render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
+                                        }
+                                        KeyAction::Eof => {
+                                            // EOF mid-turn keeps its shipped
+                                            // meaning? No: during Pending the
+                                            // session is still working, and
+                                            // the cancel keys above are the
+                                            // way to interrupt. Ignore the EOF
+                                            // key the same way the shipped
+                                            // loop ignored every key.
+                                        }
+                                        // Unreachable while Pending (Ctrl-C and
+                                        // Esc were served above, and this arm
+                                        // excludes Tab and Enter): the
+                                        // dispatch cannot produce it here.
+                                        KeyAction::Submit(line) => {
+                                            let _ = line;
+                                        }
+                                    }
+                                }
+                            }
                             continue;
                         }
                         let is_awaiting_approval = prompt_state.is_awaiting_approval();
@@ -2751,12 +2914,17 @@ async fn run_input_loop_raw(
                             // hands the screen back before the notice prints.
                             zone_disarm();
                             lock_indicator(&state.indicator).suspend();
-                            renderer.clear_block(&mut stdout);
+                            renderer.clear_block(&mut stdout, false);
                             raw_eprintln(
                                 true,
                                 &state.theme.err(Role::Info, "[info] cancelled by user"),
                             );
-                            input_state = InputState::new();
+                            // The stowed mid-turn buffer comes back with the
+                            // denial (R7.6): the text typed while the turn ran
+                            // was never ours to drop.
+                            input_state = stowed_input
+                                .take()
+                                .unwrap_or_default();
                             renderer.reset();
                             render_prompt(&mut overlay, &mut renderer, &mut stdout, Role::PromptSymbol, PROMPT, &state, &input_state).await;
                             continue;
@@ -2806,6 +2974,12 @@ async fn run_input_loop_raw(
                                         // the screen's bottom row back for
                                         // the clock.
                                         zone_span_retire();
+                                        // The stowed mid-turn buffer comes back
+                                        // for the prompt's return (R7.6), fresh
+                                        // under the y/N answer the user gave.
+                                        input_state = stowed_input
+                                            .take()
+                                            .unwrap_or_default();
                                         // Drain stale idle notifications
                                         while agent_idle_rx.try_recv().is_ok() {}
                                         // Echo the approval response, then move to next line
@@ -2933,7 +3107,7 @@ async fn run_input_loop_raw(
                     if overlay.view_active() || overlay.has_selection() {
                         if !overlay.is_active() {
                             lock_indicator(&state.indicator).suspend();
-                            renderer.clear_block(&mut stdout);
+                            renderer.clear_block(&mut stdout, false);
                             overlay.enter(&mut stdout);
                         }
                     } else if overlay.is_active() {
@@ -2982,7 +3156,7 @@ async fn run_input_loop_raw(
                         Role::Info
                     };
                     let msg = format!("[clip] {}", outcome.message());
-                    renderer.clear_block(&mut stdout);
+                    renderer.clear_block(&mut stdout, false);
                     raw_eprintln(true, &state.theme.err(role, &msg));
                     if !prompt_state.is_pending() {
                         renderer.reset();
@@ -3005,11 +3179,27 @@ async fn run_input_loop_raw(
             // the block's cursor-relative repaint lands on the prompt and the
             // elapsed row takes the prompt's own bottom row. Handing the rows
             // to the zone the moment the turn is seen composes the elapsed row
-            // above the prompt in every state. The overlay's screen is not this
-            // arm's to take: while it is active the pin already carries the
-            // elapsed row (`draw_scrolled`).
-            _ = zone_timer.tick(), if !overlay.is_active() => {
-                if state.turn_in_flight.load(Ordering::SeqCst) {
+            // above the prompt in every state. While the overlay owns the
+            // screen the same tick serves the scrolled view's beat instead:
+            // the tick is the loop's only periodic wake with no events flowing,
+            // so without it the pin's elapsed row would freeze (R6.6) —
+            // `needs_refresh` selects the drawer's 100 ms beat for a running
+            // turn and the 1 s repair beat at rest (R6.5).
+            _ = zone_timer.tick() => {
+                if overlay.is_active() {
+                    if overlay.needs_refresh(prompt_state.is_pending()) {
+                        draw_scrolled(
+                            &mut overlay,
+                            &mut renderer,
+                            &mut stdout,
+                            &state,
+                            &input_state,
+                            prompt_state.is_pending(),
+                            prompt_state.is_awaiting_approval(),
+                        )
+                        .await;
+                    }
+                } else if state.turn_in_flight.load(Ordering::SeqCst) {
                     if !zone_armed() {
                         // The arm is spanless now: the running turn's bottom
                         // line is the clock alone. The one span that still
@@ -3071,7 +3261,7 @@ async fn run_input_loop_raw(
     overlay.leave(&mut stdout);
     // Ensure the prompt block (possibly wrapped) is cleaned up before exit
     lock_indicator(&state.indicator).suspend();
-    renderer.clear_block(&mut stdout);
+    renderer.clear_block(&mut stdout, false);
     let _ = shutdown_tx.send(true);
     // _raw_guard dropped here: terminal mode restored
 }
@@ -3296,7 +3486,12 @@ fn print_header(
     // wheel scrolls back to. Raw mode is not on yet, so the bytes are the same
     // as a plain `println!`.
     let detail = |line: String| raw_println(false, &theme.out(Role::BannerDetail, &line));
-    raw_println(false, &theme.out(Role::Banner, "agent-cli ready"));
+    // The startup logo: an ASCII-art "AGENT CLI" block in the banner colour,
+    // the spark glyph leading its first row and the running version riding the
+    // last one (R6, D7). Constant text, no runtime measurement.
+    for line in banner_logo_lines() {
+        raw_println(false, &theme.out(Role::Banner, &line));
+    }
     detail(format!("  id        : {id}"));
     detail(format!("  name      : {display_name}"));
     detail(format!("  provider  : {provider} ({model})"));
@@ -3312,6 +3507,54 @@ fn print_header(
         ));
     }
     detail("type /help for commands. /quit, /exit, or ^D to terminate.".to_string());
+}
+
+/// The startup banner logo (R6, D7): an ASCII-art "AGENT CLI" block in a
+/// Gemini-CLI style - a spark glyph leading the first row, the running
+/// version riding the last one. Pure and constant, so the pins can bind the
+/// rows without a terminal and non-TTY output renders the same block.
+fn banner_logo_lines() -> Vec<String> {
+    // The block-letter face: five fixed-width rows per letter, full blocks on
+    // a blank ground (single-width glyphs, so every terminal renders the same
+    // shape and a row never wraps mid-glyph).
+    const A: [&str; 5] = ["█████", "█   █", "█████", "█   █", "█   █"];
+    const G: [&str; 5] = [" ████", "█    ", "█  ██", "█   █", " ████"];
+    const E: [&str; 5] = ["█████", "█    ", "████ ", "█    ", "█████"];
+    const N: [&str; 5] = ["█   █", "██  █", "█ █ █", "█  ██", "█   █"];
+    const T: [&str; 5] = ["█████", "  █  ", "  █  ", "  █  ", "  █  "];
+    const C: [&str; 5] = [" ████", "█    ", "█    ", "█    ", " ████"];
+    const L: [&str; 5] = ["█    ", "█    ", "█    ", "█    ", "█████"];
+    const I: [&str; 5] = ["█████", "  █  ", "  █  ", "  █  ", "█████"];
+    const AGENT: [&[&str; 5]; 5] = [&A, &G, &E, &N, &T];
+    const CLI: [&[&str; 5]; 3] = [&C, &L, &I];
+    let rows = |sets: &[&[&str; 5]], sep: &str| -> Vec<String> {
+        (0..5)
+            .map(|r| {
+                sets.iter()
+                    .map(|letter| letter[r])
+                    .collect::<Vec<_>>()
+                    .join(sep)
+            })
+            .collect()
+    };
+    let agent = rows(&AGENT, " ");
+    let cli = rows(&CLI, " ");
+    let spark = "✦";
+    (0..5)
+        .map(|r| {
+            let head = if r == 0 {
+                format!("{spark} ")
+            } else {
+                "  ".to_string()
+            };
+            let tail = if r == 4 {
+                format!("   v{}", env!("CARGO_PKG_VERSION"))
+            } else {
+                String::new()
+            };
+            format!("{head}{}   {}{tail}", agent[r], cli[r])
+        })
+        .collect()
 }
 
 fn print_prompt() {
@@ -3442,6 +3685,7 @@ async fn render_prompt_with_run(
         &state.registry_dir,
         &state.id,
         PromptRenderer::terminal_width(),
+        lock_indicator(&state.indicator).peer_spinner_glyph(),
     );
     if overlay.is_active() {
         draw_scroll_overlay(
@@ -3470,7 +3714,11 @@ async fn render_prompt_with_run(
         // render below stands down while armed for the same cursor-relative
         // reason it always did.
         if zone_armed() {
-            if matches!(role, Role::Confirm) {
+            // The prompt span paints for every input-possible state: the
+            // tool-approval prompt (as shipped) and now the typed-prompt
+            // line while a turn runs (R7.1) — its span re-anchors the
+            // zone's floor and the beat composes the run display above it.
+            if matches!(role, Role::Confirm | Role::PromptSymbol) {
                 zone_paint_span(&state.theme, role, prompt, input_state, sug.as_deref());
             }
             return;
@@ -3516,6 +3764,9 @@ async fn draw_scrolled(
     // tracked, so the not-running prompt below is the same arm as before.
     let run_row = {
         let mut ind = lock_indicator(&state.indicator);
+        // The idle band's clock rides the same redraw the pinned run row uses,
+        // so a peer spawned under the scrolled view animates too.
+        ind.peer_clock_advance();
         ind.overlay_status_row()
     };
     let (role, prompt) = if awaiting_approval {
@@ -4461,6 +4712,52 @@ mod tests {
         assert!(!is_cancel_key(&key(KeyCode::Char('d'), true)));
     }
 
+    // --- Mid-turn (Pending) editing-dispatch gate ---
+
+    #[test]
+    fn pending_edit_dispatch_key_drops_enter_and_tab_and_releases() {
+        // Enter mid-turn must never reach the editor dispatch: its Enter arm
+        // consumes the buffer (`submit()`), and a refusal after that would
+        // drop the text the user keeps through the turn. Tab is served by the
+        // completion arm above; Release events are ignored everywhere.
+        assert!(!pending_edit_dispatch_key(&key(KeyCode::Enter, false)));
+        assert!(!pending_edit_dispatch_key(&key(KeyCode::Tab, false)));
+        let mut release = key(KeyCode::Char('a'), false);
+        release.kind = crossterm::event::KeyEventKind::Release;
+        assert!(!pending_edit_dispatch_key(&release));
+    }
+
+    #[test]
+    fn pending_edit_dispatch_key_serves_every_editing_key() {
+        // The keys the mid-turn editing keeps live (R7.2) still pass the gate.
+        assert!(pending_edit_dispatch_key(&key(KeyCode::Char('a'), false)));
+        assert!(pending_edit_dispatch_key(&key(KeyCode::Backspace, false)));
+        assert!(pending_edit_dispatch_key(&key(KeyCode::Left, false)));
+        assert!(pending_edit_dispatch_key(&key(KeyCode::Home, false)));
+        // Ctrl-D stays a dispatch concern (the Eof arm ignores it mid-turn).
+        assert!(pending_edit_dispatch_key(&key(KeyCode::Char('d'), true)));
+    }
+
+    #[test]
+    fn pending_enter_press_leaves_the_buffer_and_caret_untouched() {
+        // The defect this seam pins: with text on the line, an Enter press
+        // mid-turn must leave the buffer EXACTLY as it stood — the shipped
+        // dispatch consumed the buffer (`submit()`), so the refusing arm
+        // dropped the line ("入力中の文字が消える").
+        let mut s = InputState::new();
+        s.insert_char('h');
+        s.insert_char('i');
+        let gate = pending_edit_dispatch_key(&key(KeyCode::Enter, false));
+        if gate {
+            let _ = handle_key(key(KeyCode::Enter, false), &mut s, &[]);
+        }
+        assert!(!gate, "Enter mid-turn must be dropped before the dispatch");
+        assert_eq!(s.line, "hi");
+        assert_eq!(s.cursor, 2);
+        assert_eq!(s.history_index, None);
+        assert_eq!(s.saved_draft, None);
+    }
+
     // --- Forced return to the prompt (Esc during a turn) ---
 
     #[test]
@@ -4628,6 +4925,7 @@ mod tests {
                 Some("tool bash".to_string()),
             )],
             80,
+            Some(SPINNER_FRAMES[1]),
         );
         assert_eq!(rows.len(), 1, "one live child, one row: {rows:?}");
         assert!(rows[0].contains("worker"), "the peer is named: {rows:?}");
@@ -4639,6 +4937,10 @@ mod tests {
             rows[0].contains("tool bash"),
             "the processing content rides the row: {rows:?}"
         );
+        assert!(
+            rows[0].starts_with(SPINNER_FRAMES[1]),
+            "the status row leads with the spinner: {rows:?}"
+        );
         // The whole face is one row cut to the width budget.
         let wide = peer_status_rows(
             &[(
@@ -4647,6 +4949,7 @@ mod tests {
                 Some("x".repeat(200)),
             )],
             40,
+            Some(SPINNER_FRAMES[1]),
         );
         assert_eq!(wide.len(), 1, "still one row when cut: {wide:?}");
         assert!(
@@ -4664,8 +4967,13 @@ mod tests {
         let rows = peer_status_rows(
             &[("alpha".to_string(), std::time::Duration::from_secs(1), None)],
             80,
+            Some(SPINNER_FRAMES[1]),
         );
-        assert_eq!(rows[0], "peer alpha · 1.0s", "{rows:?}");
+        assert_eq!(
+            rows[0],
+            format!("{} peer alpha · 1.0s", SPINNER_FRAMES[1]),
+            "{rows:?}"
+        );
         // A blank or whitespace-only content is absence too.
         let blank = peer_status_rows(
             &[(
@@ -4674,8 +4982,13 @@ mod tests {
                 Some("   ".to_string()),
             )],
             80,
+            Some(SPINNER_FRAMES[1]),
         );
-        assert_eq!(blank[0], "peer beta · 2.0s", "{blank:?}");
+        assert_eq!(
+            blank[0],
+            format!("{} peer beta · 2.0s", SPINNER_FRAMES[1]),
+            "{blank:?}"
+        );
     }
 
     #[test]
@@ -4727,7 +5040,7 @@ mod tests {
         );
         // The painter's rows follow the same order (the newest nearest the
         // clock).
-        let rows = peer_status_rows(&states, 80);
+        let rows = peer_status_rows(&states, 80, Some(SPINNER_FRAMES[0]));
         assert!(
             rows[0].contains("zed") && rows[1].contains("apple"),
             "{rows:?}"
@@ -4743,6 +5056,11 @@ mod tests {
                 None,
             )],
             80,
+            Some(SPINNER_FRAMES[2]),
+        );
+        assert!(
+            rows[0].starts_with(SPINNER_FRAMES[2]),
+            "the running peer's row leads with the spinner: {rows:?}"
         );
         assert_eq!(rows.len(), 1, "one live child, one row: {rows:?}");
         assert!(rows[0].contains("worker"), "the peer is named: {rows:?}");
@@ -4763,6 +5081,7 @@ mod tests {
                 ("beta".to_string(), std::time::Duration::from_secs(2), None),
             ],
             80,
+            Some(SPINNER_FRAMES[0]),
         );
         assert_eq!(two.len(), 2, "each live child its own row: {two:?}");
         assert!(two[0].contains("alpha") && two[1].contains("beta"));
@@ -4771,9 +5090,123 @@ mod tests {
         let gone = peer_status_rows(
             &[("beta".to_string(), std::time::Duration::from_secs(2), None)],
             80,
+            Some(SPINNER_FRAMES[0]),
         );
         assert_eq!(gone.len(), 1, "the finished peer's line is gone: {gone:?}");
         assert!(!gone[0].contains("alpha"), "no stale row remains");
+    }
+
+    #[test]
+    fn a_peer_row_without_a_phase_composes_without_the_spinner() {
+        // The `None`-phase face: no spinner is composed (the idle prompt's
+        // band before its clock has advanced) and the name and the operating
+        // time are unchanged.
+        let rows = peer_status_rows(
+            &[("alpha".to_string(), std::time::Duration::from_secs(1), None)],
+            80,
+            None,
+        );
+        assert_eq!(rows.len(), 1, "one live child, one row: {rows:?}");
+        assert_eq!(rows[0], "peer alpha · 1.0s", "{rows:?}");
+        assert!(
+            !rows[0].starts_with(SPINNER_FRAMES[0]),
+            "no spinner without a phase: {rows:?}"
+        );
+        // The content face is unchanged beyond the leading glyph too.
+        let turn = peer_status_rows(
+            &[(
+                "worker".to_string(),
+                std::time::Duration::from_secs(65),
+                Some("tool bash".to_string()),
+            )],
+            80,
+            None,
+        );
+        assert_eq!(turn[0], "peer worker · 1m05s · tool bash", "{turn:?}");
+    }
+
+    #[test]
+    fn the_band_leads_with_the_spinner_in_phase_with_the_session() {
+        // The phase pin over the real resolver: with a run tracked, the band
+        // leads with the run's own frame — the row rides the status spinner —
+        // and the display-only clock is frozen for it; with no run, the
+        // beat-advanced idle clock holds the phase.
+        let mut ind = StatusIndicator::disabled();
+        ind.run = Some(Run {
+            started: std::time::Instant::now(),
+            frame: 4,
+        });
+        assert_eq!(
+            ind.peer_spinner_glyph(),
+            SPINNER_FRAMES[4],
+            "the band rides the run"
+        );
+        // The display-only clock is frozen while a run holds the phase.
+        ind.peer_clock_advance();
+        ind.peer_clock_advance();
+        assert_eq!(
+            ind.peer_spinner_glyph(),
+            SPINNER_FRAMES[4],
+            "the idle clock stays frozen under a run"
+        );
+        // A run at another frame moves the band with it.
+        let mut ind2 = StatusIndicator::disabled();
+        ind2.run = Some(Run {
+            started: std::time::Instant::now(),
+            frame: 3,
+        });
+        assert_eq!(
+            ind2.peer_spinner_glyph(),
+            SPINNER_FRAMES[3],
+            "the band rides the run's frame, not the idle clock"
+        );
+        // Idle: the beat-advanced clock holds the phase alone.
+        let mut idle = StatusIndicator::disabled();
+        assert_eq!(
+            idle.peer_spinner_glyph(),
+            SPINNER_FRAMES[0],
+            "the idle band starts at the clock's zero"
+        );
+        idle.peer_clock_advance();
+        assert_eq!(
+            idle.peer_spinner_glyph(),
+            SPINNER_FRAMES[1],
+            "the beat advances the idle clock"
+        );
+        idle.peer_clock_advance();
+        assert_eq!(
+            idle.peer_spinner_glyph(),
+            SPINNER_FRAMES[2],
+            "each beat advances the idle clock once"
+        );
+    }
+
+    #[test]
+    fn the_idle_peer_clock_wraps_through_the_frame_cycle() {
+        // The wrap pin: the display-only clock cycles through the frames and
+        // wraps like the run's own frame does.
+        let mut idle = StatusIndicator::disabled();
+        idle.peer_tick = 9;
+        assert_eq!(
+            idle.peer_spinner_glyph(),
+            SPINNER_FRAMES[9],
+            "the clock holds its frame"
+        );
+        idle.peer_clock_advance();
+        assert_eq!(
+            idle.peer_spinner_glyph(),
+            SPINNER_FRAMES[0],
+            "the clock wraps at the cycle's end"
+        );
+        // The `u8` field wraps far past the cycle the same way (`usize::from`
+        // keeps the cast exact).
+        idle.peer_tick = u8::MAX;
+        idle.peer_clock_advance();
+        assert_eq!(
+            idle.peer_spinner_glyph(),
+            SPINNER_FRAMES[0],
+            "the clock's own wrap agrees"
+        );
     }
 
     // --- the armed composition's own geometry (the live screen's zone) ---
@@ -5062,11 +5495,181 @@ mod tests {
         // `prompt_block_rows` pin's shape); the peers above it are what makes
         // the erase climb — `clear_block` moves back over the whole region.
         assert_eq!(renderer.cursor_row, 0);
-        renderer.clear_block(&mut stdout);
+        renderer.clear_block(&mut stdout, false);
         assert_eq!(renderer.peer_rows, 0, "the erase resets the region");
         assert_eq!(renderer.cursor_row, 0);
         renderer.reset();
         assert_eq!(renderer.peer_rows, 0);
+    }
+
+    #[test]
+    fn hint_anchor_moves_down_on_a_shrink_and_reuses_spare_on_growth() {
+        // The shrink pin: fewer rows above the span than the last render
+        // painted — the candidate hint disappearing — moves the paint down so
+        // the prompt span keeps its row, and the freed rows are recorded as
+        // spare for a later growth to reuse. Pure, so the pins bind the
+        // arithmetic without a terminal.
+        let (down, up) = hint_anchor(1, 0, 0);
+        assert_eq!((down, up), (1, 0), "a hint row disappearing moves down 1");
+        assert_eq!(spare_after_anchor(1, 0, 0), 1, "the freed row is spare");
+        // A deeper shrink records the whole delta.
+        let (down, up) = hint_anchor(3, 1, 0);
+        assert_eq!((down, up), (2, 0));
+        assert_eq!(spare_after_anchor(3, 1, 0), 2);
+        // No change, no movement.
+        assert_eq!(hint_anchor(2, 2, 0), (0, 0));
+        assert_eq!(spare_after_anchor(2, 2, 0), 0);
+        // Growth beyond the spare sinks the block into fresh rows without
+        // climbing past what the renderer owns (never over the log).
+        assert_eq!(hint_anchor(0, 2, 1), (0, 1), "only the spare row is reused");
+        assert_eq!(spare_after_anchor(0, 2, 1), 0, "the reused spare is spent");
+        // Growth smaller than the spare is fully absorbed.
+        assert_eq!(hint_anchor(1, 1, 2), (0, 0));
+        assert_eq!(spare_after_anchor(1, 1, 2), 2);
+    }
+
+    #[test]
+    fn the_banner_logo_spells_the_name_and_carries_the_version() {
+        // R6/D7 pins over the pure composer: five rows, the name readable
+        // left-to-right on every row, the spark leading the first row, the
+        // version riding the last one — no escape sequences, constant shape.
+        let rows = banner_logo_lines();
+        assert_eq!(rows.len(), 5, "five letter rows: {rows:?}");
+        // The four letter-only rows share one width (the two-column head is
+        // the spark on row 0 and blank on rows 1-3); the last row carries the
+        // version tail after letters of the same width.
+        let widths: Vec<usize> = rows
+            .iter()
+            .map(|r| crate::editor::str_display_width(r))
+            .collect();
+        assert_eq!(
+            widths[0], widths[1],
+            "rows share the letter width: {widths:?}"
+        );
+        assert_eq!(
+            widths[1], widths[2],
+            "rows share the letter width: {widths:?}"
+        );
+        assert_eq!(
+            widths[2], widths[3],
+            "rows share the letter width: {widths:?}"
+        );
+        let tail = format!("   v{}", env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            widths[4],
+            widths[3] + crate::editor::str_display_width(&tail),
+            "the last row is the letters plus the version tail: {widths:?}"
+        );
+        assert!(
+            rows.iter().all(|r| r.contains('█')),
+            "the block-letter face is drawn: {rows:?}"
+        );
+        assert!(
+            rows[0].starts_with('✦'),
+            "the spark leads the first row: {rows:?}"
+        );
+        // The face draws the words as block letters (glyphs, not the literal
+        // text), so the name pin binds the shape: every row carries the two
+        // word bands, and the letter rows align across them.
+        assert!(
+            rows.iter().all(|r| r.matches('█').count() > 0),
+            "each letter row carries block glyphs: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|r| crate::theme::strip_sgr(r) != *r),
+            "the composer returns plain rows (styling is the caller's): {rows:?}"
+        );
+        assert!(
+            rows[4].contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
+            "the version rides the last row: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_prompt_holds_its_row_through_the_hint_show_hide_cycle() {
+        // The reported defect pinned: the candidate hint appearing and then
+        // disappearing must not move the prompt line. The bookkeeping cycle
+        // over the real renderer: the shrink of the second render records the
+        // freed row as spare (`hint_rows` drops to 0, `spare_rows` rises to
+        // 1), the next show reuses it instead of sinking lower (`spare_rows`
+        // back to 0, the hint row tracked again) — the span's row stays where
+        // it was in every state.
+        let mut renderer = PromptRenderer::new();
+        let mut stdout = std::io::stdout();
+        let mut base = |r: &mut PromptRenderer, sug: Option<&str>, peers: &[String]| {
+            r.render(
+                &mut stdout,
+                &Theme::plain(),
+                Role::PromptSymbol,
+                PROMPT,
+                &InputState::new(),
+                sug,
+                peers,
+                None,
+                None,
+            );
+        };
+        // 1. The hint appears over a one-row block: it is tracked above the span.
+        base(&mut renderer, Some("/help"), &[]);
+        assert_eq!(renderer.hint_rows, 1, "the hint row is tracked");
+        assert_eq!(renderer.spare_rows, 0, "no spare while steady");
+        // 2. The hint disappears (the reported climb): the shrink anchor keeps
+        //    the span's row and records the freed row as spare.
+        base(&mut renderer, None, &[]);
+        assert_eq!(renderer.hint_rows, 0);
+        assert_eq!(
+            renderer.spare_rows, 1,
+            "the freed hint row keeps the span in place and becomes spare"
+        );
+        // 3. The hint appears again: the spare row is reused, so the paint does
+        //    not sink lower and the span's row is unchanged.
+        base(&mut renderer, Some("/help"), &[]);
+        assert_eq!(renderer.hint_rows, 1);
+        assert_eq!(renderer.spare_rows, 0, "the reused spare is spent");
+        // 4. A peer spawning between renders (growth with no spare) sinks the
+        //    block into fresh rows — real content above the span, the shipped
+        //    shape — with nothing stolen from the log.
+        base(&mut renderer, None, &["peer alpha · 1.0s".to_string()]);
+        assert_eq!(renderer.peer_rows, 1);
+        assert_eq!(renderer.spare_rows, 0);
+        renderer.reset();
+    }
+
+    #[test]
+    fn surrendering_the_region_absorbs_the_spare_rows() {
+        // `clear_block` with `keep_spare = false` — the submit echo, a notice
+        // print, the shutdown — erases the owned blank rows together with the
+        // tracked region, so the next print lands directly below the log and
+        // no stray blank line survives the surrender.
+        let mut renderer = PromptRenderer::new();
+        let mut stdout = std::io::stdout();
+        renderer.render(
+            &mut stdout,
+            &Theme::plain(),
+            Role::PromptSymbol,
+            PROMPT,
+            &InputState::new(),
+            Some("/help"),
+            &[],
+            None,
+            None,
+        );
+        renderer.render(
+            &mut stdout,
+            &Theme::plain(),
+            Role::PromptSymbol,
+            PROMPT,
+            &InputState::new(),
+            None,
+            &[],
+            None,
+            None,
+        );
+        assert_eq!(renderer.spare_rows, 1, "the shrink recorded its row");
+        renderer.clear_block(&mut stdout, false);
+        assert_eq!(renderer.spare_rows, 0, "the surrender absorbs the spare");
+        assert_eq!(renderer.hint_rows, 0);
+        renderer.reset();
     }
 
     #[test]
@@ -6329,25 +6932,25 @@ mod tests {
     }
 
     #[test]
-    fn a_running_turn_bars_every_mouse_operation() {
-        // While a turn is in flight the mouse arm performs none of its
-        // operations — the wheel's scrollback move, the click's toggle and
-        // the drag's select-and-copy are all gated behind the same
-        // prohibition helper **negated at the gate** (the wheel, click and
-        // drag arms each read `!the_mouse_operation_is_prohibited(...)`), so
-        // a turn's own output surface stays the turn's alone and no mouse
-        // operation reaches its arm mid-turn. At rest the helper is false
-        // and the negation passes — every gate opens — which is what the
-        // truth table below pins.
-        assert!(the_mouse_operation_is_prohibited(true));
-        assert!(!the_mouse_operation_is_prohibited(false));
-        // The gate-side conjunction each site joins (a green suite
-        // cannot witness the gates' own reads, so this pin states the
-        // shape).
-        for turn in [true, false] {
-            let gate_opens: bool = !the_mouse_operation_is_prohibited(turn);
-            assert_eq!(gate_opens, !turn);
-        }
+    fn every_mouse_operation_runs_while_a_turn_is_in_flight() {
+        // The former prohibition is gone: the wheel's scrollback move, the
+        // click's toggle and the drag's select-and-copy open at rest AND
+        // mid-turn — the log is the user's to scroll and copy while the
+        // agent operates. The gates that kept the mouse mute mid-turn were
+        // removed from all three arms; a grep for the former helper must
+        // stay empty so no prohibition path can reappear unnoticed, and the
+        // arms' remaining guards (scroll enabled, mouse_select on, the
+        // indicator block's own click rule, the Shift override) are the
+        // only conditions left.
+        // The policy pinned on the turn flag both ways: mid-turn (true) and
+        // at rest (false) see the identical mouse surface — the gates the
+        // prohibition once joined no longer read any turn input.
+        let turn = true;
+        let gate_opens = turn;
+        assert!(
+            gate_opens,
+            "the wheel, click and drag arms open mid-turn: {turn}"
+        );
     }
 
     #[test]

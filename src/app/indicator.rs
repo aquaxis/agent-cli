@@ -338,6 +338,12 @@ pub(super) struct StatusIndicator {
     /// zone (which composes the elapsed row above the pinned span) is the only
     /// painter allowed on those rows.
     pub(super) prompt_owned: bool,
+    /// The peers' band's display-only spinner clock. It exists only where no
+    /// run of this session holds a phase for the band to ride (`Run.frame`);
+    /// the tick and the scrolled redraw advance it one step per beat, so a
+    /// spawned peer's band animates on an idle prompt. Never written to any
+    /// record: the band's rows are display-only.
+    pub(super) peer_tick: u8,
 }
 
 impl StatusIndicator {
@@ -358,6 +364,7 @@ impl StatusIndicator {
             theme: Theme::plain(),
             owns_mouse: true,
             prompt_owned: false,
+            peer_tick: 0,
         }
     }
 
@@ -522,6 +529,10 @@ impl StatusIndicator {
         if let Some(run) = self.run.as_mut() {
             run.frame = run.frame.wrapping_add(1);
         }
+        // The idle peers' band advances its own clock here: `tick` runs only
+        // where the run's own row is already painted, so the band (painted by
+        // the beat or the prompt) would otherwise stand still at rest.
+        self.peer_tick = self.peer_tick.wrapping_add(1);
         self.repaint();
     }
 
@@ -600,6 +611,27 @@ impl StatusIndicator {
     pub(super) fn zone_advance_frame(&mut self) {
         if let Some(run) = self.run.as_mut() {
             run.frame = run.frame.wrapping_add(1);
+        }
+    }
+
+    /// The peers' band's own beat: when no run of this session holds a phase
+    /// for the band to ride, the display-only clock advances one step per
+    /// beat, so a spawned peer's band animates on an otherwise idle prompt.
+    pub(super) fn peer_clock_advance(&mut self) {
+        if self.run.is_none() {
+            self.peer_tick = self.peer_tick.wrapping_add(1);
+        }
+    }
+
+    /// The peers' band's spinner glyph: in phase with the main run's frame
+    /// while a turn runs, riding the beat-advanced display-only clock when
+    /// idle. A disabled indicator holds the clock still — the phase freeze in
+    /// place is consistent with the band's animation being display-only.
+    pub(super) fn peer_spinner_glyph(&self) -> char {
+        if let Some(run) = self.run.as_ref() {
+            spinner_frame(run.frame)
+        } else {
+            spinner_frame(usize::from(self.peer_tick))
         }
     }
 

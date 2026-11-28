@@ -103,7 +103,7 @@ pub fn wrap_display(s: &str, cols: usize) -> Vec<String> {
 /// history). When navigating with ↑/↓, it points into the history vector.
 /// `saved_draft` preserves the unfinished text the user was typing before they
 /// pressed ↑, and is restored when they press ↓ past the newest entry.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct InputState {
     /// Current line content being edited.
     pub line: String,

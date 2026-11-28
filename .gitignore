@@ -29,3 +29,7 @@ report_*
 
 # codex-cli backend: oneshot transport writes the final reply here
 .agent-cli-codex-cli-last.txt
+AI_LOG/
+AI_PRJ_REQUIREMENTS.md
+AI_PRJ_DESIGN.md
+AI_PRJ_TASKS.md
