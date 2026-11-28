@@ -4,6 +4,12 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.56.0]
+
+### Changed
+
+- **The startup logo no longer overflows a narrow terminal.** The REPL header's ASCII-art `AGENT CLI` block is now measured against the terminal's width before it prints (`PromptRenderer::terminal_width()`, each row in display columns): if any row would exceed the width — today the widest row is the version-tail line at 61 columns — the whole logo is withheld, so a narrow terminal sees neither wrapped nor truncated block letters. The boundary is derived from the composer's actual rows, so a longer version string widens it automatically; wide terminals, wide pipe targets and the non-TTY 80-column fallback print the banner exactly as before, and the header's `id`/`name`/`provider` rows below the logo are unaffected.
+
 ## [0.55.0]
 
 ### Added

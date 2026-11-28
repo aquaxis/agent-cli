@@ -2510,9 +2510,15 @@ fn print_header(
     let detail = |line: String| raw_println(false, &theme.out(Role::BannerDetail, &line));
     // The startup logo: an ASCII-art "AGENT CLI" block in the banner colour,
     // the spark glyph leading its first row and the running version riding the
-    // last one (R6, D7). Constant text, no runtime measurement.
-    for line in banner_logo_lines() {
-        raw_println(false, &theme.out(Role::Banner, &line));
+    // last one (R6, D7). The block is emitted whole or not at all: the rows are
+    // measured against the terminal's width and one overflowing row withholds
+    // the entire logo, so a narrow terminal never sees it wrap or truncate.
+    let logo_rows = banner_logo_lines();
+    let width = PromptRenderer::terminal_width();
+    if logo_fits(&logo_rows, width) {
+        for line in &logo_rows {
+            raw_println(false, &theme.out(Role::Banner, line));
+        }
     }
     detail(format!("  id        : {id}"));
     detail(format!("  name      : {display_name}"));
@@ -2577,6 +2583,16 @@ fn banner_logo_lines() -> Vec<String> {
             format!("{head}{}   {}{tail}", agent[r], cli[r])
         })
         .collect()
+}
+
+/// The logo displays only when every row fits the fetched width
+/// (all-or-nothing per the display-site gate: one overflowing row withholds
+/// the whole block — no partial rows, no wrapping, no truncation). The bound
+/// is derived from the composer's actual rows at display time, not
+/// hard-coded, so a longer version tail widens it automatically.
+fn logo_fits(rows: &[String], width: usize) -> bool {
+    rows.iter()
+        .all(|r| crate::editor::str_display_width(r) <= width)
 }
 
 fn print_prompt() {
@@ -4637,6 +4653,73 @@ mod tests {
         assert!(
             rows[4].contains(&format!("v{}", env!("CARGO_PKG_VERSION"))),
             "the version rides the last row: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn the_logo_gate_shows_the_logo_only_when_every_row_fits() {
+        // The gate's whole truth table over synthetic rows: a row fits exactly
+        // at its width and not one column below; with several rows, one
+        // overflowing row withholds the whole logo even when the others fit;
+        // every row fitting displays the logo.
+        let fits = |rows: &[&str], width: usize| -> bool {
+            let owned: Vec<String> = rows.iter().map(|r| (*r).to_string()).collect();
+            logo_fits(&owned, width)
+        };
+        assert!(fits(&["ab"], 2), "exact fit is in");
+        assert!(!fits(&["ab"], 1), "one column short is out");
+        assert!(
+            !fits(&["five5", "abc"], 3),
+            "one overflowing row withholds the whole logo, fitting rows not with it: width 3"
+        );
+        assert!(
+            fits(&["five5", "abc"], 5),
+            "all fitting rows display: width 5"
+        );
+        assert!(fits(&[], 0), "an empty block trivially fits");
+    }
+
+    #[test]
+    fn the_logo_gate_boundary_is_derived_from_the_widest_row() {
+        // The boundary is not a hard-coded threshold: `logo_fits` answers yes
+        // when the fetched width equals the measured widest row's width and
+        // no one column below, over the real composer rows. A version-tail or
+        // letter change re-fires this pin with the new bound automatically.
+        let rows = banner_logo_lines();
+        let widest = rows
+            .iter()
+            .map(|r| crate::editor::str_display_width(r))
+            .max()
+            .expect("the composer is never empty");
+        assert!(
+            widest >= 61,
+            "the survey floor holds for the real composer: {widest}"
+        );
+        assert!(
+            logo_fits(&rows, widest),
+            "the logo displays at the widest row's width: {widest}"
+        );
+        assert!(
+            !logo_fits(&rows, widest - 1),
+            "one column below the widest row withholds the whole logo: {widest}"
+        );
+    }
+
+    #[test]
+    fn the_widest_logo_row_is_at_least_the_surveyed_61() {
+        // The session-survey floor for the real composer (run 009): the
+        // measured widest row is at least 61 display columns — today the
+        // version tail's row. It guards the gate's wiring to the real rows
+        // (a gate fed the wrong array or a broken measure cannot slip
+        // through); it moves only by a deliberate change to the logo itself.
+        let widest = banner_logo_lines()
+            .iter()
+            .map(|r| crate::editor::str_display_width(r))
+            .max()
+            .expect("the composer is never empty");
+        assert!(
+            widest >= 61,
+            "the composer keeps its surveyed shape: {widest}"
         );
     }
 
