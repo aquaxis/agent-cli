@@ -932,13 +932,46 @@ async fn stage_ipc_roundtrip() -> Result<()> {
     }
 }
 
-async fn stage_subprocess_ipc() -> Result<()> {
-    use crate::ipc::{client, registry, IpcMessage};
+/// A staged child agent: the temp tree the child's config names and the process.
+///
+/// `registry_dir` and `log_dir` are kept because the stages' verdicts read
+/// them: the IPC stage checks the registry meta file is gone after the EOF
+/// exit, and the AI stage watches the child's log directory for its answer.
+/// `dir` is kept last so dropping it removes the tree after the verdicts.
+struct StagedChild {
+    registry_dir: std::path::PathBuf,
+    log_dir: std::path::PathBuf,
+    child: tokio::process::Child,
+    entry: crate::ipc::registry::RegistryEntry,
+    _dir: tempfile::TempDir,
+}
+
+/// What the staged child runs with. `UnreachableOllama` composes the IPC
+/// stage's TOML at the staged paths (an unreachable provider, so the child
+/// never calls out; the paths exist only after the layout, so the helper
+/// builds the string itself). `CloneOf` overrides the runtime paths in a
+/// caller's config and keeps the provider, so the AI stage's child calls the
+/// real LLM.
+enum StagedChildConfig<'a> {
+    UnreachableOllama,
+    CloneOf(&'a Config),
+}
+
+/// Stage a child `agent-cli run` process for the selftest stages: resolve the
+/// running executable, lay out `reg` / `log` / `agents` under a fresh tempdir,
+/// write the child's config there (`config`), spawn it with `--name name` and
+/// tool approval auto-answered (stdin piped so the EOF-termination stage can
+/// close it, stdout/stderr silenced), and wait for the child's registry entry
+/// to appear under that name before returning.
+async fn stage_subprocess(
+    config: StagedChildConfig<'_>,
+    name: &str,
+    register_timeout: Duration,
+) -> Result<StagedChild> {
     use std::process::Stdio;
-    use tempfile::TempDir;
 
     let exe = std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
-    let dir = TempDir::new().map_err(|e| AppError::Other(e.to_string()))?;
+    let dir = tempfile::TempDir::new().map_err(|e| AppError::Other(e.to_string()))?;
     let cfg_path = dir.path().join("child.toml");
     let registry_dir = dir.path().join("reg");
     let log_dir = dir.path().join("log");
@@ -946,9 +979,13 @@ async fn stage_subprocess_ipc() -> Result<()> {
     std::fs::create_dir_all(&registry_dir)?;
     std::fs::create_dir_all(&log_dir)?;
     std::fs::create_dir_all(&agents_dir)?;
-    // Use ollama with an unreachable base_url so the child does not call external APIs.
-    let toml = format!(
-        r#"[provider]
+
+    let toml_str = match config {
+        StagedChildConfig::UnreachableOllama => {
+            // Use ollama with an unreachable base_url so the child does not
+            // call external APIs.
+            format!(
+                r#"[provider]
 kind = "ollama"
 
 [provider.ollama]
@@ -964,18 +1001,34 @@ agents_dir = {agents_dir:?}
 [tools]
 enabled = []
 "#,
-        log_dir = log_dir.display().to_string(),
-        registry_dir = registry_dir.display().to_string(),
-        agents_dir = agents_dir.display().to_string(),
-    );
-    std::fs::write(&cfg_path, toml)?;
+                log_dir = log_dir.display().to_string(),
+                registry_dir = registry_dir.display().to_string(),
+                agents_dir = agents_dir.display().to_string(),
+            )
+        }
+        StagedChildConfig::CloneOf(base) => {
+            // Copy the original cfg, replacing only registry_dir / log_dir / agents_dir with temp paths.
+            // Provider settings (base_url, model, API key env) are kept as-is so the child calls the real LLM.
+            let mut child_cfg = base.clone();
+            child_cfg.runtime.registry_dir = registry_dir.display().to_string();
+            child_cfg.runtime.log_dir = log_dir.display().to_string();
+            child_cfg.runtime.agents_dir = agents_dir.display().to_string();
+            child_cfg.runtime.persona_file = String::new();
+            child_cfg.runtime.auto_approve_tools = true;
+            // Tools are unnecessary (the AI just needs to respond to the peer prompt with text)
+            child_cfg.tools.enabled = Vec::new();
+            toml::to_string_pretty(&child_cfg)
+                .map_err(|e| AppError::Other(format!("serialize child config: {e}")))?
+        }
+    };
+    std::fs::write(&cfg_path, toml_str)?;
 
     let mut child = tokio::process::Command::new(&exe)
         .arg("--config")
         .arg(&cfg_path)
         .arg("run")
         .arg("--name")
-        .arg("selftest-child")
+        .arg(name)
         .arg("--auto-approve-tools")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -983,30 +1036,53 @@ enabled = []
         .spawn()
         .map_err(|e| AppError::Other(format!("spawn child: {e}")))?;
 
-    // Wait for child to register (up to 5 seconds)
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Wait for the child to register, poll every 100 ms until the deadline
+    // (the twins used 5 s and 10 s; the spec pins the wait into the caller).
+    let deadline = std::time::Instant::now() + register_timeout;
     let entry = loop {
-        let entries = registry::list_entries(&registry_dir).unwrap_or_default();
+        let entries = crate::ipc::registry::list_entries(&registry_dir).unwrap_or_default();
         if let Some(e) = entries
             .into_iter()
-            .find(|e| e.name.as_deref() == Some("selftest-child"))
+            .find(|e| e.name.as_deref() == Some(name))
         {
-            break Some(e);
+            break e;
         }
         if std::time::Instant::now() >= deadline {
-            break None;
+            let _ = child.kill().await;
+            return Err(AppError::Other(format!(
+                "child agent did not register within {}",
+                format_duration_secs(register_timeout)
+            )));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
-    let entry = match entry {
-        Some(e) => e,
-        None => {
-            let _ = child.kill().await;
-            return Err(AppError::Other(
-                "child agent did not register within 5s".into(),
-            ));
-        }
-    };
+
+    Ok(StagedChild {
+        registry_dir,
+        log_dir,
+        child,
+        entry,
+        _dir: dir,
+    })
+}
+
+/// The registration-timeout message's seconds spelling, matching the twins'
+/// original "within 5s" / "within 10s" faces.
+fn format_duration_secs(d: Duration) -> String {
+    format!("{}s", d.as_secs())
+}
+
+async fn stage_subprocess_ipc() -> Result<()> {
+    use crate::ipc::client;
+    use crate::ipc::IpcMessage;
+
+    let mut stage = stage_subprocess(
+        StagedChildConfig::UnreachableOllama,
+        "selftest-child",
+        Duration::from_secs(5),
+    )
+    .await?;
+    let entry = stage.entry;
 
     // Ping/Pong
     let ping_resp = client::send(&entry.socket, &IpcMessage::Ping).await;
@@ -1024,12 +1100,12 @@ enabled = []
 
     // Child termination: closing stdin causes EOF, which breaks the REPL loop.
     // Regression test for app termination: verify the child exits on its own.
-    drop(child.stdin.take());
-    let exited_naturally = tokio::time::timeout(Duration::from_secs(3), child.wait())
+    drop(stage.child.stdin.take());
+    let exited_naturally = tokio::time::timeout(Duration::from_secs(3), stage.child.wait())
         .await
         .is_ok();
     // Kill just in case (harmless if already exited)
-    let _ = child.kill().await;
+    let _ = stage.child.kill().await;
 
     let ping_resp = ping_resp.map_err(|e| AppError::Other(format!("ipc send (Ping): {e}")))?;
     if !matches!(ping_resp, IpcMessage::Pong) {
@@ -1058,7 +1134,9 @@ enabled = []
             entry.socket.display()
         )));
     }
-    let meta_path = registry_dir.join(format!("{}.json", entry.id.as_str()));
+    let meta_path = stage
+        .registry_dir
+        .join(format!("{}.json", entry.id.as_str()));
     if meta_path.exists() {
         return Err(AppError::Other(format!(
             "registry meta file remained after exit: {}",
@@ -1073,72 +1151,15 @@ enabled = []
 }
 
 async fn stage_subprocess_ai_response(cfg: &Config) -> Result<()> {
-    use crate::ipc::{client, registry, IpcMessage};
-    use std::process::Stdio;
-    use tempfile::TempDir;
+    use crate::ipc::{client, IpcMessage};
 
-    let exe = std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
-    let dir = TempDir::new().map_err(|e| AppError::Other(e.to_string()))?;
-
-    // Copy the original cfg, replacing only registry_dir / log_dir / agents_dir with temp paths.
-    // Provider settings (base_url, model, API key env) are kept as-is so the child calls the real LLM.
-    let mut child_cfg = cfg.clone();
-    let registry_dir = dir.path().join("reg");
-    let log_dir = dir.path().join("log");
-    let agents_dir = dir.path().join("agents");
-    std::fs::create_dir_all(&registry_dir)?;
-    std::fs::create_dir_all(&log_dir)?;
-    std::fs::create_dir_all(&agents_dir)?;
-    child_cfg.runtime.registry_dir = registry_dir.display().to_string();
-    child_cfg.runtime.log_dir = log_dir.display().to_string();
-    child_cfg.runtime.agents_dir = agents_dir.display().to_string();
-    child_cfg.runtime.persona_file = String::new();
-    child_cfg.runtime.auto_approve_tools = true;
-    // Tools are unnecessary (the AI just needs to respond to the peer prompt with text)
-    child_cfg.tools.enabled = Vec::new();
-
-    let cfg_path = dir.path().join("child.toml");
-    let toml_str = toml::to_string_pretty(&child_cfg)
-        .map_err(|e| AppError::Other(format!("serialize child config: {e}")))?;
-    std::fs::write(&cfg_path, toml_str)?;
-
-    let mut child = tokio::process::Command::new(&exe)
-        .arg("--config")
-        .arg(&cfg_path)
-        .arg("run")
-        .arg("--name")
-        .arg("selftest-peer")
-        .arg("--auto-approve-tools")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| AppError::Other(format!("spawn child: {e}")))?;
-
-    // Wait for child to register
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let entry = loop {
-        let entries = registry::list_entries(&registry_dir).unwrap_or_default();
-        if let Some(e) = entries
-            .into_iter()
-            .find(|e| e.name.as_deref() == Some("selftest-peer"))
-        {
-            break Some(e);
-        }
-        if std::time::Instant::now() >= deadline {
-            break None;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    let entry = match entry {
-        Some(e) => e,
-        None => {
-            let _ = child.kill().await;
-            return Err(AppError::Other(
-                "child agent did not register within 10s".into(),
-            ));
-        }
-    };
+    let mut stage = stage_subprocess(
+        StagedChildConfig::CloneOf(cfg),
+        "selftest-peer",
+        Duration::from_secs(10),
+    )
+    .await?;
+    let entry = stage.entry;
 
     // Send prompt (a short instruction likely to produce a response)
     let prompt_msg = IpcMessage::Prompt {
@@ -1150,13 +1171,13 @@ async fn stage_subprocess_ai_response(cfg: &Config) -> Result<()> {
     let send_resp = client::send(&entry.socket, &prompt_msg).await;
 
     // Wait for an assistant entry in the child's log directory (up to 90 seconds)
-    let agent_log_dir = log_dir.join(entry.id.as_str());
+    let agent_log_dir = stage.log_dir.join(entry.id.as_str());
     let observed = wait_for_assistant_log(&agent_log_dir, Duration::from_secs(90)).await;
 
     // Cleanup
-    drop(child.stdin.take());
-    let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
-    let _ = child.kill().await;
+    drop(stage.child.stdin.take());
+    let _ = tokio::time::timeout(Duration::from_secs(5), stage.child.wait()).await;
+    let _ = stage.child.kill().await;
 
     let send_resp = send_resp.map_err(|e| AppError::Other(format!("send Prompt: {e}")))?;
     if !matches!(send_resp, IpcMessage::Ack { .. }) {

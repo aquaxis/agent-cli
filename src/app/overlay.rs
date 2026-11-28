@@ -485,14 +485,16 @@ pub(super) fn draw_scroll_overlay(
     // display-only.
     renderer.render(
         stdout,
-        theme,
-        bottom.role,
-        bottom.prompt,
-        bottom.input,
-        bottom.suggestion,
-        &peer_lines,
-        bottom.run_row(),
-        bottom.marker_row(),
+        RenderParams {
+            theme,
+            role: bottom.role,
+            prompt: bottom.prompt,
+            input: bottom.input,
+            suggestion: bottom.suggestion,
+            peer_lines: &peer_lines,
+            run_row: bottom.run_row(),
+            marker: bottom.marker_row(),
+        },
     );
     overlay.last_draw = std::time::Instant::now();
 }

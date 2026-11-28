@@ -4,6 +4,16 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) fo
 
 ## [Unreleased]
 
+## [0.55.0]
+
+### Added
+
+- **Refactoring: the interactive session's largest module is split further.** The 7,831-line `src/app/mod.rs` now shares its content with three cohesive siblings: `app/prompt.rs` (the `PromptRenderer` and its layout/anchor helpers), `app/line_loop.rs` (the piped-input loop) and `app/runners.rs` (`run_headless` / `run_oneshot`, named to avoid shadowing `tokio::sync::oneshot`); `mod.rs` shrinks by roughly a thousand lines with `PromptState` staying beside its two input loops. Parameter lists became small structs (`RenderParams`, `PromptRunParams`), removing the last two `#[allow(clippy::too_many_arguments)]`, and the y/N acceptance rule the raw and piped paths share now lives in one pure, unit-tested helper (`is_approval_affirmative`). The selftest's two subprocess harnesses share one staging helper (`stage_subprocess`) so their spawn/registration steps cannot drift apart. No behavior change: 697 tests pass.
+
+### Fixed
+
+- **The docs no longer describe the mouse and typing behavior that was withdrawn in 0.54.0.** `doc/usage.md` said the reasoning-click toggle works "at idle only" and that a running REPL "discards every key except Esc/Ctrl+C", and both READMEs said the wheel/drag "stand down" while an agent runs — none of that matches the shipped behavior, where wheel, drag-select, click-toggle and the editable prompt all keep working mid-turn (Enter stays held). The `!`-shell example also cited the removed `src/app.rs` path. A new "prompt available during a turn" bullet states what typing mid-turn actually does now.
+
 ## [0.54.0]
 
 ### Fixed
